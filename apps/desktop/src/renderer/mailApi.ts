@@ -329,6 +329,13 @@ export function bridgeOnUnsnoozed(
   return window.intray.mail.onUnsnoozed(cb);
 }
 
+export function bridgeOnMailUpdated(
+  cb: (payload: { message: MessageDto }) => void,
+): () => void {
+  if (!hasIntrayBridge()) return () => undefined;
+  return window.intray.mail.onUpdated(cb);
+}
+
 export function accountDtoToUi(a: AccountDto): Account {
   return {
     id: a.id,

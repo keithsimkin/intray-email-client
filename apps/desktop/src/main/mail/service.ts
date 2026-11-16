@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { BrowserWindow } from "electron";
 import {
   deleteAccount,
   deleteMessageById,
@@ -94,6 +95,155 @@ import type {
   RecipientDto,
   ThreadMessageDto,
 } from "../../shared/types";
+
+/** Parallel body downloads once the opened message is on screen. */
+const BODY_FETCH_CONCURRENCY = 4;
+
+const bodyFetches = new Map<string, Promise<void>>();
+const threadBackfills = new Map<string, Promise<void>>();
+/** headIds waiting on a shared thread backfill so each gets a final broadcast. */
+const threadBackfillHeads = new Map<string, Set<string>>();
+
+function broadcastMailUpdated(message: MessageDto): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("mail:updated", { message });
+  }
+}
+
+async function mapLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  if (!items.length) return;
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, limit), items.length) },
+    async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= items.length) return;
+        await fn(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+}
+
+async function ensureBodyForRow(
+  row: MessageRow,
+  account: AccountRow | undefined,
+): Promise<void> {
+  if (getBody(row.id)) return;
+  const existing = bodyFetches.get(row.id);
+  if (existing) return existing;
+
+  const task = (async () => {
+    if (!account) return;
+    try {
+      if (!usesImap(account)) {
+        const full = await getMessageFull(row.account_id, row.provider_id);
+        upsertMessage(gmailMessageToRow(row.account_id, full));
+        const bodies = bodiesFromGmail(full);
+        upsertBody({
+          message_id: row.id,
+          text_plain: bodies.text ?? null,
+          text_html: bodies.html ?? null,
+          fetched_at: new Date().toISOString(),
+        });
+        if (bodies.text) updateFtsBody(row.id, bodies.text);
+      } else {
+        const meta = mailboxMetaFromRow(row);
+        if (!meta) return;
+        const parsed = await fetchMessageSource(
+          row.account_id,
+          meta.mailbox,
+          meta.uid,
+        );
+        const bodies = parsedToBodies(parsed);
+        upsertBody({
+          message_id: row.id,
+          text_plain: bodies.text,
+          text_html: bodies.html,
+          fetched_at: new Date().toISOString(),
+        });
+        if (bodies.text) updateFtsBody(row.id, bodies.text);
+      }
+    } catch {
+      /* leave placeholder */
+    }
+  })().finally(() => {
+    bodyFetches.delete(row.id);
+  });
+
+  bodyFetches.set(row.id, task);
+  return task;
+}
+
+function buildMessageDto(messageId: string): MessageDto | null {
+  const refreshed = getMessageRow(messageId);
+  if (!refreshed) return null;
+  const thread = listThreadMessages(refreshed.account_id, refreshed.thread_id);
+  const rows = thread.length ? thread : [refreshed];
+  const bodies = new Map(
+    rows.map((t) => {
+      const b = getBody(t.id);
+      return [
+        t.id,
+        b ?? { text_plain: null, text_html: null, fetched_at: "" },
+      ] as const;
+    }),
+  );
+  return rowsToMessageDto(refreshed, rows, bodies);
+}
+
+function backfillThreadBodies(
+  headId: string,
+  rows: MessageRow[],
+  account: AccountRow | undefined,
+): Promise<void> {
+  const head = getMessageRow(headId);
+  const threadKey = head
+    ? `${head.account_id}:${head.thread_id}`
+    : headId;
+  let heads = threadBackfillHeads.get(threadKey);
+  if (!heads) {
+    heads = new Set();
+    threadBackfillHeads.set(threadKey, heads);
+  }
+  heads.add(headId);
+
+  const existing = threadBackfills.get(threadKey);
+  if (existing) {
+    // Ensure this head gets an update even if it joined after the shared
+    // task already snapshot the waiting set.
+    return existing.then(() => {
+      const dto = buildMessageDto(headId);
+      if (dto) broadcastMailUpdated(dto);
+    });
+  }
+
+  const task = (async () => {
+    const missing = rows.filter((r) => !getBody(r.id));
+    if (missing.length) {
+      await mapLimit(missing, BODY_FETCH_CONCURRENCY, async (r) => {
+        await ensureBodyForRow(r, account);
+      });
+    }
+    const waiting = [...(threadBackfillHeads.get(threadKey) ?? [])];
+    for (const id of waiting) {
+      const dto = buildMessageDto(id);
+      if (dto) broadcastMailUpdated(dto);
+    }
+  })().finally(() => {
+    threadBackfills.delete(threadKey);
+    threadBackfillHeads.delete(threadKey);
+  });
+
+  threadBackfills.set(threadKey, task);
+  return task;
+}
 
 /** Auth / credential failures that mean the account needs to reconnect. */
 export function isAuthFailure(error?: string | null): boolean {
@@ -601,7 +751,18 @@ export function listMail(query: MailListQuery): MailListResult {
   return { messages, nextCursor, total };
 }
 
-export async function getMail(messageId: string): Promise<MessageDto | null> {
+/**
+ * Load a message for the reader. Bodies are synced lazily: the newest (visible)
+ * message is fetched first so the pane can paint, then the rest of the thread
+ * is backfilled in parallel and pushed via `mail:updated`.
+ *
+ * Pass `waitForThread: true` when the caller needs every body before return
+ * (MCP, tests).
+ */
+export async function getMail(
+  messageId: string,
+  opts?: { waitForThread?: boolean },
+): Promise<MessageDto | null> {
   const head = getMessageRow(messageId);
   if (!head) return null;
   const account = getAccountRow(head.account_id);
@@ -609,55 +770,23 @@ export async function getMail(messageId: string): Promise<MessageDto | null> {
   const thread = listThreadMessages(head.account_id, head.thread_id);
   const rows = thread.length ? thread : [head];
 
-  for (const r of rows) {
-    if (getBody(r.id)) continue;
-    try {
-      if (account && !usesImap(account)) {
-        const full = await getMessageFull(r.account_id, r.provider_id);
-        upsertMessage(gmailMessageToRow(r.account_id, full));
-        const bodies = bodiesFromGmail(full);
-        upsertBody({
-          message_id: r.id,
-          text_plain: bodies.text ?? null,
-          text_html: bodies.html ?? null,
-          fetched_at: new Date().toISOString(),
-        });
-        if (bodies.text) updateFtsBody(r.id, bodies.text);
-      } else {
-        const meta = mailboxMetaFromRow(r);
-        if (!meta) continue;
-        const parsed = await fetchMessageSource(
-          r.account_id,
-          meta.mailbox,
-          meta.uid,
-        );
-        const bodies = parsedToBodies(parsed);
-        upsertBody({
-          message_id: r.id,
-          text_plain: bodies.text,
-          text_html: bodies.html,
-          fetched_at: new Date().toISOString(),
-        });
-        if (bodies.text) updateFtsBody(r.id, bodies.text);
-      }
-    } catch {
-      /* leave placeholder */
+  // Reader expands the latest message by default (thread is date ASC).
+  const primary = rows[rows.length - 1] ?? head;
+  await ensureBodyForRow(primary, account);
+
+  const dto = buildMessageDto(messageId);
+  if (!dto) return null;
+
+  const missing = rows.filter((r) => r.id !== primary.id && !getBody(r.id));
+  if (missing.length) {
+    const backfill = backfillThreadBodies(messageId, rows, account);
+    if (opts?.waitForThread) {
+      await backfill;
+      return buildMessageDto(messageId) ?? dto;
     }
   }
 
-  const refreshed = getMessageRow(messageId) ?? head;
-  const thread2 = listThreadMessages(refreshed.account_id, refreshed.thread_id);
-  const bodies = new Map(
-    (thread2.length ? thread2 : [refreshed]).map((t) => {
-      const b = getBody(t.id);
-      return [t.id, b ?? { text_plain: null, text_html: null, fetched_at: "" }] as const;
-    }),
-  );
-  return rowsToMessageDto(
-    refreshed,
-    thread2.length ? thread2 : [refreshed],
-    bodies,
-  );
+  return dto;
 }
 
 export async function mutateMail(

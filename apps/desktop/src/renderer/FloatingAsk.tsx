@@ -88,13 +88,6 @@ const MENTION_META: Record<
   },
 };
 
-const MENTION_GUIDE = (
-  Object.keys(MENTION_META) as MentionKind[]
-).map((kind) => ({
-  kind,
-  ...MENTION_META[kind],
-}));
-
 const SKILLS: { id: string; name: string; detail: string }[] = [
   { id: "summarize", name: "Summarize", detail: "Catch me up in a few lines" },
   { id: "draft", name: "Draft reply", detail: "Suggest a reply in my voice" },
@@ -394,13 +387,15 @@ export function FloatingAsk({
   labels,
   focusMessage,
   bridgeName,
-  userName,
   prefs,
   onOpenMessage,
   onOpenSettings,
 }: {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  onOpenChange: (
+    open: boolean,
+    meta?: { restoreFocus?: boolean },
+  ) => void;
   mail: Message[];
   labels: Label[];
   focusMessage: Message | null;
@@ -431,7 +426,6 @@ export function FloatingAsk({
   const pendingCaret = useRef<number | null>(null);
 
   const contacts = useMemo(() => buildContacts(), []);
-  const you = initials(userName);
 
   const focusId = focusMessage?.id ?? null;
   if (focusId && focusId !== pinnedFocusId) {
@@ -533,7 +527,7 @@ export function FloatingAsk({
         setPickerQuery("");
         return;
       }
-      onOpenChange(false);
+      onOpenChange(false, { restoreFocus: true });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -562,7 +556,7 @@ export function FloatingAsk({
     const node = inputRef.current;
     if (!node) return;
     node.style.height = "0px";
-    node.style.height = `${Math.min(Math.max(node.scrollHeight, 44), 120)}px`;
+    node.style.height = `${Math.min(Math.max(node.scrollHeight, 22), 88)}px`;
     const pos = pendingCaret.current;
     if (pos == null) return;
     pendingCaret.current = null;
@@ -574,10 +568,23 @@ export function FloatingAsk({
     if (open) window.setTimeout(() => inputRef.current?.focus(), 0);
   }, [open]);
 
-  function collapse() {
-    onOpenChange(false);
+  function collapse(opts?: { restoreFocus?: boolean }) {
+    onOpenChange(false, { restoreFocus: opts?.restoreFocus ?? true });
     setPickerOpen(false);
     setPickerQuery("");
+  }
+
+  function focusAskInputIfStillOurs() {
+    window.setTimeout(() => {
+      const active = document.activeElement;
+      if (
+        !active ||
+        active === document.body ||
+        boxRef.current?.contains(active)
+      ) {
+        inputRef.current?.focus();
+      }
+    }, 0);
   }
 
   function readCaret(node: HTMLTextAreaElement) {
@@ -605,24 +612,6 @@ export function FloatingAsk({
     setCaret(0);
     setMentionHeld(false);
     window.setTimeout(() => inputRef.current?.focus(), 0);
-  }
-
-  function insertTrigger(trigger: MentionTrigger) {
-    const here = inputRef.current?.selectionStart ?? caret;
-    const active = activeMention(draft, here);
-    const base = active
-      ? dropActiveMention(draft, active)
-      : { text: draft, caret: here };
-    const before = base.text.slice(0, base.caret);
-    const after = base.text.slice(base.caret);
-    const lead = before.length > 0 && !/\s$/.test(before) ? " " : "";
-    const next = `${before}${lead}${trigger}${after}`;
-    const pos = before.length + lead.length + 1;
-    pendingCaret.current = pos;
-    setDraft(next);
-    setCaret(pos);
-    setMentionHeld(false);
-    setPickerOpen(false);
   }
 
   async function copyThread() {
@@ -714,7 +703,7 @@ export function FloatingAsk({
     });
 
     setBusy(false);
-    window.setTimeout(() => inputRef.current?.focus(), 0);
+    focusAskInputIfStillOurs();
   }
 
   function onComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -752,7 +741,7 @@ export function FloatingAsk({
   const composer = (
     <form
       ref={boxRef}
-      className="float-ask-box expanded"
+      className="float-ask-box"
       onSubmit={(e) => void send(e)}
     >
       {chips.length ? (
@@ -771,7 +760,7 @@ export function FloatingAsk({
                   onClick={(event) => {
                     event.stopPropagation();
                     onOpenMessage(chip.message!.id);
-                    collapse();
+                    collapse({ restoreFocus: false });
                   }}
                 >
                   <span className="float-ask-face" aria-hidden>
@@ -836,7 +825,7 @@ export function FloatingAsk({
         onKeyUp={(event) => readCaret(event.currentTarget)}
         onClick={(event) => readCaret(event.currentTarget)}
         onSelect={(event) => readCaret(event.currentTarget)}
-        placeholder="Ask, or tag with @ # / $"
+        placeholder="Ask about your mail… @ # / $"
         autoComplete="off"
         disabled={busy}
         aria-controls={mention ? mentionListId : panelId}
@@ -856,19 +845,20 @@ export function FloatingAsk({
               setPickerOpen((current) => !current);
             }}
           >
-            <Plus size={15} strokeWidth={2} />
+            <Plus size={14} strokeWidth={1.75} />
           </button>
           <button
             type="button"
             className="float-ask-writer"
             onClick={(event) => {
               event.stopPropagation();
+              collapse({ restoreFocus: false });
               onOpenSettings();
             }}
+            title="AI provider"
           >
-            <Sparkles size={13} strokeWidth={2} />
+            <Sparkles size={11} strokeWidth={1.75} />
             <span>{bridgeName}</span>
-            <em>On PC</em>
           </button>
         </div>
         <button
@@ -878,7 +868,7 @@ export function FloatingAsk({
           aria-label="Send"
           onClick={(event) => event.stopPropagation()}
         >
-          <ArrowUp size={15} strokeWidth={2.25} />
+          <ArrowUp size={14} strokeWidth={2} />
         </button>
       </div>
 
@@ -996,180 +986,131 @@ export function FloatingAsk({
 
   if (!open) return null;
 
-  return (
-    <section
-      className="ask-pane float-ask-pane fade-up"
-      id={panelId}
-      aria-label="Ask Intray"
-    >
-      <header className="float-ask-head">
-        <div className="float-ask-brand">
-          <h2 className="float-ask-title">Ask</h2>
-          <span
-            className="float-ask-private"
-            title="Answers from mail on this PC"
-          >
-            On this PC
-          </span>
-        </div>
-        <div className="float-ask-head-actions">
-          {messages.length ? (
-            <button
-              type="button"
-              className="float-ask-head-btn"
-              onClick={clearThread}
-            >
-              New chat
-            </button>
-          ) : null}
-          {messages.length ? (
-            <button
-              type="button"
-              className="float-ask-head-btn"
-              onClick={() => void copyThread()}
-            >
-              {copied ? "Copied" : "Copy"}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="float-ask-icon"
-            onClick={collapse}
-            aria-label="Close"
-            title="Close"
-          >
-            <X size={16} strokeWidth={1.75} />
-          </button>
-        </div>
-      </header>
+  const hasThread = messages.length > 0 || busy;
+  const idle = !hasThread;
 
-      <div className="float-ask-thread" ref={scrollerRef}>
-        {messages.length === 0 && !busy ? (
-          <div className="float-ask-empty">
-            <p className="float-ask-empty-lead">
-              Ask about your mail. These keys tell the answer what to use.
-            </p>
-            <ul className="float-ask-keys">
-              {MENTION_GUIDE.map((item) => (
-                <li key={item.trigger}>
-                  <button
-                    type="button"
-                    className="float-ask-key"
-                    onClick={() => insertTrigger(item.trigger)}
-                  >
-                    <span className="float-ask-mention-key" aria-hidden>
-                      {item.trigger}
-                    </span>
-                    <span className="float-ask-key-copy">
-                      <strong>{item.title}</strong>
-                      <small>{item.text}</small>
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <p className="float-ask-key-label">Or start with a question</p>
-            <div className="float-ask-prompts">
-              {[
-                "Who is waiting on me?",
-                "Catch me up on this thread",
-                "When is dinner with Sam?",
-              ].map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  className="float-ask-prompt"
-                  onClick={() => {
-                    setDraft(prompt);
-                    window.setTimeout(() => inputRef.current?.focus(), 0);
-                  }}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-            <p className="float-ask-hint">{bridgeName} · on this PC</p>
+  return (
+    <div className="float-ask-root fade-up" role="presentation">
+      <section
+        className={`float-ask-pane${idle ? " idle" : ""}`}
+        id={panelId}
+        aria-label="Ask Intray"
+      >
+        <header className="float-ask-head">
+          <div className="float-ask-brand">
+            <h2 className="float-ask-title">Ask</h2>
+            <span
+              className="float-ask-private"
+              title="Answers from mail on this PC"
+            >
+              On this PC
+            </span>
           </div>
-        ) : (
-          messages.map((message) =>
-            message.role === "user" ? (
-              <div key={message.id} className="float-ask-turn user">
-                {message.contextLabel ? (
-                  <p className="float-ask-context">
-                    <Mail size={13} strokeWidth={2} />
-                    <span>{message.contextLabel}</span>
-                  </p>
-                ) : null}
-                <div className="float-ask-user-row">
-                  <div className="float-ask-user-bubble">
-                    <p>{message.text}</p>
+          <div className="float-ask-head-actions">
+            {messages.length ? (
+              <button
+                type="button"
+                className="float-ask-head-btn"
+                onClick={clearThread}
+              >
+                Clear
+              </button>
+            ) : null}
+            {messages.length ? (
+              <button
+                type="button"
+                className="float-ask-head-btn"
+                onClick={() => void copyThread()}
+              >
+                {copied ? "Copied" : "Copy"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="float-ask-icon"
+              onClick={() => collapse({ restoreFocus: true })}
+              aria-label="Close"
+              title="Close · Esc"
+            >
+              <X size={14} strokeWidth={1.75} />
+            </button>
+          </div>
+        </header>
+
+        {hasThread ? (
+          <div className="float-ask-thread" ref={scrollerRef}>
+            {messages.map((message) =>
+              message.role === "user" ? (
+                <div key={message.id} className="float-ask-turn user">
+                  {message.contextLabel ? (
+                    <p className="float-ask-context">
+                      <Mail size={11} strokeWidth={1.75} />
+                      <span>{message.contextLabel}</span>
+                    </p>
+                  ) : null}
+                  <div className="float-ask-user-row">
+                    <div className="float-ask-user-bubble">
+                      <p>{message.text}</p>
+                    </div>
                   </div>
-                  <span className="float-ask-you" aria-hidden>
-                    {you}
-                  </span>
+                </div>
+              ) : (
+                <article key={message.id} className="float-ask-turn assistant">
+                  <AnswerBody text={message.text} />
+                  {message.pulls?.length ? (
+                    <div className="float-ask-pulls">
+                      <p>
+                        {message.pulls.length}{" "}
+                        {message.pulls.length === 1 ? "mail" : "mails"}
+                      </p>
+                      {message.pulls.map((pull) => (
+                        <button
+                          key={pull.id}
+                          type="button"
+                          className="float-ask-pull"
+                          onClick={() => {
+                            onOpenMessage(pull.messageId);
+                            collapse({ restoreFocus: false });
+                          }}
+                        >
+                          <time>{pull.at ?? "Mail"}</time>
+                          <span>
+                            <strong>
+                              {pull.from ? `${pull.from} · ` : ""}
+                              {pull.subject}
+                            </strong>
+                            <small>{pull.text}</small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </article>
+              ),
+            )}
+            {busy ? (
+              <div className="float-ask-trace" aria-live="polite">
+                {chips[0] ? (
+                  <div className="float-ask-trace-row">
+                    <Eye size={13} strokeWidth={1.75} />
+                    <span>Using</span>
+                    <span className="float-ask-trace-chip">
+                      {MENTION_META[chips[0].kind].trigger}
+                      {chips[0].label}
+                    </span>
+                  </div>
+                ) : null}
+                <div className="float-ask-trace-row">
+                  <span className="float-ask-spin" aria-hidden />
+                  <span>Thinking…</span>
                 </div>
               </div>
-            ) : (
-              <article key={message.id} className="float-ask-turn assistant">
-                <AnswerBody text={message.text} />
-                {message.pulls?.length ? (
-                  <div className="float-ask-pulls">
-                    <p>
-                      {message.pulls.length}{" "}
-                      {message.pulls.length === 1 ? "mail" : "mails"}
-                    </p>
-                    {message.pulls.map((pull) => (
-                      <button
-                        key={pull.id}
-                        type="button"
-                        className="float-ask-pull"
-                        onClick={() => {
-                          onOpenMessage(pull.messageId);
-                          collapse();
-                        }}
-                      >
-                        <time>{pull.at ?? "Mail"}</time>
-                        <span>
-                          <strong>
-                            {pull.from ? `${pull.from} · ` : ""}
-                            {pull.subject}
-                          </strong>
-                          <small>{pull.text}</small>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </article>
-            ),
-          )
-        )}
-        {busy ? (
-          <div className="float-ask-trace" aria-live="polite">
-            {chips[0] ? (
-              <div className="float-ask-trace-row">
-                <Eye size={15} strokeWidth={1.75} />
-                <span>Using</span>
-                <span className="float-ask-trace-chip">
-                  {MENTION_META[chips[0].kind].trigger}
-                  {chips[0].label}
-                </span>
-              </div>
             ) : null}
-            <div className="float-ask-trace-row">
-              <span className="float-ask-spin" aria-hidden />
-              <span>Generating answer…</span>
-            </div>
           </div>
         ) : null}
-      </div>
 
-      {composer}
-
-      <p className="float-ask-fine">
-        Answers come from your mail on this PC. Open the thread before you rely
-        on a line.
-      </p>
-    </section>
+        {composer}
+      </section>
+    </div>
   );
 }
