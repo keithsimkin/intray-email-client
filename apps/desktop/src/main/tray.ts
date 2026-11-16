@@ -1,24 +1,31 @@
 import { BrowserWindow, Menu, Tray, app, nativeImage } from "electron";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { loadAppIcon } from "./app-icon";
 import { listAccountRows } from "./db";
 import { triggerSync } from "./mail/service";
 
 let tray: Tray | null = null;
 
 function loadTrayImage() {
-  const fromResources = nativeImage.createFromPath(
-    join(__dirname, "../../resources/tray-icon.png"),
-  );
-  if (!fromResources.isEmpty()) return fromResources;
+  const bases = [
+    join(__dirname, "../../resources"),
+    join(app.getAppPath(), "resources"),
+  ];
+  for (const base of bases) {
+    const path = join(base, "tray-icon.png");
+    if (!existsSync(path)) continue;
+    const img = nativeImage.createFromPath(path);
+    if (!img.isEmpty()) return img;
+  }
 
-  const fromPkg = nativeImage.createFromPath(
-    join(app.getAppPath(), "resources/tray-icon.png"),
-  );
-  if (!fromPkg.isEmpty()) return fromPkg;
+  // Prefer the branded app icon over any Electron/default placeholder.
+  const appIcon = loadAppIcon();
+  if (appIcon) {
+    return appIcon.resize({ width: 16, height: 16 });
+  }
 
-  return nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAASElEQVR42mNgGD7g7du3/0GYGDVY1eGVJEIer0uI0ohLA8maSXYyIUNIto0UDDfA9s70/+RgFFdQpJlUQ/CGB0WaRhlCkzwEAIt4EdwjNWN7AAAAAElFRkSuQmCC",
-  );
+  return nativeImage.createEmpty();
 }
 
 function unreadTotal(): number {

@@ -8,11 +8,14 @@ import {
   Layers,
   Moon,
   Plus,
+  RotateCcw,
   Search,
   Shield,
   X,
 } from "lucide-react";
-import type { AiSecretId } from "../shared/types";
+import type { AiSecretId, McpStatus } from "../shared/types";
+import { AppSelect } from "./AppSelect";
+import { PackLogo } from "./BrandIcon";
 import { BridgeLogo, bridgePickerOrder } from "./bridgeLogos";
 import { UNIFIED_ID, type Account } from "./data/mock";
 import {
@@ -23,6 +26,7 @@ import {
   bridgeMcpStart,
   bridgeMcpStatus,
   bridgeMcpStop,
+  bridgeMcpRotateToken,
   bridgeNotifyShow,
   bridgeSetLaunchAtLogin,
 } from "./mailApi";
@@ -38,7 +42,13 @@ import {
   looksLikeHtml,
   sanitizeSignatureHtml,
 } from "./signatures";
-import { listShortcuts, packMeta, type ShortcutPackId } from "./shortcuts";
+import {
+  bindingFromEvent,
+  listShortcuts,
+  packMeta,
+  type ShortcutAction,
+  type ShortcutPackId,
+} from "./shortcuts";
 
 function Toggle({
   on,
@@ -131,21 +141,19 @@ function Select<T extends string | number>({
   onChange: (v: T) => void;
 }) {
   return (
-    <select
-      className="settings-select"
+    <AppSelect
+      className="settings-app-select"
+      ariaLabel="Setting"
       value={String(value)}
-      onChange={(e) => {
-        const raw = e.target.value;
-        const match = options.find((o) => String(o.id) === raw);
+      options={options.map((o) => ({
+        id: String(o.id),
+        label: o.label,
+      }))}
+      onChange={(id) => {
+        const match = options.find((o) => String(o.id) === id);
         if (match) onChange(match.id);
       }}
-    >
-      {options.map((o) => (
-        <option key={String(o.id)} value={String(o.id)}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    />
   );
 }
 
@@ -175,6 +183,10 @@ export function SettingsModal({
   const [tab, setTab] = useState<TabId>("appearance");
   const [query, setQuery] = useState("");
   const [snippetFilter, setSnippetFilter] = useState("");
+  const [recordingAction, setRecordingAction] = useState<ShortcutAction | null>(
+    null,
+  );
+  const [chordPending, setChordPending] = useState<string | null>(null);
   const [launchAtLogin, setLaunchAtLogin] = useState(prefs.launchAtLogin);
   const [secretStatus, setSecretStatus] = useState<Record<AiSecretId, boolean>>({
     openai: false,
@@ -185,10 +197,11 @@ export function SettingsModal({
   });
   const [secretDraft, setSecretDraft] = useState("");
   const [detected, setDetected] = useState<Record<string, boolean>>({});
-  const [mcpInfo, setMcpInfo] = useState<{
-    running: boolean;
-    url: string | null;
-  }>({ running: false, url: null });
+  const [mcpInfo, setMcpInfo] = useState<McpStatus>({
+    running: false,
+    port: null,
+    url: null,
+  });
 
   useEffect(() => {
     void bridgeLaunchAtLogin().then((s) => {
@@ -204,10 +217,91 @@ export function SettingsModal({
       for (const row of list) map[row.id] = row.available;
       setDetected(map);
     });
-    void bridgeMcpStatus().then((s) =>
-      setMcpInfo({ running: s.running, url: s.url }),
-    );
+    void bridgeMcpStatus().then(setMcpInfo);
   }, [tab, prefs.aiBridge, prefs.aiBridgePath]);
+
+  useEffect(() => {
+    if (tab !== "shortcuts") {
+      setRecordingAction(null);
+      setChordPending(null);
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    if (!recordingAction || !chordPending) return;
+    const timer = window.setTimeout(() => {
+      onChange({
+        ...prefs,
+        shortcutOverrides: {
+          ...(prefs.shortcutOverrides ?? {}),
+          [recordingAction]: chordPending,
+        },
+      });
+      setRecordingAction(null);
+      setChordPending(null);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [chordPending, recordingAction, onChange, prefs]);
+
+  useEffect(() => {
+    if (!recordingAction) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecordingAction(null);
+        setChordPending(null);
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const next = { ...(prefs.shortcutOverrides ?? {}) };
+        delete next[recordingAction];
+        onChange({ ...prefs, shortcutOverrides: next });
+        setRecordingAction(null);
+        setChordPending(null);
+        return;
+      }
+      if (["Control", "Meta", "Alt", "Shift"].includes(e.key)) return;
+
+      const hasMod = e.ctrlKey || e.metaKey || e.altKey;
+      if (
+        !hasMod &&
+        !e.shiftKey &&
+        e.key.length === 1 &&
+        !chordPending
+      ) {
+        setChordPending(e.key.toUpperCase());
+        return;
+      }
+      if (chordPending && !hasMod && e.key.length === 1) {
+        const binding = `${chordPending} ${e.key.toUpperCase()}`;
+        onChange({
+          ...prefs,
+          shortcutOverrides: {
+            ...(prefs.shortcutOverrides ?? {}),
+            [recordingAction]: binding,
+          },
+        });
+        setRecordingAction(null);
+        setChordPending(null);
+        return;
+      }
+
+      const binding = bindingFromEvent(e);
+      if (!binding) return;
+      onChange({
+        ...prefs,
+        shortcutOverrides: {
+          ...(prefs.shortcutOverrides ?? {}),
+          [recordingAction]: binding,
+        },
+      });
+      setRecordingAction(null);
+      setChordPending(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recordingAction, chordPending, onChange, prefs]);
 
   const secretIdForBridge = (id: AiBridgeId): AiSecretId | null => {
     if (id === "openai" || id === "grok" || id === "anthropic" || id === "gemini")
@@ -230,13 +324,15 @@ export function SettingsModal({
   const patch = (partial: Partial<Preferences>) =>
     onChange({ ...prefs, ...partial });
 
-  const shortcutRows = listShortcuts(prefs.shortcutPack).filter(
+  const overrides = prefs.shortcutOverrides ?? {};
+  const shortcutRows = listShortcuts(prefs.shortcutPack, overrides).filter(
     (s) =>
       !query ||
       s.label.toLowerCase().includes(query.toLowerCase()) ||
       s.keys.toLowerCase().includes(query.toLowerCase()),
   );
   const groups = ["Navigate", "Actions", "Compose", "Jump", "Help"] as const;
+  const customCount = Object.keys(overrides).length;
 
   const snippets = [
     { name: "Thanks — will review", body: "Thanks, I'll take a look and get back to you." },
@@ -1121,7 +1217,7 @@ export function SettingsModal({
                   title="Local MCP server"
                   hint={
                     mcpInfo.running && mcpInfo.url
-                      ? `Listening at ${mcpInfo.url} — tools: search_emails, read_thread, list_accounts`
+                      ? `Listening at ${mcpInfo.url} — tools: search_emails, read_thread, list_accounts. Loopback only; browser origins rejected.`
                       : "Exposes mail tools to Cursor / Claude Desktop on localhost only."
                   }
                 >
@@ -1136,12 +1232,35 @@ export function SettingsModal({
                         void (mcpEnabled
                           ? bridgeMcpStart()
                           : bridgeMcpStop()
-                        ).then((s) =>
-                          setMcpInfo({ running: s.running, url: s.url }),
-                        );
+                        ).then(setMcpInfo);
                       }}
                     />
                   </Row>
+                  {mcpInfo.running && mcpInfo.config && (
+                    <div className="settings-field">
+                      <p className="settings-hint">
+                        Paste this into your MCP client. The bearer token is
+                        required — requests without it are rejected.
+                      </p>
+                      <pre className="signature-plain-preview">
+                        {mcpInfo.config}
+                      </pre>
+                      <button
+                        type="button"
+                        className="compose settings-add"
+                        style={{ marginTop: 8 }}
+                        onClick={() => {
+                          void bridgeMcpRotateToken().then(setMcpInfo);
+                        }}
+                      >
+                        Rotate access token
+                      </button>
+                      <p className="settings-hint">
+                        Rotating signs out every connected MCP client; update
+                        their config with the new snippet.
+                      </p>
+                    </div>
+                  )}
                 </Block>
               </>
             )}
@@ -1152,46 +1271,119 @@ export function SettingsModal({
                   title="Shortcut pack"
                   hint="Gmail, Superhuman, or Outlook muscle memory. Press ? for a cheat sheet."
                 >
-                  <div className="pack-grid">
-                    {(Object.keys(packMeta) as ShortcutPackId[]).map((id) => (
-                      <button
-                        key={id}
-                        type="button"
-                        className={`pack-card${prefs.shortcutPack === id ? " active" : ""}`}
-                        onClick={() => patch({ shortcutPack: id })}
-                      >
-                        <strong>{packMeta[id].name}</strong>
-                        <span>{packMeta[id].blurb}</span>
-                      </button>
-                    ))}
+                  <div
+                    className="bridge-icons"
+                    role="radiogroup"
+                    aria-label="Shortcut pack"
+                  >
+                    {(Object.keys(packMeta) as ShortcutPackId[]).map((id) => {
+                      const selected = prefs.shortcutPack === id;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          aria-label={packMeta[id].name}
+                          title={packMeta[id].name}
+                          className={`bridge-icon${selected ? " active" : ""}`}
+                          onClick={() => patch({ shortcutPack: id })}
+                        >
+                          <PackLogo id={id} size={22} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="bridge-selection">
+                    <strong>{packMeta[prefs.shortcutPack].name}</strong>
+                    <span>{packMeta[prefs.shortcutPack].blurb}</span>
                   </div>
                 </Block>
                 <label className="shortcut-search">
-                  <Search size={14} strokeWidth={1.75} />
+                  <Search size={15} strokeWidth={1.75} />
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Filter shortcuts…"
+                    aria-label="Filter shortcuts"
                   />
                 </label>
+                <p className="settings-hint shortcut-edit-hint">
+                  Click a key to remap it. Press Esc to cancel, Backspace to
+                  clear a custom binding.
+                </p>
                 {groups.map((group) => {
                   const rows = shortcutRows.filter((s) => s.group === group);
                   if (!rows.length) return null;
                   return (
                     <div key={group} className="shortcut-group">
                       <div className="section-label">{group}</div>
-                      {rows.map((s) => (
-                        <div
-                          key={`${s.action}-${s.keys}`}
-                          className="settings-row"
-                        >
-                          <strong>{s.label}</strong>
-                          <kbd className="keycap">{s.keys}</kbd>
-                        </div>
-                      ))}
+                      {rows.map((s) => {
+                        const recording = recordingAction === s.action;
+                        return (
+                          <div
+                            key={s.action}
+                            className={`settings-row shortcut-row${s.customized ? " customized" : ""}`}
+                          >
+                            <strong>{s.label}</strong>
+                            <div className="shortcut-keys">
+                              {s.customized && !recording && (
+                                <button
+                                  type="button"
+                                  className="shortcut-reset"
+                                  title="Reset to pack default"
+                                  aria-label={`Reset ${s.label}`}
+                                  onClick={() => {
+                                    const next = { ...overrides };
+                                    delete next[s.action];
+                                    patch({ shortcutOverrides: next });
+                                  }}
+                                >
+                                  <RotateCcw size={12} strokeWidth={2} />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className={`keycap keycap-edit${recording ? " recording" : ""}${s.customized ? " custom" : ""}`}
+                                onClick={() => {
+                                  setChordPending(null);
+                                  setRecordingAction(
+                                    recording ? null : s.action,
+                                  );
+                                }}
+                                aria-pressed={recording}
+                                title={
+                                  recording
+                                    ? chordPending
+                                      ? `${chordPending} then…`
+                                      : "Press a key…"
+                                    : "Click to customize"
+                                }
+                              >
+                                {recording
+                                  ? chordPending
+                                    ? `${chordPending} then…`
+                                    : "Press key…"
+                                  : s.keys}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })}
+                {customCount > 0 && (
+                  <button
+                    type="button"
+                    className="compose settings-add shortcut-reset-all"
+                    onClick={() => patch({ shortcutOverrides: {} })}
+                  >
+                    <RotateCcw size={14} strokeWidth={1.75} />
+                    Reset {customCount} custom shortcut
+                    {customCount === 1 ? "" : "s"}
+                  </button>
+                )}
               </>
             )}
 
@@ -1220,7 +1412,11 @@ export function SettingsModal({
                         <strong>{a.name}</strong>
                         <span>{a.email}</span>
                       </div>
-                      <span className="muted-pill">Connected</span>
+                      <span
+                        className={`muted-pill${a.loggedOut ? " danger" : ""}`}
+                      >
+                        {a.loggedOut ? "Logged out" : "Connected"}
+                      </span>
                     </div>
                   ))}
                 <button

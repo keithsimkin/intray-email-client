@@ -16,6 +16,8 @@ export type AccountDto = {
   color: string;
   unread: number;
   provider: ProviderId;
+  /** True when credentials are missing or sync/auth has failed. */
+  loggedOut?: boolean;
 };
 
 export type RecipientDto = {
@@ -196,6 +198,16 @@ export type SyncStatus = {
 export type LaunchAtLoginState = {
   openAtLogin: boolean;
   openAsHidden: boolean;
+};
+
+export type McpStatus = {
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  /** Bearer token required by the localhost MCP endpoint. */
+  token?: string;
+  /** Ready-to-paste MCP client config. */
+  config?: string;
 };
 
 /** Add an IMAP / app-password account (iCloud, Yahoo, Fastmail, Outlook, generic). */

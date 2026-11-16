@@ -15,6 +15,7 @@ import type {
   MailListResult,
   MailMutateAction,
   MailMutateOptions,
+  McpStatus,
   MessageDto,
   AccountDto,
   QueuedSendResult,
@@ -31,6 +32,8 @@ const api = {
 
   getLaunchAtLogin: () =>
     ipcRenderer.invoke("app:getLaunchAtLogin") as Promise<LaunchAtLoginState>,
+  openExternal: (url: string) =>
+    ipcRenderer.invoke("app:openExternal", url) as Promise<boolean>,
   setLaunchAtLogin: (openAtLogin: boolean, openAsHidden = true) =>
     ipcRenderer.invoke(
       "app:setLaunchAtLogin",
@@ -144,24 +147,11 @@ const api = {
   },
 
   mcp: {
-    status: () =>
-      ipcRenderer.invoke("mcp:status") as Promise<{
-        running: boolean;
-        port: number | null;
-        url: string | null;
-      }>,
-    start: () =>
-      ipcRenderer.invoke("mcp:start") as Promise<{
-        running: boolean;
-        port: number | null;
-        url: string | null;
-      }>,
-    stop: () =>
-      ipcRenderer.invoke("mcp:stop") as Promise<{
-        running: boolean;
-        port: number | null;
-        url: string | null;
-      }>,
+    status: () => ipcRenderer.invoke("mcp:status") as Promise<McpStatus>,
+    start: () => ipcRenderer.invoke("mcp:start") as Promise<McpStatus>,
+    stop: () => ipcRenderer.invoke("mcp:stop") as Promise<McpStatus>,
+    rotateToken: () =>
+      ipcRenderer.invoke("mcp:rotateToken") as Promise<McpStatus>,
   },
 
   sync: {

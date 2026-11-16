@@ -10,6 +10,8 @@ export type Account = {
   avatarUrl?: string;
   /** Mail provider used when the account was added */
   provider?: "gmail" | "outlook" | "imap" | "icloud" | "fastmail" | "yahoo";
+  /** Credentials missing or provider auth revoked — reconnect required. */
+  loggedOut?: boolean;
 };
 
 export type Folder = {
@@ -127,7 +129,7 @@ export const accounts: Account[] = [
     name: "Unified Inbox",
     email: "All accounts",
     color: "#ededed",
-    unread: 23,
+    unread: 28,
   },
   {
     id: "work",
@@ -135,7 +137,7 @@ export const accounts: Account[] = [
     name: "Pranav Patel",
     email: "pranav@intray.app",
     color: "#5b8def",
-    unread: 9,
+    unread: 11,
     avatarUrl: avatarForEmail("pranav@intray.app"),
     provider: "imap",
   },
@@ -145,7 +147,7 @@ export const accounts: Account[] = [
     name: "Pranav",
     email: "pranav@gmail.com",
     color: "#ea4335",
-    unread: 11,
+    unread: 13,
     avatarUrl: avatarForEmail("pranav@gmail.com"),
     provider: "gmail",
   },
@@ -155,14 +157,15 @@ export const accounts: Account[] = [
     name: "Pranav Patel",
     email: "pranav@outlook.com",
     color: "#0a7cff",
-    unread: 3,
+    unread: 4,
     avatarUrl: avatarForEmail("pranav@outlook.com"),
     provider: "outlook",
+    loggedOut: true,
   },
 ];
 
 export const folders: Folder[] = [
-  { id: "inbox", name: "Inbox", count: 23, icon: "inbox" },
+  { id: "inbox", name: "Inbox", count: 28, icon: "inbox" },
   { id: "snoozed", name: "Snoozed", count: 1, icon: "clock" },
   { id: "drafts", name: "Drafts", count: 2, icon: "file" },
   { id: "sent", name: "Sent", icon: "send" },
@@ -211,23 +214,101 @@ const introCallHtml = `<div style="font-family:Segoe UI,Helvetica,Arial,sans-ser
   <p style="margin:0;">Daniel</p>
 </div>`;
 
-const newsletterHtml = `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#f4f4f5;">
-  <tr><td align="center" style="padding:24px 12px;">
-    <table role="presentation" width="520" style="background:#ffffff;border-radius:12px;overflow:hidden;">
-      <tr><td style="background:#0a0a0b;color:#ededed;padding:20px 24px;font-size:18px;font-weight:600;letter-spacing:-0.02em;">Linear Weekly</td></tr>
-      <tr><td style="padding:20px 24px;color:#222;font-size:14px;line-height:1.5;">
-        <p style="margin:0 0 12px;">Here's your weekly summary for <strong>Intray</strong>.</p>
-        <p style="margin:0 0 8px;"><span style="display:inline-block;background:#eef0ff;color:#5e6ad2;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;">12 closed</span>
-        <span style="display:inline-block;background:#f3f4f6;color:#555;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;margin-left:6px;">4 in review</span></p>
-        <p style="margin:16px 0 0;color:#666;font-size:13px;">MCP tools epic is at 60%.</p>
-        <a href="https://linear.app/intray/settings" style="display:inline-block;margin-top:16px;background:#5e6ad2;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;font-size:13px;font-weight:600;">Open workspace</a>
-        <p style="margin:20px 0 0;color:#999;font-size:11px;line-height:1.4;">
-          You’re receiving this because you follow Intray.
-          <a href="https://linear.app/unsubscribe?token=demo-intray" style="color:#5e6ad2;">Unsubscribe</a>
-          · <a href="https://linear.app/settings/notifications" style="color:#5e6ad2;">Manage preferences</a>
-        </p>
-      </td></tr>
+const newsletterHtml = `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#ffffff;">
+  <tr><td style="background:#0a0a0b;color:#ededed;padding:20px 24px;font-size:18px;font-weight:600;letter-spacing:-0.02em;">Linear Weekly</td></tr>
+  <tr><td style="padding:20px 24px;color:#222;font-size:14px;line-height:1.5;">
+    <p style="margin:0 0 12px;">Here's your weekly summary for <strong>Intray</strong>.</p>
+    <p style="margin:0 0 8px;"><span style="display:inline-block;background:#eef0ff;color:#5e6ad2;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;">12 closed</span>
+    <span style="display:inline-block;background:#f3f4f6;color:#555;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:600;margin-left:6px;">4 in review</span></p>
+    <p style="margin:16px 0 0;color:#666;font-size:13px;">MCP tools epic is at 60%.</p>
+    <a href="https://linear.app/intray/settings" style="display:inline-block;margin-top:16px;background:#5e6ad2;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;font-size:13px;font-weight:600;">Open workspace</a>
+    <p style="margin:20px 0 0;color:#999;font-size:11px;line-height:1.4;">
+      You’re receiving this because you follow Intray.
+      <a href="https://linear.app/unsubscribe?token=demo-intray" style="color:#5e6ad2;">Unsubscribe</a>
+      · <a href="https://linear.app/settings/notifications" style="color:#5e6ad2;">Manage preferences</a>
+    </p>
+  </td></tr>
+</table>`;
+
+const atelierLaunchHtml = `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-family:Georgia,'Times New Roman',serif;background:#fffdf9;">
+  <tr><td style="padding:0;height:180px;background:linear-gradient(135deg,#1c1917 0%,#44403c 48%,#a8a29e 100%);">
+    <div style="padding:36px 28px;color:#fafaf9;">
+      <div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;opacity:0.72;margin-bottom:14px;">Atelier · Spring drop</div>
+      <div style="font-size:34px;line-height:1.1;letter-spacing:-0.03em;">Quiet objects for&nbsp;focused&nbsp;desks</div>
+    </div>
+  </td></tr>
+  <tr><td style="padding:28px 28px 8px;color:#292524;font-size:16px;line-height:1.6;">
+    <p style="margin:0 0 14px;">Pranav —</p>
+    <p style="margin:0 0 14px;">Our spring collection just landed: brushed aluminum trays, linen cable wraps, and a matte desk lamp that disappears until you need it.</p>
+    <p style="margin:0 0 22px;color:#78716c;font-size:14px;">Members get early access through Friday. Shipping from Oakland &amp; Rotterdam.</p>
+    <a href="https://atelier.example/spring" style="display:inline-block;background:#1c1917;color:#fafaf9;text-decoration:none;padding:12px 18px;border-radius:999px;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;">Browse the drop</a>
+  </td></tr>
+  <tr><td style="padding:24px 28px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td width="33%" style="padding:8px;background:#f5f0e8;border-radius:12px;text-align:center;">
+          <div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#a8a29e;letter-spacing:0.08em;text-transform:uppercase;">Tray</div>
+          <div style="font-size:18px;margin-top:4px;color:#1c1917;">$48</div>
+        </td>
+        <td width="8"></td>
+        <td width="33%" style="padding:8px;background:#f5f0e8;border-radius:12px;text-align:center;">
+          <div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#a8a29e;letter-spacing:0.08em;text-transform:uppercase;">Wrap</div>
+          <div style="font-size:18px;margin-top:4px;color:#1c1917;">$22</div>
+        </td>
+        <td width="8"></td>
+        <td width="33%" style="padding:8px;background:#f5f0e8;border-radius:12px;text-align:center;">
+          <div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#a8a29e;letter-spacing:0.08em;text-transform:uppercase;">Lamp</div>
+          <div style="font-size:18px;margin-top:4px;color:#1c1917;">$160</div>
+        </td>
+      </tr>
     </table>
+    <p style="margin:22px 0 0;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#a8a29e;line-height:1.5;">
+      You’re on the Atelier list.
+      <a href="https://atelier.example/unsubscribe" style="color:#78716c;">Unsubscribe</a>
+    </p>
+  </td></tr>
+</table>`;
+
+const voyageConfirmHtml = `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#ffffff;">
+  <tr><td style="background:#0f766e;padding:22px 26px;color:#ecfdf5;">
+    <div style="font-size:12px;letter-spacing:0.14em;text-transform:uppercase;opacity:0.8;">Voyage · Booking confirmed</div>
+    <div style="font-size:24px;font-weight:650;letter-spacing:-0.03em;margin-top:8px;">Lisbon loft · Apr 12–16</div>
+  </td></tr>
+  <tr><td style="padding:24px 26px;color:#134e4a;">
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.55;color:#115e59;">You're all set, Pranav. Here's everything you need for check-in.</p>
+    <table role="presentation" width="100%" style="background:#f0fdfa;border-radius:12px;margin-bottom:18px;">
+      <tr>
+        <td style="padding:14px 16px;font-size:13px;line-height:1.5;">
+          <div><strong>Address</strong><br/>Rua da Saudade 18, 1100-480 Lisboa</div>
+          <div style="margin-top:10px;"><strong>Host</strong><br/>Inês · arrives 3:00 PM</div>
+          <div style="margin-top:10px;"><strong>Door code</strong><br/><span style="font-family:ui-monospace,Consolas,monospace;font-size:15px;letter-spacing:0.08em;">4821#</span></div>
+        </td>
+      </tr>
+    </table>
+    <a href="https://voyage.example/trips/lisbon-4821" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:11px 16px;border-radius:10px;font-size:13px;font-weight:650;">Open trip details</a>
+    <p style="margin:18px 0 0;font-size:12px;color:#0f766e;">Confirmation · VOY-20481</p>
+  </td></tr>
+</table>`;
+
+const folioDigestHtml = `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-family:'Iowan Old Style',Georgia,serif;background:#161618;">
+  <tr><td style="padding:28px 28px 12px;color:#f4f4f5;">
+    <div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:#a1a1aa;">Folio · Sunday digest</div>
+    <h1 style="margin:12px 0 0;font-size:30px;line-height:1.15;font-weight:500;letter-spacing:-0.03em;">Five things worth keeping</h1>
+  </td></tr>
+  <tr><td style="padding:8px 28px 24px;color:#d4d4d8;font-size:15px;line-height:1.65;">
+    <p style="margin:0 0 18px;border-left:2px solid #52525b;padding-left:14px;">A short letter on craft, tools, and the quiet parts of building software.</p>
+    <ol style="margin:0;padding-left:18px;">
+      <li style="margin-bottom:12px;"><strong style="color:#fafafa;">Margins as a feature.</strong> White space is not empty — it is where attention recovers.</li>
+      <li style="margin-bottom:12px;"><strong style="color:#fafafa;">Local-first mail.</strong> The inbox that never leaves the device still feels like magic in 2026.</li>
+      <li style="margin-bottom:12px;"><strong style="color:#fafafa;">Long threads.</strong> Collapse ruthlessly; expand when the story matters.</li>
+      <li style="margin-bottom:12px;"><strong style="color:#fafafa;">HTML that behaves.</strong> Beautiful newsletters should still be readable in a dark reading pane.</li>
+      <li style="margin-bottom:0;"><strong style="color:#fafafa;">One good sentence.</strong> Ship the paragraph you would underline.</li>
+    </ol>
+    <a href="https://folio.example/digest/204" style="display:inline-block;margin-top:22px;border:1px solid #3f3f46;color:#fafafa;text-decoration:none;padding:10px 14px;border-radius:999px;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;letter-spacing:0.04em;">Read online</a>
+    <p style="margin:22px 0 0;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#71717a;">
+      Sent by Folio.
+      <a href="https://folio.example/unsubscribe" style="color:#a1a1aa;">Unsubscribe</a>
+    </p>
   </td></tr>
 </table>`;
 
@@ -718,6 +799,447 @@ export const messages: Message[] = [
     ],
   },
   {
+    id: "10",
+    accountId: "gmail",
+    from: "Atelier",
+    initials: "AT",
+    avatarColor: "#1c1917",
+    email: "hello@atelier.example",
+    subject: "Spring drop is live — quiet objects for focused desks",
+    preview: "Brushed trays, linen wraps, and a lamp that disappears until you need it…",
+    time: "8:14 AM",
+    unread: true,
+    important: false,
+    folder: "inbox",
+    tag: { label: "Promotions", color: "#f5d042" },
+    linkCount: 2,
+    thread: [
+      {
+        id: "10a",
+        from: "Atelier",
+        initials: "AT",
+        avatarColor: "#1c1917",
+        email: "hello@atelier.example",
+        time: "8:14 AM",
+        to: [{ name: "Pranav", email: "pranav@gmail.com" }],
+        noTrackers: true,
+        bodyHtml: atelierLaunchHtml,
+      },
+    ],
+  },
+  {
+    id: "11",
+    accountId: "outlook",
+    from: "Voyage",
+    initials: "VY",
+    avatarColor: "#0f766e",
+    email: "trips@voyage.example",
+    subject: "You're booked — Lisbon loft, Apr 12–16",
+    preview: "Door code, host details, and everything you need for check-in…",
+    time: "7:02 AM",
+    unread: true,
+    important: true,
+    folder: "inbox",
+    tag: { label: "Updates", color: "#8b7cf6" },
+    linkCount: 1,
+    mediaCount: 1,
+    thread: [
+      {
+        id: "11a",
+        from: "Voyage",
+        initials: "VY",
+        avatarColor: "#0f766e",
+        email: "trips@voyage.example",
+        time: "7:02 AM",
+        to: [{ name: "Pranav Patel", email: "pranav@outlook.com" }],
+        noTrackers: true,
+        bodyHtml: voyageConfirmHtml,
+      },
+    ],
+  },
+  {
+    id: "12",
+    accountId: "work",
+    from: "Folio",
+    initials: "FO",
+    avatarColor: "#a1a1aa",
+    email: "digest@folio.example",
+    subject: "Sunday digest — five things worth keeping",
+    preview: "A short letter on craft, tools, and the quiet parts of building software…",
+    time: "Sun",
+    unread: false,
+    important: false,
+    folder: "inbox",
+    tag: { label: "Newsletters", color: "#46c5e8" },
+    linkCount: 2,
+    thread: [
+      {
+        id: "12a",
+        from: "Folio",
+        initials: "FO",
+        avatarColor: "#a1a1aa",
+        email: "digest@folio.example",
+        time: "Sun",
+        to: [{ name: "Pranav Patel", email: "pranav@intray.app" }],
+        noTrackers: true,
+        bodyHtml: folioDigestHtml,
+      },
+    ],
+  },
+  {
+    id: "13",
+    accountId: "work",
+    from: "Elena Ruiz",
+    initials: "ER",
+    avatarColor: "#db2777",
+    email: "elena@northwind.io",
+    subject: "Hiring loop — Staff designer finalists",
+    preview: "Rounding the loop: scorecards, take-home notes, and who we should advance…",
+    time: "11:40 PM",
+    unread: true,
+    important: true,
+    folder: "inbox",
+    tag: { label: "Waiting for Reply", color: "#ff5c5c" },
+    linkCount: 3,
+    attachmentCount: 2,
+    hasAttachment: true,
+    starred: true,
+    thread: [
+      {
+        id: "13a",
+        from: "Elena Ruiz",
+        initials: "ER",
+        avatarColor: "#db2777",
+        email: "elena@northwind.io",
+        time: "Mon 9:10 AM",
+        to: [
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        cc: [{ name: "Jordan Lee", email: "jordan@intray.app" }],
+        noTrackers: true,
+        body: [
+          "Kicking off the staff designer loop this week. Three finalists:",
+          "1) Samira Okonkwo — systems + motion",
+          "2) Theo Lang — product craft, strong writing",
+          "3) Hana Park — research-led, excellent critiques",
+          "I'll send scorecards after each session. Please keep feedback crisp.",
+        ],
+        attachments: [{ name: "Scorecard template.pdf", size: "84 KB" }],
+      },
+      {
+        id: "13b",
+        from: "Pranav Patel",
+        initials: "PP",
+        avatarColor: "#5b8def",
+        email: "pranav@intray.app",
+        time: "Mon 10:02 AM",
+        to: [
+          { name: "Elena Ruiz", email: "elena@northwind.io" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        noTrackers: true,
+        body: [
+          "Sounds good. Happy to sit on Samira + Theo.",
+          "For Hana — can we include a short take-home on information hierarchy?",
+        ],
+      },
+      {
+        id: "13c",
+        from: "Maya Chen",
+        initials: "MC",
+        avatarColor: "#f5a524",
+        email: "maya@acme.co",
+        time: "Mon 11:18 AM",
+        to: [
+          { name: "Elena Ruiz", email: "elena@northwind.io" },
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+        ],
+        noTrackers: true,
+        body: [
+          "Yes to hierarchy take-home. I drafted a 90-minute prompt around Wide List density.",
+          "Link: https://figma.com/file/demo-hiring-prompt",
+        ],
+      },
+      {
+        id: "13d",
+        from: "Elena Ruiz",
+        initials: "ER",
+        avatarColor: "#db2777",
+        email: "elena@northwind.io",
+        time: "Tue 2:40 PM",
+        to: [
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        noTrackers: true,
+        body: [
+          "Samira debrief notes attached. Strong systems instincts; motion samples felt a bit generic.",
+          "Vote: advance / hold / pass?",
+        ],
+        attachments: [{ name: "Samira debrief.pdf", size: "210 KB" }],
+        attachment: { name: "Samira debrief.pdf", size: "210 KB" },
+      },
+      {
+        id: "13e",
+        from: "Pranav Patel",
+        initials: "PP",
+        avatarColor: "#5b8def",
+        email: "pranav@intray.app",
+        time: "Tue 4:05 PM",
+        to: [
+          { name: "Elena Ruiz", email: "elena@northwind.io" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        noTrackers: true,
+        body: [
+          "Advance. The IA critique was the best of the day — I'd pair her with motion mentorship rather than ding for it.",
+        ],
+      },
+      {
+        id: "13f",
+        from: "Maya Chen",
+        initials: "MC",
+        avatarColor: "#f5a524",
+        email: "maya@acme.co",
+        time: "Wed 9:22 AM",
+        to: [
+          { name: "Elena Ruiz", email: "elena@northwind.io" },
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+        ],
+        noTrackers: true,
+        body: [
+          "Theo's portfolio walk was excellent. Writing samples are unusually clear for a designer.",
+          "One concern: less depth on accessibility. Worth probing tomorrow.",
+        ],
+      },
+      {
+        id: "13g",
+        from: "Elena Ruiz",
+        initials: "ER",
+        avatarColor: "#db2777",
+        email: "elena@northwind.io",
+        time: "Thu 5:50 PM",
+        to: [
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        cc: [{ name: "Jordan Lee", email: "jordan@intray.app" }],
+        noTrackers: true,
+        body: [
+          "Hana's take-home is in. Hierarchy choices are thoughtful; the critique doc is long but good.",
+          "Please leave comments before Friday noon so I can close the loop with recruiting.",
+          "Doc: https://docs.google.com/document/d/demo-hana-takehome",
+        ],
+      },
+      {
+        id: "13h",
+        from: "Jordan Lee",
+        initials: "JL",
+        avatarColor: "#8b7cf6",
+        email: "jordan@intray.app",
+        time: "Fri 10:11 AM",
+        to: [
+          { name: "Elena Ruiz", email: "elena@northwind.io" },
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        noTrackers: true,
+        body: [
+          "Quick note from recruiting: all three candidates can do final rounds next week.",
+          "If we're leaning Samira + Theo, I can hold Hana as a strong backup.",
+        ],
+      },
+      {
+        id: "13i",
+        from: "Elena Ruiz",
+        initials: "ER",
+        avatarColor: "#db2777",
+        email: "elena@northwind.io",
+        time: "11:40 PM",
+        to: [
+          { name: "Pranav Patel", email: "pranav@intray.app" },
+          { name: "Maya Chen", email: "maya@acme.co" },
+        ],
+        cc: [{ name: "Jordan Lee", email: "jordan@intray.app" }],
+        noTrackers: true,
+        body: [
+          "Rounding it up — my recommendation is Samira first, Theo second.",
+          "Pranav, can you confirm before Monday standup so Jordan can send offers timing?",
+        ],
+      },
+    ],
+  },
+  {
+    id: "14",
+    accountId: "gmail",
+    from: "Support · Cloudnest",
+    initials: "CN",
+    avatarColor: "#0284c7",
+    email: "support@cloudnest.example",
+    subject: "Re: Sync stalled at 67% — ticket #CN-91822",
+    preview: "Latest update from Mira: we're still chasing the desktop agent hang…",
+    time: "9:58 PM",
+    unread: true,
+    important: false,
+    folder: "inbox",
+    tag: { label: "Waiting for Reply", color: "#ff5c5c" },
+    linkCount: 4,
+    attachmentCount: 1,
+    hasAttachment: true,
+    thread: [
+      {
+        id: "14a",
+        from: "Pranav",
+        initials: "G",
+        avatarColor: "#ea4335",
+        email: "pranav@gmail.com",
+        time: "Nov 3 · 8:12 AM",
+        to: [{ name: "Support · Cloudnest", email: "support@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Hi — desktop sync on Windows has been stuck at 67% for two days.",
+          "App version 4.12.1, Windows 11. Logs attached.",
+        ],
+        attachments: [{ name: "cloudnest-agent.log", size: "1.8 MB" }],
+        attachment: { name: "cloudnest-agent.log", size: "1.8 MB" },
+      },
+      {
+        id: "14b",
+        from: "Support · Cloudnest",
+        initials: "CN",
+        avatarColor: "#0284c7",
+        email: "support@cloudnest.example",
+        time: "Nov 3 · 11:40 AM",
+        to: [{ name: "Pranav", email: "pranav@gmail.com" }],
+        noTrackers: true,
+        body: [
+          "Thanks for writing in — I've opened ticket #CN-91822.",
+          "Can you confirm whether pause/resume changes anything, and if the tray icon shows 'Indexing'?",
+        ],
+      },
+      {
+        id: "14c",
+        from: "Pranav",
+        initials: "G",
+        avatarColor: "#ea4335",
+        email: "pranav@gmail.com",
+        time: "Nov 3 · 1:05 PM",
+        to: [{ name: "Support · Cloudnest", email: "support@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Pause/resume doesn't help. Tray flickers between Indexing and Syncing.",
+          "Also noticing CPU spikes every ~40 seconds.",
+        ],
+      },
+      {
+        id: "14d",
+        from: "Support · Cloudnest",
+        initials: "CN",
+        avatarColor: "#0284c7",
+        email: "support@cloudnest.example",
+        time: "Nov 4 · 9:20 AM",
+        to: [{ name: "Pranav", email: "pranav@gmail.com" }],
+        noTrackers: true,
+        body: [
+          "Appreciate the detail. Please try safe mode (hold Shift on launch) and tell us if sync completes.",
+          "Guide: https://help.cloudnest.example/safe-mode",
+        ],
+      },
+      {
+        id: "14e",
+        from: "Pranav",
+        initials: "G",
+        avatarColor: "#ea4335",
+        email: "pranav@gmail.com",
+        time: "Nov 4 · 4:44 PM",
+        to: [{ name: "Support · Cloudnest", email: "support@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Safe mode gets to 89%, then stalls again on a folder named 'Archives/2022'.",
+          "That folder has ~12k small files.",
+        ],
+      },
+      {
+        id: "14f",
+        from: "Mira Chen",
+        initials: "MC",
+        avatarColor: "#0369a1",
+        email: "mira@cloudnest.example",
+        time: "Nov 5 · 10:02 AM",
+        to: [{ name: "Pranav", email: "pranav@gmail.com" }],
+        cc: [{ name: "Support · Cloudnest", email: "support@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Hi Pranav — Mira from the desktop agent team. Taking over #CN-91822.",
+          "We're seeing a known hang when enumerating dense directories on NTFS.",
+          "Can you exclude Archives/2022 temporarily and resync?",
+        ],
+      },
+      {
+        id: "14g",
+        from: "Pranav",
+        initials: "G",
+        avatarColor: "#ea4335",
+        email: "pranav@gmail.com",
+        time: "Nov 5 · 6:30 PM",
+        to: [{ name: "Mira Chen", email: "mira@cloudnest.example" }],
+        cc: [{ name: "Support · Cloudnest", email: "support@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Excluded — sync completed for everything else.",
+          "When I re-add Archives/2022 it stalls again at the same point.",
+        ],
+      },
+      {
+        id: "14h",
+        from: "Mira Chen",
+        initials: "MC",
+        avatarColor: "#0369a1",
+        email: "mira@cloudnest.example",
+        time: "Nov 7 · 2:15 PM",
+        to: [{ name: "Pranav", email: "pranav@gmail.com" }],
+        noTrackers: true,
+        body: [
+          "Thanks — that confirms it. We're shipping a fix in 4.12.3 (early next week).",
+          "In the meantime you can keep the exclude, or use selective sync for that folder only:",
+          "https://help.cloudnest.example/selective-sync",
+        ],
+      },
+      {
+        id: "14i",
+        from: "Pranav",
+        initials: "G",
+        avatarColor: "#ea4335",
+        email: "pranav@gmail.com",
+        time: "Nov 10 · 9:01 AM",
+        to: [{ name: "Mira Chen", email: "mira@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Updated to 4.12.3 — still hanging, though it gets further (~94%).",
+          "Happy to hop on a quick remote session if useful.",
+        ],
+      },
+      {
+        id: "14j",
+        from: "Mira Chen",
+        initials: "MC",
+        avatarColor: "#0369a1",
+        email: "mira@cloudnest.example",
+        time: "9:58 PM",
+        to: [{ name: "Pranav", email: "pranav@gmail.com" }],
+        cc: [{ name: "Support · Cloudnest", email: "support@cloudnest.example" }],
+        noTrackers: true,
+        body: [
+          "Appreciate the patience. We're still chasing an edge case with long path prefixes on that volume.",
+          "I've escalated to engineering with your logs + the 94% marker.",
+          "Next update by Wednesday — or sooner if we have a private build to try.",
+          "Status page: https://status.cloudnest.example/incidents/sync-ntfs-hang",
+        ],
+      },
+    ],
+  },
+  {
     id: "j1",
     accountId: "gmail",
     from: "Prize Desk",
@@ -794,6 +1316,21 @@ export const smartRepliesById: Record<string, string[]> = {
     "I'm in — see you at 7.",
     "Can we do 7:30? Coming from the office.",
     "Yes! Want me to grab a table?",
+  ],
+  "11": [
+    "Perfect — thanks for the confirmation.",
+    "Can I check in a bit earlier on the 12th?",
+    "Got it. Saving the door code now.",
+  ],
+  "13": [
+    "Confirmed — Samira first, Theo second works for me.",
+    "I'd still keep Hana warm as backup.",
+    "Can we decide after Monday's final with Theo?",
+  ],
+  "14": [
+    "Thanks Mira — happy to try a private build.",
+    "Understood. I'll keep Archives excluded until Wednesday.",
+    "Remote session this week still works if helpful.",
   ],
 };
 
