@@ -1,15 +1,23 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { getMail, listMail } from "../mail/service";
 import { listAccountRows } from "../db";
+import { getMcpToken, verifyMcpToken } from "./auth";
 
 type McpStatus = {
   running: boolean;
   port: number | null;
   url: string | null;
+  /** Bearer token clients must send. Only visible in this user's app. */
+  token?: string;
+  /** Copy-paste config for an MCP client. */
+  config?: string;
 };
 
 let server: ReturnType<typeof createServer> | null = null;
 let port: number | null = null;
+
+const MAX_BODY_BYTES = 1_000_000;
+const MAX_QUERY_LENGTH = 500;
 
 const TOOLS = [
   {
@@ -44,15 +52,26 @@ const TOOLS = [
   },
 ];
 
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), min), max);
+}
+
+function shortString(value: unknown, max: number): string {
+  return String(value ?? "").slice(0, max);
+}
+
 async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name) {
     case "search_emails": {
-      const q = String(args.q ?? "");
-      const folder = args.folder ? String(args.folder) : "inbox";
-      const limit = Number(args.limit ?? 20);
+      const q = shortString(args.q, MAX_QUERY_LENGTH);
+      if (!q.trim()) return { error: "q is required" };
+      const folder = shortString(args.folder ?? "inbox", 64) || "inbox";
+      const limit = clampInt(args.limit, 1, 100, 20);
       const result = await listMail({
         accountId: "all",
         folder,
@@ -73,7 +92,8 @@ async function callTool(
       }));
     }
     case "read_thread": {
-      const id = String(args.id ?? "");
+      const id = shortString(args.id, 200);
+      if (!id) return { error: "id is required" };
       const msg = await getMail(id);
       if (!msg) return { error: "Message not found" };
       return {
@@ -89,7 +109,11 @@ async function callTool(
           time: t.time,
           body: t.body ?? undefined,
           bodyHtml: t.bodyHtml
-            ? t.bodyHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 4000)
+            ? t.bodyHtml
+                .replace(/<[^>]+>/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 4000)
             : undefined,
         })),
       };
@@ -110,7 +134,17 @@ async function callTool(
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(Buffer.from(c)));
+    let size = 0;
+    req.on("data", (c) => {
+      const chunk = Buffer.from(c);
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
@@ -120,22 +154,49 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
   });
   res.end(payload);
 }
 
-async function handle(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
+function validHost(req: IncomingMessage): boolean {
+  const host = req.headers.host ?? "";
+  return /^(127\.0\.0\.1|localhost|\[::1\]):\d+$/i.test(host);
+}
+
+/**
+ * The endpoint is loopback-only. Browsers always attach `Origin` to
+ * cross-origin requests, so rejecting any Origin closes drive-by access from a
+ * web page even before the bearer token check runs.
+ */
+function isBrowserRequest(req: IncomingMessage): boolean {
+  return Boolean(req.headers.origin || req.headers["sec-fetch-mode"]);
+}
+
+function bearerToken(req: IncomingMessage): string | undefined {
+  const header = req.headers.authorization;
+  if (typeof header === "string" && /^Bearer\s+/i.test(header)) {
+    return header.replace(/^Bearer\s+/i, "").trim();
+  }
+  const direct = req.headers["x-intray-token"];
+  return typeof direct === "string" ? direct.trim() : undefined;
+}
+
+async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!validHost(req)) {
+    json(res, 421, { error: "Invalid Host header" });
+    return;
+  }
+
+  if (isBrowserRequest(req)) {
+    json(res, 403, { error: "Browser origins are not allowed" });
+    return;
+  }
+
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "content-type",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    });
+    // No CORS grant: MCP clients here are native apps, not web pages.
+    res.writeHead(204, { "Cache-Control": "no-store" });
     res.end();
     return;
   }
@@ -143,7 +204,12 @@ async function handle(
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${port ?? 0}`);
 
   if (req.method === "GET" && url.pathname === "/health") {
-    json(res, 200, { ok: true, tools: TOOLS.map((t) => t.name) });
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (!verifyMcpToken(bearerToken(req))) {
+    json(res, 401, { error: "Unauthorized — send the Intray MCP token" });
     return;
   }
 
@@ -153,7 +219,14 @@ async function handle(
   }
 
   if (req.method === "POST" && url.pathname === "/mcp") {
-    const raw = await readBody(req);
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      json(res, 413, { error: "Request body too large" });
+      return;
+    }
+
     let body: {
       jsonrpc?: string;
       id?: string | number;
@@ -171,17 +244,13 @@ async function handle(
     const method = body.method ?? "";
 
     if (method === "tools/list") {
-      json(res, 200, {
-        jsonrpc: "2.0",
-        id,
-        result: { tools: TOOLS },
-      });
+      json(res, 200, { jsonrpc: "2.0", id, result: { tools: TOOLS } });
       return;
     }
 
     if (method === "tools/call") {
       const params = body.params ?? {};
-      const name = String(params.name ?? "");
+      const name = shortString(params.name, 64);
       const args = (params.arguments ?? {}) as Record<string, unknown>;
       try {
         const result = await callTool(name, args);
@@ -189,12 +258,7 @@ async function handle(
           jsonrpc: "2.0",
           id,
           result: {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(result, null, 2),
-              },
-            ],
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           },
         });
       } catch (e) {
@@ -231,50 +295,103 @@ async function handle(
     return;
   }
 
-  // Convenience REST wrappers for quick testing
+  // Convenience REST wrapper for quick testing (token-protected like the rest).
   if (req.method === "POST" && url.pathname === "/tools/call") {
-    const raw = await readBody(req);
-    const body = JSON.parse(raw) as {
-      name: string;
-      arguments?: Record<string, unknown>;
-    };
-    const result = await callTool(body.name, body.arguments ?? {});
-    json(res, 200, result);
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      json(res, 413, { error: "Request body too large" });
+      return;
+    }
+    try {
+      const body = JSON.parse(raw) as {
+        name?: string;
+        arguments?: Record<string, unknown>;
+      };
+      const result = await callTool(
+        shortString(body.name, 64),
+        body.arguments ?? {},
+      );
+      json(res, 200, result);
+    } catch {
+      json(res, 400, { error: "Invalid JSON" });
+    }
     return;
   }
 
   json(res, 404, { error: "Not found" });
 }
 
+function configSnippet(token: string, url: string): string {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        intray: {
+          url,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
 export function getMcpStatus(): McpStatus {
+  if (!server || !port) {
+    return { running: false, port: null, url: null };
+  }
+  const url = `http://127.0.0.1:${port}/mcp`;
+  const token = getMcpToken();
   return {
-    running: Boolean(server && port),
+    running: true,
     port,
-    url: port ? `http://127.0.0.1:${port}/mcp` : null,
+    url,
+    token,
+    config: configSnippet(token, url),
   };
 }
 
 export async function startMcpServer(preferredPort = 47821): Promise<McpStatus> {
   if (server && port) return getMcpStatus();
 
-  await new Promise<void>((resolve, reject) => {
-    server = createServer((req, res) => {
-      void handle(req, res).catch((e) => {
-        json(res, 500, {
-          error: e instanceof Error ? e.message : String(e),
+  const listen = (listenPort: number) =>
+    new Promise<number>((resolve, reject) => {
+      const srv = createServer((req, res) => {
+        void handle(req, res).catch((e) => {
+          json(res, 500, {
+            error: e instanceof Error ? e.message : String(e),
+          });
         });
       });
+      const onError = (err: NodeJS.ErrnoException) => {
+        srv.close();
+        reject(err);
+      };
+      srv.once("error", onError);
+      srv.listen(listenPort, "127.0.0.1", () => {
+        srv.off("error", onError);
+        const addr = srv.address();
+        if (!addr || typeof addr === "string") {
+          srv.close();
+          reject(new Error("Failed to determine MCP port"));
+          return;
+        }
+        server = srv;
+        resolve(addr.port);
+      });
     });
-    server.once("error", (err) => {
-      server = null;
-      port = null;
-      reject(err);
-    });
-    server.listen(preferredPort, "127.0.0.1", () => {
-      port = preferredPort;
-      resolve();
-    });
-  });
+
+  try {
+    port = await listen(preferredPort);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== "EADDRINUSE") throw e;
+    // Another process holds the default port; bind an ephemeral one instead of
+    // leaving users with a silently disabled MCP server.
+    port = await listen(0);
+  }
 
   return getMcpStatus();
 }

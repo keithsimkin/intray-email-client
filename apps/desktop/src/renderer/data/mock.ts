@@ -10,6 +10,8 @@ export type Account = {
   avatarUrl?: string;
   /** Mail provider used when the account was added */
   provider?: "gmail" | "outlook" | "imap" | "icloud" | "fastmail" | "yahoo";
+  /** Credentials missing or provider auth revoked — reconnect required. */
+  loggedOut?: boolean;
 };
 
 export type Folder = {
@@ -158,6 +160,7 @@ export const accounts: Account[] = [
     unread: 3,
     avatarUrl: avatarForEmail("pranav@outlook.com"),
     provider: "outlook",
+    loggedOut: true,
   },
 ];
 

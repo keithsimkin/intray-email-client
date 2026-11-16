@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { delimiter, isAbsolute } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import type { AiSecretId } from "./secrets";
 import { loadAiSecret } from "./secrets";
 
@@ -38,19 +38,57 @@ export type AiProviderStatus = {
   defaultModel?: string;
 };
 
+function existsFile(candidate: string): boolean {
+  try {
+    accessSync(candidate, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Common install locations when Electron's PATH is thinner than a login shell. */
+function wellKnownBins(cmd: string): string[] {
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const local = process.env.LOCALAPPDATA || "";
+  const win = process.platform === "win32";
+  if (cmd === "cursor-agent") {
+    return win
+      ? [
+          join(local, "cursor-agent", "cursor-agent.cmd"),
+          join(local, "cursor-agent", "agent.cmd"),
+          join(local, "Programs", "cursor", "resources", "app", "bin", "cursor-agent.cmd"),
+        ]
+      : [
+          join(home, ".local", "bin", "cursor-agent"),
+          join(home, ".cursor", "bin", "cursor-agent"),
+          "/usr/local/bin/cursor-agent",
+        ];
+  }
+  if (cmd === "claude") {
+    return win
+      ? [
+          join(home, ".local", "bin", "claude.exe"),
+          join(local, "Programs", "claude", "claude.exe"),
+        ]
+      : [join(home, ".local", "bin", "claude"), "/usr/local/bin/claude"];
+  }
+  if (cmd === "codex") {
+    return win
+      ? [join(local, "Programs", "OpenAI", "Codex", "bin", "codex.exe")]
+      : [join(home, ".local", "bin", "codex"), "/usr/local/bin/codex"];
+  }
+  if (cmd === "opencode") {
+    return win
+      ? [join(local, "opencode", "opencode.exe"), join(home, ".opencode", "bin", "opencode.exe")]
+      : [join(home, ".opencode", "bin", "opencode"), "/usr/local/bin/opencode"];
+  }
+  return [];
+}
+
 function which(cmd: string, extraPath?: string): string | null {
-  if (extraPath && isAbsolute(extraPath)) {
-    try {
-      accessSync(extraPath, constants.X_OK);
-      return extraPath;
-    } catch {
-      try {
-        accessSync(extraPath, constants.F_OK);
-        return extraPath;
-      } catch {
-        /* fall through */
-      }
-    }
+  if (extraPath && isAbsolute(extraPath) && existsFile(extraPath)) {
+    return extraPath;
   }
   const pathEnv = process.env.PATH ?? "";
   const exts =
@@ -62,23 +100,36 @@ function which(cmd: string, extraPath?: string): string | null {
       ? [cmd, ...exts.map((e) => `${cmd}${e}`)]
       : [cmd];
   for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
     for (const name of names) {
-      const full = `${dir}${dir.endsWith("\\") || dir.endsWith("/") ? "" : "\\"}${name}`.replace(
-        /\\/g,
-        process.platform === "win32" ? "\\" : "/",
-      );
-      // Normalize join
       const candidate =
         process.platform === "win32"
           ? `${dir.replace(/[/\\]+$/, "")}\\${name}`
           : `${dir.replace(/\/+$/, "")}/${name}`;
-      try {
-        accessSync(candidate, constants.F_OK);
-        return candidate;
-      } catch {
-        void full;
-      }
+      if (existsFile(candidate)) return candidate;
     }
+  }
+  for (const candidate of wellKnownBins(cmd)) {
+    if (existsFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolve the Cursor agent binary. Prefer cursor-agent over a bare `agent`,
+ * which often collides with unrelated tools (e.g. Grok's agent.exe).
+ */
+function resolveCursorAgent(bridgePath?: string): string | null {
+  if (bridgePath && isAbsolute(bridgePath) && existsFile(bridgePath)) {
+    return bridgePath;
+  }
+  const dedicated = which("cursor-agent", bridgePath);
+  if (dedicated) return dedicated;
+  // Only accept bare `agent` when it lives under a cursor-agent install.
+  const bare = which("agent", bridgePath);
+  if (bare && /cursor-agent|cursor[\\/].*agent/i.test(bare)) return bare;
+  for (const candidate of wellKnownBins("cursor-agent")) {
+    if (existsFile(candidate)) return candidate;
   }
   return null;
 }
@@ -89,10 +140,13 @@ async function runProcess(
   opts?: { input?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
+    // .cmd/.bat need a shell on Windows; bare EXE/ELF do not.
+    const needsShell =
+      process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(command);
     const child = spawn(command, args, {
       env: { ...process.env, ...opts?.env },
       windowsHide: true,
-      shell: false,
+      shell: needsShell,
     });
     let stdout = "";
     let stderr = "";
@@ -147,6 +201,7 @@ async function openAiCompatible(opts: {
       max_tokens: opts.maxTokens ?? 2048,
       temperature: 0.4,
     }),
+    signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -181,6 +236,7 @@ async function anthropicComplete(opts: {
       system: opts.system,
       messages: [{ role: "user", content: opts.prompt }],
     }),
+    signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -206,16 +262,22 @@ async function geminiComplete(opts: {
   prompt: string;
 }): Promise<AiCompleteResult> {
   const model = opts.model || "gemini-2.0-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(opts.apiKey)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const parts: { text: string }[] = [];
   if (opts.system) parts.push({ text: `System: ${opts.system}\n\n` });
   parts.push({ text: opts.prompt });
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // Key goes in a header, not the query string, so it never lands in logs
+    // or proxy access trails.
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": opts.apiKey,
+    },
     body: JSON.stringify({
       contents: [{ role: "user", parts }],
     }),
+    signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -233,13 +295,37 @@ async function geminiComplete(opts: {
   return { text, provider: "gemini", model };
 }
 
+/**
+ * Ollama is documented as local-only. If a user pastes a remote URL into the
+ * Ollama field, refuse instead of silently shipping mail bodies to it.
+ */
+function localOnlyHost(raw: string | undefined): string {
+  const fallback = "http://127.0.0.1:11434";
+  if (!raw) return fallback;
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase();
+    const local =
+      host === "127.0.0.1" ||
+      host === "localhost" ||
+      host === "::1" ||
+      host === "[::1]";
+    if (!local || (url.protocol !== "http:" && url.protocol !== "https:")) {
+      return fallback;
+    }
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return fallback;
+  }
+}
+
 async function ollamaComplete(opts: {
   model: string;
   system?: string;
   prompt: string;
   host?: string;
 }): Promise<AiCompleteResult> {
-  const host = (opts.host || "http://127.0.0.1:11434").replace(/\/$/, "");
+  const host = localOnlyHost(opts.host);
   const res = await fetch(`${host}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -251,6 +337,7 @@ async function ollamaComplete(opts: {
         { role: "user", content: opts.prompt },
       ],
     }),
+    signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -271,10 +358,12 @@ async function cliPrompt(
   args: string[],
   prompt: string,
   system?: string,
+  opts?: { passPromptAsArg?: boolean },
 ): Promise<AiCompleteResult> {
   const full = system ? `${system}\n\n${prompt}` : prompt;
-  const { stdout, stderr, code } = await runProcess(bin, args, {
-    input: full,
+  const argv = opts?.passPromptAsArg ? [...args, full] : args;
+  const { stdout, stderr, code } = await runProcess(bin, argv, {
+    input: opts?.passPromptAsArg ? undefined : full,
     timeoutMs: 180_000,
   });
   const text = stdout.trim() || stderr.trim();
@@ -339,7 +428,7 @@ export async function detectProviders(
       available: Boolean(which("claude", bridgePath)),
       reason: which("claude", bridgePath)
         ? undefined
-        : "claude CLI not found on PATH",
+        : "claude CLI not found on PATH or common install folders",
       defaultModel: "claude",
     },
     {
@@ -347,24 +436,21 @@ export async function detectProviders(
       available: Boolean(which("codex", bridgePath)),
       reason: which("codex", bridgePath)
         ? undefined
-        : "codex CLI not found on PATH",
+        : "codex CLI not found on PATH or common install folders",
     },
     {
       id: "cursor",
-      available: Boolean(
-        which("cursor-agent", bridgePath) || which("agent", bridgePath),
-      ),
-      reason:
-        which("cursor-agent", bridgePath) || which("agent", bridgePath)
-          ? undefined
-          : "Cursor agent CLI not found",
+      available: Boolean(resolveCursorAgent(bridgePath)),
+      reason: resolveCursorAgent(bridgePath)
+        ? undefined
+        : "Cursor agent CLI not found (install cursor-agent or set its path)",
     },
     {
       id: "opencode",
       available: Boolean(which("opencode", bridgePath)),
       reason: which("opencode", bridgePath)
         ? undefined
-        : "opencode CLI not found on PATH",
+        : "opencode CLI not found on PATH or common install folders",
     },
     { id: "none", available: true },
   ];
@@ -461,11 +547,17 @@ export async function completeAi(
       );
     }
     case "cursor": {
-      const bin =
-        which("cursor-agent", input.bridgePath) ||
-        which("agent", input.bridgePath);
+      const bin = resolveCursorAgent(input.bridgePath);
       if (!bin) throw new Error("Cursor agent CLI not found");
-      return cliPrompt("cursor", bin, ["-p", "--print"], input.prompt, system);
+      // ask mode keeps mail assist read-only; pass prompt as argv (not stdin).
+      return cliPrompt(
+        "cursor",
+        bin,
+        ["-p", "--mode", "ask", "--output-format", "text"],
+        input.prompt,
+        system,
+        { passPromptAsArg: true },
+      );
     }
     case "opencode": {
       const bin = which("opencode", input.bridgePath);

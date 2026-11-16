@@ -52,8 +52,26 @@ export function loadCredentials(
 ): StoredCredentials | null {
   const b64 = getCredentialPayload(accountId);
   if (!b64) return null;
-  assertEncryption();
-  const buf = Buffer.from(b64, "base64");
-  const json = safeStorage.decryptString(buf);
-  return JSON.parse(json) as StoredCredentials;
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  try {
+    const buf = Buffer.from(b64, "base64");
+    const json = safeStorage.decryptString(buf);
+    const parsed = JSON.parse(json) as StoredCredentials;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.provider === "gmail") {
+      if (!parsed.tokens?.accessToken || !parsed.tokens?.refreshToken) {
+        return null;
+      }
+      return parsed;
+    }
+    if (parsed.provider === "imap") {
+      if (!parsed.email || !parsed.password || !parsed.imapHost) return null;
+      return parsed;
+    }
+    return null;
+  } catch {
+    // Corrupt ciphertext (profile copy, DPAPI reset) is treated as missing
+    // rather than crashing every sync attempt.
+    return null;
+  }
 }

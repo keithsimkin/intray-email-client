@@ -172,6 +172,11 @@ export async function bridgeMcpStop() {
   return window.intray.mcp.stop();
 }
 
+export async function bridgeMcpRotateToken() {
+  if (!hasIntrayBridge()) return { running: false, port: null, url: null };
+  return window.intray.mcp.rotateToken();
+}
+
 export async function bridgeLaunchAtLogin(): Promise<LaunchAtLoginState> {
   if (!hasIntrayBridge()) return { openAtLogin: false, openAsHidden: true };
   return window.intray.getLaunchAtLogin();
@@ -243,7 +248,16 @@ export function accountDtoToUi(a: AccountDto): Account {
     color: a.color,
     unread: a.unread,
     provider: a.provider,
+    loggedOut: a.loggedOut,
   };
+}
+
+/** Match main-process auth failure detection for live sync progress. */
+export function isAuthFailureMessage(error?: string | null): boolean {
+  if (!error) return false;
+  return /credentials? (missing|not found)|authentication failed|invalid_grant|unauthorized|revoked|login required|logged out|\b401\b|\b403\b|token.*(expired|invalid)|imap.*auth/i.test(
+    error,
+  );
 }
 
 function countLinksInThread(thread: MessageDto["thread"]): number {
