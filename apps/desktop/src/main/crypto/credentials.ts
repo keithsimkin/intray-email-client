@@ -75,3 +75,25 @@ export function loadCredentials(
     return null;
   }
 }
+
+/**
+ * OAuth Gmail accounts store `{ provider: "gmail" }` tokens. App-password
+ * Gmail accounts store `{ provider: "imap", brand: "gmail" }` and must use
+ * IMAP even though the account row's provider is still "gmail".
+ */
+export function accountUsesImap(accountId: string, provider: string): boolean {
+  const creds = loadCredentials(accountId);
+  if (creds?.provider === "imap") return true;
+  if (creds?.provider === "gmail") return false;
+  return provider !== "gmail";
+}
+
+export function isGmailImapAccount(accountId: string): boolean {
+  const creds = loadCredentials(accountId);
+  if (!creds || creds.provider !== "imap") return false;
+  return (
+    creds.brand === "gmail" ||
+    creds.imapHost.trim().toLowerCase() === "imap.gmail.com" ||
+    creds.smtpHost.trim().toLowerCase() === "smtp.gmail.com"
+  );
+}

@@ -933,7 +933,10 @@ span.float-ask-trace-chip:hover {
   .float-ask-stage,
   .float-ask.open .float-ask-stage {
     bottom: 12px;
-    width: min(100vw - 16px, 680px);
+    width: min(calc(100vw - 16px), 680px);
   }
 
   .float-ask-sheet.open {
+    width: min(calc(100vw - 16px), 680px);
+  }
+}

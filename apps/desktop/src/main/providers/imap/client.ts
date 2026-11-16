@@ -1,7 +1,14 @@
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type FetchMessageObject } from "imapflow";
 import { simpleParser, type ParsedMail, type AddressObject } from "mailparser";
 import nodemailer from "nodemailer";
 import { loadCredentials, type ImapCredentials } from "../../crypto/credentials";
+import {
+  explainGmailImapError,
+  isGmailImapTarget,
+  placementForGmail,
+  type ListedMailbox,
+  type MailboxRole,
+} from "../../../shared/gmailImap";
 import { normalizeFolderPath } from "./presets";
 
 export type ImapEnvelope = {
@@ -20,6 +27,14 @@ export type ImapEnvelope = {
   hasAttachment: boolean;
   folder: string;
   mailboxPath: string;
+  /** Set for Gmail when X-GM-LABELS decided starred / important. */
+  starred?: boolean;
+  important?: boolean;
+  /** Gmail X-GM-MSGID, stable across labels. */
+  gmMsgId?: string;
+  /** Gmail X-GM-THRID. */
+  gmThrId?: string;
+  gmLabels?: string[];
 };
 
 export type ImapMailboxSlice = {
@@ -37,6 +52,7 @@ const SENT_MAILBOXES = [
   "Sent Items",
   "INBOX.Sent",
   "[Gmail]/Sent Mail",
+  "[Google Mail]/Sent Mail",
 ];
 
 function addrs(
@@ -96,20 +112,48 @@ export async function withImap<T>(
   }
 }
 
+function rethrowImapError(creds: ImapCredentials, error: unknown): never {
+  if (isGmailImapTarget(creds)) {
+    const explained = explainGmailImapError(error);
+    if (explained) throw new Error(explained);
+  }
+  throw error;
+}
+
 /** Verify credentials by connecting and selecting INBOX. */
 export async function verifyImapLogin(creds: ImapCredentials): Promise<void> {
   const client = new ImapFlow(connectionOptions(creds));
-  await client.connect();
   try {
+    await client.connect();
     const lock = await client.getMailboxLock("INBOX");
     lock.release();
-  } finally {
+  } catch (error) {
     try {
-      await client.logout();
-    } catch {
       client.close();
+    } catch {
+      /* already closed */
     }
+    rethrowImapError(creds, error);
   }
+  try {
+    await client.logout();
+  } catch {
+    client.close();
+  }
+}
+
+/** LIST mailboxes, including SPECIAL-USE flags when the server sends them. */
+export async function listImapMailboxes(
+  accountId: string,
+): Promise<ListedMailbox[]> {
+  return withImap(accountId, async (client) => {
+    const boxes = await client.list();
+    return boxes.map((box) => ({
+      path: box.path,
+      name: box.name,
+      specialUse: box.specialUse,
+    }));
+  });
 }
 
 function mailboxMeta(client: ImapFlow): {
@@ -128,12 +172,96 @@ function mailboxMeta(client: ImapFlow): {
   };
 }
 
+function envelopeFromFetch(
+  msg: FetchMessageObject,
+  mailbox: string,
+  uidValidity: number,
+  gmail: { enabled: boolean; role: MailboxRole } | undefined,
+): ImapEnvelope {
+  const env = msg.envelope;
+  const fromAddr = env?.from?.[0];
+  const fromEmail = (fromAddr?.address ?? "unknown").toLowerCase();
+  const fromName = fromAddr?.name || fromEmail.split("@")[0];
+  const subject = env?.subject || "(no subject)";
+  const flags = [...(msg.flags ?? [])].map(String);
+  const snippetSource = msg.source
+    ? msg.source.toString("utf8").replace(/\s+/g, " ").slice(0, 180)
+    : "";
+  const messageId = env?.messageId || undefined;
+  const refs =
+    (env as { references?: string | string[] } | undefined)?.references ?? [];
+  const refList = Array.isArray(refs) ? refs : [refs];
+  const threadKey =
+    refList[0] || messageId || `uid-${uidValidity}-${msg.uid}`;
+
+  const to =
+    env?.to?.map((a) => ({
+      name: a.name || a.address?.split("@")[0] || "",
+      email: (a.address ?? "").toLowerCase(),
+    })) ?? [];
+  const cc =
+    env?.cc?.map((a) => ({
+      name: a.name || a.address?.split("@")[0] || "",
+      email: (a.address ?? "").toLowerCase(),
+    })) ?? [];
+
+  const hasAttachment = Boolean(
+    msg.bodyStructure &&
+      JSON.stringify(msg.bodyStructure).includes('"disposition":"attachment"'),
+  );
+
+  const date = env?.date
+    ? env.date instanceof Date
+      ? env.date
+      : new Date(env.date)
+    : null;
+
+  const labels = msg.labels ? [...msg.labels].map(String) : undefined;
+  const placement = gmail?.enabled
+    ? placementForGmail({
+        // An empty set still means "labels were returned". Undefined means
+        // the server did not send X-GM-LABELS.
+        labels: msg.labels ? labels : undefined,
+        flags,
+        role: gmail.role,
+      })
+    : null;
+
+  return {
+    uid: msg.uid,
+    uidValidity,
+    messageId,
+    threadId: String(threadKey),
+    flags,
+    date: date && !Number.isNaN(date.getTime()) ? date : null,
+    subject,
+    fromName,
+    fromEmail,
+    to: to.filter((t) => t.email),
+    cc: cc.filter((t) => t.email),
+    snippet: snippetSource || subject,
+    hasAttachment,
+    folder: placement?.folder ?? normalizeFolderPath(mailbox),
+    mailboxPath: mailbox,
+    starred: placement?.starred,
+    important: placement?.important,
+    gmMsgId: gmail?.enabled && msg.emailId ? String(msg.emailId) : undefined,
+    gmThrId: gmail?.enabled && msg.threadId ? String(msg.threadId) : undefined,
+    gmLabels: gmail?.enabled ? labels : undefined,
+  };
+}
+
 /**
  * Fetch envelopes from a mailbox.
  *
  * When `sinceUid` is supplied *and* the mailbox's UIDVALIDITY still matches, we
  * fetch only the new UID window instead of re-scanning the last N messages.
  * That is what makes incremental sync cheap enough to run every 30 seconds.
+ *
+ * Gmail requests X-GM-LABELS and X-GM-THRID (X-GM-MSGID is always requested by
+ * imapflow when the server advertises X-GM-EXT-1). `refreshRecent` re-reads a
+ * short sequence window on incremental passes so archive/star/read changes on
+ * recent All Mail show up without scanning the whole mailbox.
  */
 export async function listRecentEnvelopes(
   accountId: string,
@@ -142,10 +270,16 @@ export async function listRecentEnvelopes(
     limit?: number;
     sinceUid?: number;
     sinceUidValidity?: number;
+    gmail?: boolean;
+    role?: MailboxRole;
+    refreshRecent?: number;
   },
 ): Promise<ImapMailboxSlice> {
   const mailbox = opts?.mailbox ?? "INBOX";
   const limit = opts?.limit ?? 100;
+  const gmail = opts?.gmail
+    ? { enabled: true as const, role: opts.role ?? "other" }
+    : undefined;
 
   return withImap(accountId, async (client) => {
     const lock = await client.getMailboxLock(mailbox);
@@ -177,80 +311,39 @@ export async function listRecentEnvelopes(
         range = `${from}:${meta.exists}`;
       }
 
-      const out: ImapEnvelope[] = [];
-      for await (const msg of client.fetch(
-        range,
-        {
-          uid: true,
-          flags: true,
-          envelope: true,
-          bodyStructure: true,
-          source: { start: 0, maxLength: 4096 },
-        },
-        { uid: incremental },
-      )) {
-        const env = msg.envelope;
-        const fromAddr = env?.from?.[0];
-        const fromEmail = (fromAddr?.address ?? "unknown").toLowerCase();
-        const fromName = fromAddr?.name || fromEmail.split("@")[0];
-        const subject = env?.subject || "(no subject)";
-        const flags = [...(msg.flags ?? [])].map(String);
-        const snippetSource = msg.source
-          ? msg.source.toString("utf8").replace(/\s+/g, " ").slice(0, 180)
-          : "";
-        const messageId = env?.messageId || undefined;
-        const refs =
-          (env as { references?: string | string[] } | undefined)?.references ??
-          [];
-        const refList = Array.isArray(refs) ? refs : [refs];
-        const threadKey =
-          refList[0] || messageId || `uid-${meta.uidValidity}-${msg.uid}`;
+      const query = {
+        uid: true,
+        flags: true,
+        envelope: true,
+        bodyStructure: true,
+        source: { start: 0, maxLength: 4096 },
+        ...(gmail ? { labels: true, threadId: true } : {}),
+      };
 
-        const to =
-          env?.to?.map((a) => ({
-            name: a.name || a.address?.split("@")[0] || "",
-            email: (a.address ?? "").toLowerCase(),
-          })) ?? [];
-        const cc =
-          env?.cc?.map((a) => ({
-            name: a.name || a.address?.split("@")[0] || "",
-            email: (a.address ?? "").toLowerCase(),
-          })) ?? [];
+      const byUid = new Map<number, ImapEnvelope>();
+      const collect = async (fetchRange: string, byUidRange: boolean) => {
+        for await (const msg of client.fetch(fetchRange, query, {
+          uid: byUidRange,
+        })) {
+          byUid.set(
+            msg.uid,
+            envelopeFromFetch(msg, mailbox, meta.uidValidity, gmail),
+          );
+        }
+      };
 
-        const hasAttachment = Boolean(
-          msg.bodyStructure &&
-            JSON.stringify(msg.bodyStructure).includes('"disposition":"attachment"'),
-        );
-
-        const date = env?.date
-          ? env.date instanceof Date
-            ? env.date
-            : new Date(env.date)
-          : null;
-
-        out.push({
-          uid: msg.uid,
-          uidValidity: meta.uidValidity,
-          messageId,
-          threadId: String(threadKey),
-          flags,
-          date: date && !Number.isNaN(date.getTime()) ? date : null,
-          subject,
-          fromName,
-          fromEmail,
-          to: to.filter((t) => t.email),
-          cc: cc.filter((t) => t.email),
-          snippet: snippetSource || subject,
-          hasAttachment,
-          folder: normalizeFolderPath(mailbox),
-          mailboxPath: mailbox,
-        });
+      await collect(range, incremental);
+      const refresh = opts?.refreshRecent ?? 0;
+      if (gmail && incremental && refresh > 0) {
+        const from = Math.max(1, meta.exists - refresh + 1);
+        await collect(`${from}:${meta.exists}`, false);
       }
 
-      out.sort((a, b) => a.uid - b.uid);
-      const highestUid = out.length
-        ? out[out.length - 1].uid
-        : (opts?.sinceUid ?? 0);
+      const out = [...byUid.values()].sort((a, b) => a.uid - b.uid);
+      const fetchedMax = out.reduce((max, env) => Math.max(max, env.uid), 0);
+      const highestUid = incremental
+        ? Math.max(fetchedMax, opts?.sinceUid ?? 0)
+        : fetchedMax || (opts?.sinceUid ?? 0);
 
       return {
         envelopes: out,
@@ -318,6 +411,162 @@ export async function moveImapMessage(
     const lock = await client.getMailboxLock(mailbox);
     try {
       await client.messageMove(String(uid), dest, { uid: true });
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+export type ImapChangeAction =
+  | "archive"
+  | "trash"
+  | "spam"
+  | "not-spam"
+  | "inbox"
+  | "read"
+  | "unread"
+  | "star"
+  | "unstar"
+  | "delete-forever"
+  | "move";
+
+async function storeLabels(
+  client: ImapFlow,
+  uid: string,
+  labels: string[],
+  mode: "add" | "remove",
+): Promise<void> {
+  for (const label of labels) {
+    const ok =
+      mode === "add"
+        ? await client.messageFlagsAdd(uid, [label], {
+            uid: true,
+            useLabels: true,
+          })
+        : await client.messageFlagsRemove(uid, [label], {
+            uid: true,
+            useLabels: true,
+          });
+    if (!ok && mode === "add") {
+      throw new Error(`Gmail did not add label ${label}`);
+    }
+  }
+}
+
+/**
+ * Apply a mailbox change. Gmail labels are not folders: archive removes
+ * `\Inbox` on the All Mail copy instead of moving into a fake Archive box.
+ */
+export async function pushImapChange(
+  accountId: string,
+  mailbox: string,
+  uid: number,
+  action: ImapChangeAction,
+  opts?: { gmail?: boolean; folder?: string },
+): Promise<void> {
+  if (!opts?.gmail) {
+    const target =
+      action === "move"
+        ? opts?.folder === "trash"
+          ? "Trash"
+          : opts?.folder === "junk"
+            ? "Junk"
+            : opts?.folder === "archive"
+              ? "Archive"
+              : opts?.folder === "inbox"
+                ? "INBOX"
+                : opts?.folder || "Archive"
+        : action === "trash"
+          ? "Trash"
+          : action === "spam"
+            ? "Junk"
+            : action === "not-spam" || action === "inbox"
+              ? "INBOX"
+              : action === "archive"
+                ? "Archive"
+                : null;
+    if (action === "delete-forever") {
+      await deleteImapMessageForever(accountId, mailbox, uid);
+      return;
+    }
+    if (target) {
+      await moveImapMessage(accountId, mailbox, uid, target);
+      return;
+    }
+    if (action === "read") {
+      await setImapFlags(accountId, mailbox, uid, { add: ["\\Seen"] });
+    } else if (action === "unread") {
+      await setImapFlags(accountId, mailbox, uid, { remove: ["\\Seen"] });
+    } else if (action === "star") {
+      await setImapFlags(accountId, mailbox, uid, { add: ["\\Flagged"] });
+    } else if (action === "unstar") {
+      await setImapFlags(accountId, mailbox, uid, { remove: ["\\Flagged"] });
+    }
+    return;
+  }
+
+  await withImap(accountId, async (client) => {
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const uidStr = String(uid);
+      const resolved =
+        action === "move"
+          ? opts.folder === "trash"
+            ? "trash"
+            : opts.folder === "junk"
+              ? "spam"
+              : opts.folder === "inbox"
+                ? "inbox"
+                : "archive"
+          : action;
+      const addLabels: string[] = [];
+      const removeLabels: string[] = [];
+      const addFlags: string[] = [];
+      const removeFlags: string[] = [];
+      switch (resolved) {
+        case "archive":
+          removeLabels.push("\\Inbox", "\\Trash", "\\Spam");
+          break;
+        case "trash":
+          addLabels.push("\\Trash");
+          break;
+        case "spam":
+          addLabels.push("\\Spam");
+          break;
+        case "not-spam":
+        case "inbox":
+          addLabels.push("\\Inbox");
+          removeLabels.push("\\Spam", "\\Trash");
+          break;
+        case "read":
+          addFlags.push("\\Seen");
+          break;
+        case "unread":
+          removeFlags.push("\\Seen");
+          break;
+        case "star":
+          addFlags.push("\\Flagged");
+          addLabels.push("\\Starred");
+          break;
+        case "unstar":
+          removeFlags.push("\\Flagged");
+          removeLabels.push("\\Starred");
+          break;
+        case "delete-forever":
+          await client.messageFlagsAdd(uidStr, ["\\Deleted"], { uid: true });
+          await client.messageDelete(uidStr, { uid: true });
+          return;
+        default:
+          return;
+      }
+      await storeLabels(client, uidStr, addLabels, "add");
+      await storeLabels(client, uidStr, removeLabels, "remove");
+      if (addFlags.length) {
+        await client.messageFlagsAdd(uidStr, addFlags, { uid: true });
+      }
+      if (removeFlags.length) {
+        await client.messageFlagsRemove(uidStr, removeFlags, { uid: true });
+      }
     } finally {
       lock.release();
     }
@@ -436,6 +685,8 @@ export async function sendSmtp(
         content: Buffer.from(a.contentBase64, "base64"),
       })),
     });
+  } catch (error) {
+    rethrowImapError(creds, error);
   } finally {
     transport.close();
   }

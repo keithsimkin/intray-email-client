@@ -14,8 +14,15 @@ import {
   listMessageIds,
 } from "../providers/gmail/client";
 import { gmailMessageToRow } from "../providers/gmail/map";
-import { listRecentEnvelopes } from "../providers/imap/client";
+import { accountUsesImap, isGmailImapAccount } from "../crypto/credentials";
+import { listImapMailboxes, listRecentEnvelopes } from "../providers/imap/client";
 import { imapEnvelopeToRow } from "../providers/imap/map";
+import {
+  explainGmailImapError,
+  gmailSyncMailboxes,
+  GMAIL_FALLBACK_SYNC_MAILBOXES,
+  type SyncMailbox,
+} from "../../shared/gmailImap";
 
 const INITIAL_PAGE_SIZE = 50;
 const INITIAL_MAX_MESSAGES = 200;
@@ -155,10 +162,10 @@ async function runSync(accountId: string): Promise<void> {
     progress: "Starting…",
   });
   try {
-    if (account.provider === "gmail") {
-      await syncGmail(accountId);
-    } else {
+    if (accountUsesImap(accountId, account.provider)) {
       await syncImap(accountId);
+    } else {
+      await syncGmail(accountId);
     }
     recountUnread(accountId);
     setStatus(accountId, {
@@ -285,7 +292,35 @@ async function incrementalGmail(
   );
 }
 
-const IMAP_MAILBOXES = ["INBOX", "Sent", "Sent Messages", "Sent Items"];
+const IMAP_MAILBOXES: SyncMailbox[] = [
+  { path: "INBOX", role: "inbox" },
+  { path: "Sent", role: "sent" },
+  { path: "Sent Messages", role: "sent" },
+  { path: "Sent Items", role: "sent" },
+];
+
+function surfaceImapError(gmail: boolean, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!gmail) return message;
+  return explainGmailImapError(error) ?? explainGmailImapError(message) ?? message;
+}
+
+async function imapTargets(accountId: string, gmail: boolean): Promise<SyncMailbox[]> {
+  if (!gmail) return IMAP_MAILBOXES;
+  try {
+    const listed = await listImapMailboxes(accountId);
+    const targets = gmailSyncMailboxes(listed);
+    if (targets.length) return targets;
+  } catch {
+    /* LIST failed — try the English Gmail names below. */
+  }
+  return GMAIL_FALLBACK_SYNC_MAILBOXES;
+}
+
+function mailboxIsCritical(box: SyncMailbox, targets: SyncMailbox[]): boolean {
+  if (targets.some((target) => target.role === "all")) return box.role === "all";
+  return box.role === "inbox" || box.path.toUpperCase() === "INBOX";
+}
 
 async function syncImap(accountId: string): Promise<void> {
   setStatus(accountId, {
@@ -293,31 +328,38 @@ async function syncImap(accountId: string): Promise<void> {
     progress: "Connecting via IMAP…",
   });
 
+  const gmail = isGmailImapAccount(accountId);
+  const targets = await imapTargets(accountId, gmail);
   const state = getSyncState(accountId);
   const cursor = parseImapCursor(state?.imap_cursor_json);
   let total = 0;
   let failures = 0;
   let lastError: string | null = null;
-  let inboxError: string | null = null;
+  let criticalError: string | null = null;
 
-  for (const box of IMAP_MAILBOXES) {
-    const prior = cursor[box];
+  for (const box of targets) {
+    const prior = cursor[box.path];
     try {
       setStatus(accountId, {
         status: "syncing",
-        progress: `Syncing ${box}…`,
+        progress: `Syncing ${box.path}…`,
       });
       const slice = await listRecentEnvelopes(accountId, {
-        mailbox: box,
-        limit: box.toUpperCase() === "INBOX" ? IMAP_INBOX_LIMIT : 40,
+        mailbox: box.path,
+        role: box.role,
+        gmail,
+        limit:
+          box.role === "inbox" || box.role === "all" ? IMAP_INBOX_LIMIT : 40,
         sinceUid: prior?.lastUid,
         sinceUidValidity: prior?.uidValidity,
+        // Recent All Mail changes labels (archive, star) without a new UID.
+        refreshRecent: gmail ? (box.role === "all" ? 80 : 20) : 0,
       });
       for (const env of slice.envelopes) {
         upsertMessage(imapEnvelopeToRow(accountId, env));
         total += 1;
       }
-      cursor[box] = {
+      cursor[box.path] = {
         uidValidity: slice.uidValidity,
         lastUid: slice.highestUid,
       };
@@ -330,16 +372,16 @@ async function syncImap(accountId: string): Promise<void> {
       // Keep the previous cursor for this mailbox so the next pass retries the
       // same UID window instead of skipping mail.
       failures += 1;
-      lastError = e instanceof Error ? e.message : String(e);
-      if (box === "INBOX") inboxError = lastError;
+      lastError = surfaceImapError(gmail, e);
+      if (mailboxIsCritical(box, targets)) criticalError = lastError;
     }
   }
 
   // A failing Sent folder shouldn't mask a healthy inbox, but a failing inbox
-  // must surface as an account error so the poller backs off and the UI shows
-  // that new mail may be missing — never a false "idle".
-  if (inboxError) throw new Error(inboxError);
-  if (failures === IMAP_MAILBOXES.length) {
+  // (or Gmail All Mail) must surface as an account error so the poller backs
+  // off and the UI shows that new mail may be missing — never a false "idle".
+  if (criticalError) throw new Error(criticalError);
+  if (failures === targets.length) {
     throw new Error(lastError ?? "IMAP sync failed");
   }
 

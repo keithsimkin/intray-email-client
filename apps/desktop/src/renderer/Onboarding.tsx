@@ -181,7 +181,7 @@ export function Onboarding({
             <p className="onboarding-kicker">Accounts</p>
             <h2>Connect your first inbox</h2>
             <p className="onboarding-sub">
-              Gmail via Google sign-in, or Outlook, iCloud, Yahoo, Fastmail, and any IMAP with an app password.
+              Gmail with an app password, or Outlook, iCloud, Yahoo, Fastmail, and any IMAP server. Google sign-in is there for testers.
             </p>
             <div className="onboarding-providers" aria-hidden>
               {(["gmail", "outlook", "icloud", "yahoo", "fastmail"] as const).map(
