@@ -8,7 +8,9 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "pack": "electron-vite build && electron-builder --win"
+    "pack": "electron-vite build && electron-builder --win",
+    "test": "bun test",
+    "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",

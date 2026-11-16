@@ -2,17 +2,33 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import {
   cancelSendQueue,
+  claimSend,
   enqueueSend,
+  getAccountRow,
   getSendQueueRow,
   listDueSends,
   listDueSnoozes,
+  markSendFailed,
+  markSendRetry,
+  markSendSent,
+  recoverStaleSends,
+  setSendQueueMessageId,
   updateMessageFlags,
-  updateSendQueueStatus,
 } from "../db";
 import type { ComposeDraft, QueuedSendResult } from "../../shared/types";
+import { buildMessageId } from "./mime";
 import { sendMail } from "./service";
 
+const TICK_MS = 2_000;
+const MAX_ATTEMPTS = 8;
+const BASE_BACKOFF_MS = 15_000;
+const MAX_BACKOFF_MS = 15 * 60_000;
+/** A claimed row older than this is assumed to belong to a dead process. */
+const SEND_LOCK_MS = 3 * 60_000;
+const MAX_SCHEDULE_SECONDS = 365 * 24 * 60 * 60;
+
 let timer: NodeJS.Timeout | null = null;
+let flushing = false;
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -24,8 +40,12 @@ export function enqueueDelayedSend(
   draft: ComposeDraft,
   delaySeconds: number,
 ): QueuedSendResult {
+  const seconds = Number.isFinite(delaySeconds)
+    ? Math.min(Math.max(0, Math.floor(delaySeconds)), MAX_SCHEDULE_SECONDS)
+    : 0;
   const id = `queue-${randomUUID().slice(0, 10)}`;
-  const sendAtMs = Date.now() + Math.max(0, delaySeconds) * 1000;
+  const sendAtMs = Date.now() + seconds * 1000;
+  const accountEmail = getAccountRow(draft.accountId)?.email;
   enqueueSend({
     id,
     account_id: draft.accountId,
@@ -33,6 +53,7 @@ export function enqueueDelayedSend(
     send_at_ms: sendAtMs,
     created_at: new Date().toISOString(),
     status: "pending",
+    message_id: buildMessageId(accountEmail ?? "intray@localhost", id),
   });
   ensureQueueLoop();
   return { queueId: id, sendAtMs };
@@ -44,41 +65,116 @@ export function cancelQueuedSend(queueId: string): boolean {
   return ok;
 }
 
+/** 4xx / network problems are worth retrying; bad auth or bad recipients are not. */
+export function isPermanentSendFailure(error: unknown): boolean {
+  const err = error as Error & { responseCode?: number; code?: string };
+  if (typeof err?.responseCode === "number") {
+    return err.responseCode >= 500;
+  }
+  const code = (err?.code ?? "").toUpperCase();
+  if (["EAUTH", "EENVELOPE", "EMESSAGE", "EACCES", "EPERM"].includes(code)) {
+    return true;
+  }
+  const message = (err?.message ?? String(error)).toLowerCase();
+  if (/gmail api .*→ (400|401|403)/.test(message)) return true;
+  if (
+    /(credentials?|account) (missing|not found)|authentication failed|invalid (recipient|address)|mailbox unavailable|no recipients?/.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function backoffMs(attempts: number): number {
+  const base = Math.min(
+    BASE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1),
+    MAX_BACKOFF_MS,
+  );
+  // Jitter avoids a retry stampede after the machine wakes from sleep.
+  return Math.round(base * (0.85 + Math.random() * 0.3));
+}
+
 async function flushDue(): Promise<void> {
+  if (flushing) return;
+  flushing = true;
   const now = Date.now();
 
-  for (const row of listDueSnoozes(now)) {
-    updateMessageFlags(row.id, {
-      folder: "inbox",
-      snooze_until_ms: null,
-      unread: 1,
-    });
-    broadcast("mail:unsnoozed", { messageId: row.id });
-  }
-
-  for (const row of listDueSends(now)) {
-    try {
-      updateSendQueueStatus(row.id, "sending");
-      const draft = JSON.parse(row.draft_json) as ComposeDraft;
-      const message = await sendMail(draft);
-      updateSendQueueStatus(row.id, "sent");
-      broadcast("mail:sendFlushed", { queueId: row.id, message });
-    } catch (e) {
-      updateSendQueueStatus(row.id, "error");
-      broadcast("mail:sendError", {
-        queueId: row.id,
-        error: e instanceof Error ? e.message : String(e),
+  try {
+    for (const row of listDueSnoozes(now)) {
+      updateMessageFlags(row.id, {
+        folder: "inbox",
+        snooze_until_ms: null,
+        unread: 1,
       });
+      broadcast("mail:unsnoozed", { messageId: row.id });
     }
+
+    // Rows stuck in `sending` mean the previous process died mid-send.
+    const recovered = recoverStaleSends(now);
+    if (recovered > 0) {
+      console.warn(`Recovered ${recovered} interrupted outbox send(s)`);
+    }
+
+    for (const due of listDueSends(now)) {
+      if (!claimSend(due.id, Date.now(), SEND_LOCK_MS)) continue;
+      const row = getSendQueueRow(due.id);
+      if (!row) continue;
+
+      const messageId =
+        row.message_id ?? buildMessageId("intray@localhost", row.id);
+      if (!row.message_id) setSendQueueMessageId(row.id, messageId);
+      // A retry (or a send interrupted mid-flight) may already have been
+      // accepted upstream; ask sendMail to check before transmitting again.
+      const isRetry = row.attempts > 1 || row.last_error != null;
+
+      try {
+        const draft = JSON.parse(row.draft_json) as ComposeDraft;
+        const message = await sendMail(draft, { messageId, retry: isRetry });
+        markSendSent(row.id);
+        broadcast("mail:sendFlushed", { queueId: row.id, message });
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        if (isPermanentSendFailure(error) || row.attempts >= MAX_ATTEMPTS) {
+          markSendFailed(row.id, error.message);
+          broadcast("mail:sendError", {
+            queueId: row.id,
+            error: error.message,
+            attempts: row.attempts,
+            final: true,
+          });
+        } else {
+          const nextAt = Date.now() + backoffMs(row.attempts);
+          markSendRetry(row.id, error.message, nextAt);
+          broadcast("mail:sendError", {
+            queueId: row.id,
+            error: error.message,
+            attempts: row.attempts,
+            retryAtMs: nextAt,
+            final: false,
+          });
+        }
+      }
+    }
+  } finally {
+    flushing = false;
   }
 }
 
 export function ensureQueueLoop(): void {
   if (timer) return;
+  // Single-instance app: any row still marked `sending` at this point was
+  // interrupted by a crash/quit. Recover it immediately instead of waiting for
+  // the 3-minute send lock to expire.
+  const interrupted = recoverStaleSends(Date.now(), true);
+  if (interrupted > 0) {
+    console.warn(`Recovered ${interrupted} interrupted outbox send(s)`);
+  }
   timer = setInterval(() => {
-    void flushDue();
-  }, 2000);
-  void flushDue();
+    void flushDue().catch((e) => console.error("Outbox flush failed", e));
+  }, TICK_MS);
+  void flushDue().catch((e) => console.error("Outbox flush failed", e));
 }
 
 export function stopQueueLoop(): void {

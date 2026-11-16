@@ -34,7 +34,7 @@ Be respectful in issues, PRs, and review comments. Assume good intent; disagree 
 - [Bun](https://bun.sh) 1.3+
 - [Rust](https://rustup.rs) stable (MSVC toolchain on Windows) — required to build `@intray/native`
 - Git
-- Optional: Google Cloud Desktop OAuth client for live Gmail
+- Optional: Google Cloud Desktop OAuth client, only for the Gmail tester sign-in. App passwords do not need it.
 
 ### Clone and install
 
@@ -57,12 +57,14 @@ bun run dev:web
 
 ### Optional: Gmail for real sync
 
+App passwords are the default (no `.env` change). See [README → Connect Gmail](README.md#connect-gmail).
+
+Google sign-in is only for testers:
+
 ```powershell
 copy apps\desktop\.env.example apps\desktop\.env
 # Set GMAIL_CLIENT_ID, then restart the desktop app
 ```
-
-See [README → Connect Gmail](README.md#connect-gmail-oauth) for the full Cloud Console steps.
 
 ---
 

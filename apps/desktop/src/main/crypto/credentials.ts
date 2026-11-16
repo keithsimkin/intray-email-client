@@ -52,8 +52,48 @@ export function loadCredentials(
 ): StoredCredentials | null {
   const b64 = getCredentialPayload(accountId);
   if (!b64) return null;
-  assertEncryption();
-  const buf = Buffer.from(b64, "base64");
-  const json = safeStorage.decryptString(buf);
-  return JSON.parse(json) as StoredCredentials;
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  try {
+    const buf = Buffer.from(b64, "base64");
+    const json = safeStorage.decryptString(buf);
+    const parsed = JSON.parse(json) as StoredCredentials;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.provider === "gmail") {
+      if (!parsed.tokens?.accessToken || !parsed.tokens?.refreshToken) {
+        return null;
+      }
+      return parsed;
+    }
+    if (parsed.provider === "imap") {
+      if (!parsed.email || !parsed.password || !parsed.imapHost) return null;
+      return parsed;
+    }
+    return null;
+  } catch {
+    // Corrupt ciphertext (profile copy, DPAPI reset) is treated as missing
+    // rather than crashing every sync attempt.
+    return null;
+  }
+}
+
+/**
+ * OAuth Gmail accounts store `{ provider: "gmail" }` tokens. App-password
+ * Gmail accounts store `{ provider: "imap", brand: "gmail" }` and must use
+ * IMAP even though the account row's provider is still "gmail".
+ */
+export function accountUsesImap(accountId: string, provider: string): boolean {
+  const creds = loadCredentials(accountId);
+  if (creds?.provider === "imap") return true;
+  if (creds?.provider === "gmail") return false;
+  return provider !== "gmail";
+}
+
+export function isGmailImapAccount(accountId: string): boolean {
+  const creds = loadCredentials(accountId);
+  if (!creds || creds.provider !== "imap") return false;
+  return (
+    creds.brand === "gmail" ||
+    creds.imapHost.trim().toLowerCase() === "imap.gmail.com" ||
+    creds.smtpHost.trim().toLowerCase() === "smtp.gmail.com"
+  );
 }

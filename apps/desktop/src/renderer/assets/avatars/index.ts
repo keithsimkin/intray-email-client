@@ -13,9 +13,10 @@ export const personaAvatars: Record<string, string> = {
   "daniel@ledgerly.com": daniel,
   "maya@acme.co": maya,
   "sam@patel.family": sam,
+  // Distinct faces per linked mailbox so the account rail is easy to scan.
   "pranav@intray.app": pranav,
-  "pranav@gmail.com": pranav,
-  "pranav@outlook.com": pranav,
+  "pranav@gmail.com": jordan,
+  "pranav@outlook.com": noah,
   "priya@intray.app": priya,
   "jordan@intray.app": jordan,
   "noah@northwind.io": noah,

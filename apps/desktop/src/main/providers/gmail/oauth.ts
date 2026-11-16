@@ -49,19 +49,22 @@ export async function runGmailOAuth(): Promise<{
   const challenge = await sha256Base64Url(verifier);
   const state = randomUrlSafe(16);
 
-  const { code, redirectUri } = await listenForOAuthRedirect((redirect) => {
-    const u = new URL(AUTH);
-    u.searchParams.set("client_id", clientId);
-    u.searchParams.set("redirect_uri", redirect);
-    u.searchParams.set("response_type", "code");
-    u.searchParams.set("scope", SCOPES);
-    u.searchParams.set("access_type", "offline");
-    u.searchParams.set("prompt", "consent");
-    u.searchParams.set("code_challenge", challenge);
-    u.searchParams.set("code_challenge_method", "S256");
-    u.searchParams.set("state", state);
-    return u.toString();
-  });
+  const { code, redirectUri } = await listenForOAuthRedirect(
+    (redirect) => {
+      const u = new URL(AUTH);
+      u.searchParams.set("client_id", clientId);
+      u.searchParams.set("redirect_uri", redirect);
+      u.searchParams.set("response_type", "code");
+      u.searchParams.set("scope", SCOPES);
+      u.searchParams.set("access_type", "offline");
+      u.searchParams.set("prompt", "consent");
+      u.searchParams.set("code_challenge", challenge);
+      u.searchParams.set("code_challenge_method", "S256");
+      u.searchParams.set("state", state);
+      return u.toString();
+    },
+    { expectedState: state },
+  );
 
   const body = new URLSearchParams({
     client_id: clientId,
@@ -76,6 +79,7 @@ export async function runGmailOAuth(): Promise<{
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
+    signal: AbortSignal.timeout(30_000),
   });
   if (!tokenRes.ok) {
     const text = await tokenRes.text();
@@ -123,6 +127,7 @@ export async function refreshGmailTokens(
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -133,10 +138,12 @@ export async function refreshGmailTokens(
     expires_in: number;
     token_type?: string;
     scope?: string;
+    refresh_token?: string;
   };
   return {
     accessToken: json.access_token,
-    refreshToken,
+    // Google sometimes rotates the refresh token; keep the new one.
+    refreshToken: json.refresh_token || refreshToken,
     expiryMs: Date.now() + json.expires_in * 1000 - 60_000,
     tokenType: json.token_type,
     scope: json.scope,
@@ -148,12 +155,16 @@ async function fetchGmailProfile(
 ): Promise<{ email: string; name: string }> {
   const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
     headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
     // Fallback to Gmail profile
     const g = await fetch(
       "https://gmail.googleapis.com/gmail/v1/users/me/profile",
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(30_000),
+      },
     );
     if (!g.ok) throw new Error("Failed to load Google profile");
     const gp = (await g.json()) as { emailAddress: string };

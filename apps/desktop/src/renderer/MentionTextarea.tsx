@@ -230,6 +230,8 @@ export function RecipientChips({
   const [draft, setDraft] = useState("");
   const [active, setActive] = useState(0);
   const blurTimer = useRef<number | null>(null);
+  const textUndoRef = useRef<string[]>([]);
+  const textRedoRef = useRef<string[]>([]);
 
   const excluded = useMemo(() => {
     const set = new Set(excludeEmails.map((e) => e.toLowerCase()));
@@ -252,9 +254,15 @@ export function RecipientChips({
     };
   }, []);
 
+  const clearTextHistory = () => {
+    textUndoRef.current = [];
+    textRedoRef.current = [];
+  };
+
   const pick = (contact: Contact) => {
     if (!onAdd) return;
     onAdd({ name: contact.name, email: contact.email });
+    clearTextHistory();
     setDraft("");
     setActive(0);
   };
@@ -268,6 +276,7 @@ export function RecipientChips({
     const parsed = parseRecipientInput(draft);
     if (!parsed) return;
     onAdd(parsed);
+    clearTextHistory();
     setDraft("");
   };
 
@@ -305,8 +314,46 @@ export function RecipientChips({
               aria-label={`Add ${label} recipient`}
               aria-autocomplete="list"
               aria-expanded={predictions.length > 0}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                textUndoRef.current.push(draft);
+                if (textUndoRef.current.length > 80) textUndoRef.current.shift();
+                textRedoRef.current = [];
+                setDraft(e.target.value);
+              }}
               onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+                  if (e.shiftKey) {
+                    const next = textRedoRef.current.pop();
+                    if (next === undefined) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    textUndoRef.current.push(draft);
+                    setDraft(next);
+                    return;
+                  }
+                  const prev = textUndoRef.current.pop();
+                  if (prev === undefined) {
+                    // Empty field text history → let parent undo chip / compose state.
+                    return;
+                  }
+                  e.preventDefault();
+                  e.stopPropagation();
+                  textRedoRef.current.push(draft);
+                  setDraft(prev);
+                  return;
+                }
+                if (
+                  (e.ctrlKey || e.metaKey) &&
+                  e.key.toLowerCase() === "y"
+                ) {
+                  const next = textRedoRef.current.pop();
+                  if (next === undefined) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  textUndoRef.current.push(draft);
+                  setDraft(next);
+                  return;
+                }
                 if (predictions.length > 0 && e.key === "ArrowDown") {
                   e.preventDefault();
                   setActive((i) => (i + 1) % predictions.length);

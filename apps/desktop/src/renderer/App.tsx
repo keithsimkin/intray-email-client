@@ -29,6 +29,7 @@ import {
   Layers,
   Link2,
   Loader2,
+  LogOut,
   Mail,
   MailOpen,
   MinusSquare,
@@ -79,7 +80,7 @@ import {
 import {
   UNIFIED_ID,
   accounts as seedAccounts,
-  customFolders,
+  customFolders as seedCustomFolders,
   defaultSmartReplies,
   folders,
   labels as seedLabels,
@@ -97,6 +98,8 @@ import {
   MentionTextarea,
   RecipientChips,
 } from "./MentionTextarea";
+import { AppSelect } from "./AppSelect";
+import { useUndoStack } from "./useUndoStack";
 import {
   looksLikeHtml,
   sanitizeSignatureHtml,
@@ -146,6 +149,7 @@ import {
   bridgeSendMail,
   bridgeSetChromeTheme,
   bridgeSync,
+  isAuthFailureMessage,
   messageDtoToUi,
 } from "./mailApi";
 import { notifyMeeting, syncTaskbarBadge } from "./notify";
@@ -153,6 +157,7 @@ import type { SyncStatus } from "../shared/types";
 
 type MailAction =
   | "reply"
+  | "reply-all"
   | "forward"
   | "toggle-read"
   | "star"
@@ -166,6 +171,8 @@ type MailAction =
   | "label"
   | "auto-label"
   | "clear-label";
+
+type ReplyMode = "reply" | "reply-all";
 
 type Filter = "important" | "other" | "all";
 
@@ -230,8 +237,85 @@ const seedOwnEmails = new Set(
     .map((a) => a.email.toLowerCase()),
 );
 
-function isOwnRecipient(r: Recipient) {
-  return seedOwnEmails.has(r.email.toLowerCase());
+function ownEmailSet(accounts: Account[]): Set<string> {
+  const set = new Set<string>();
+  for (const a of accounts) {
+    if (a.id === UNIFIED_ID) continue;
+    const email = a.email?.trim().toLowerCase();
+    if (email) set.add(email);
+  }
+  // Keep seed addresses so mock / offline still marks "You" correctly.
+  for (const email of seedOwnEmails) set.add(email);
+  return set;
+}
+
+function isOwnRecipient(r: Recipient, own: Set<string> = seedOwnEmails) {
+  return own.has(r.email.toLowerCase());
+}
+
+function dedupeRecipients(list: Recipient[]): Recipient[] {
+  const seen = new Set<string>();
+  const out: Recipient[] = [];
+  for (const r of list) {
+    const key = r.email.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: r.name || key.split("@")[0], email: r.email.trim() });
+  }
+  return out;
+}
+
+/**
+ * Standard mail clients:
+ * - Reply: To = sender (or original To when replying to your own sent mail). No Cc.
+ * - Reply all: To = sender + other To recipients; Cc = original Cc.
+ *   Always exclude your own addresses. Never resurrect Bcc.
+ */
+function buildReplyRecipients(
+  message: Message,
+  mode: ReplyMode,
+  own: Set<string>,
+): { to: Recipient[]; cc: Recipient[] } {
+  const latest = message.thread[message.thread.length - 1];
+  const sender: Recipient = {
+    name: latest?.from ?? message.from,
+    email: (latest?.email ?? message.email).trim(),
+  };
+  const isOwn = (email: string) => own.has(email.trim().toLowerCase());
+  const fromSelf = isOwn(sender.email);
+  const originalTo = (latest?.to ?? []).filter((r) => r.email.trim());
+  const originalCc = (latest?.cc ?? []).filter((r) => r.email.trim());
+
+  if (mode === "reply") {
+    if (fromSelf) {
+      const targets = originalTo.filter((r) => !isOwn(r.email));
+      return { to: dedupeRecipients(targets.slice(0, 1)), cc: [] };
+    }
+    return { to: dedupeRecipients([sender]), cc: [] };
+  }
+
+  if (fromSelf) {
+    return {
+      to: dedupeRecipients(originalTo.filter((r) => !isOwn(r.email))),
+      cc: dedupeRecipients(originalCc.filter((r) => !isOwn(r.email))),
+    };
+  }
+
+  const to = dedupeRecipients([
+    sender,
+    ...originalTo.filter(
+      (r) =>
+        !isOwn(r.email) &&
+        r.email.trim().toLowerCase() !== sender.email.toLowerCase(),
+    ),
+  ]);
+  const toKeys = new Set(to.map((r) => r.email.toLowerCase()));
+  const cc = dedupeRecipients(
+    originalCc.filter(
+      (r) => !isOwn(r.email) && !toKeys.has(r.email.trim().toLowerCase()),
+    ),
+  );
+  return { to, cc };
 }
 
 function listBadgeCounts(m: Message) {
@@ -357,10 +441,10 @@ function threadAttachments(tm: {
 }
 
 /** True when you're only on Cc (not on To) for the newest message. */
-function isCcOnly(message: Message) {
+function isCcOnly(message: Message, own: Set<string> = seedOwnEmails) {
   const tm = message.thread[message.thread.length - 1];
-  if (!tm?.cc?.some(isOwnRecipient)) return false;
-  if (tm.to?.some(isOwnRecipient)) return false;
+  if (!tm?.cc?.some((r) => isOwnRecipient(r, own))) return false;
+  if (tm.to?.some((r) => isOwnRecipient(r, own))) return false;
   return true;
 }
 
@@ -513,6 +597,29 @@ function slugLabelId(name: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
   return base || `label-${Date.now().toString(36)}`;
+}
+
+const CUSTOM_FOLDERS_KEY = "intray.custom-folders.v1";
+
+function loadCustomFolders(): string[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_FOLDERS_KEY);
+    if (!raw) return [...seedCustomFolders];
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((item): item is string => typeof item === "string")
+    ) {
+      return parsed.map((name) => name.trim()).filter(Boolean);
+    }
+  } catch {
+    /* keep seed */
+  }
+  return [...seedCustomFolders];
+}
+
+function saveCustomFolders(names: string[]) {
+  localStorage.setItem(CUSTOM_FOLDERS_KEY, JSON.stringify(names));
 }
 
 type AppNotification = {
@@ -709,46 +816,73 @@ function AccountRail({
     <aside className="rail">
       <div className="rail-section">
         <span className="rail-label">Mail</span>
-        {accounts.map((a) => (
-          <button
-            key={a.id}
-            type="button"
-            className={`account${activeId === a.id ? " active" : ""}`}
-            onClick={() => onSelect(a.id)}
-            title={a.id === UNIFIED_ID ? "Unified Inbox" : a.email}
-          >
-            {a.id !== UNIFIED_ID && a.avatarUrl ? (
-              <img
-                className="account-face photo"
-                src={a.avatarUrl}
-                alt=""
-                draggable={false}
-              />
-            ) : (
-              <span className="account-face" style={{ background: a.color }}>
-                {a.id === UNIFIED_ID ? (
-                  <Layers size={14} strokeWidth={2.25} color="#0a0a0b" />
-                ) : (
-                  a.label.slice(0, 2)
-                )}
-              </span>
-            )}
-            {a.unread > 0 && <span className="badge">{a.unread}</span>}
-          </button>
-        ))}
-      </div>
-      <div className="rail-spacer" />
-      <div className="rail-section">
-        <span className="rail-label">App</span>
+        {accounts.map((a) => {
+          const loggedOut = Boolean(a.loggedOut);
+          const title =
+            a.id === UNIFIED_ID
+              ? "Unified Inbox"
+              : loggedOut
+                ? `${a.email} — logged out`
+                : a.email;
+          return (
+            <button
+              key={a.id}
+              type="button"
+              className={`account${activeId === a.id ? " active" : ""}${loggedOut ? " logged-out" : ""}`}
+              onClick={() => onSelect(a.id)}
+              title={title}
+              aria-label={title}
+            >
+              {a.id !== UNIFIED_ID && a.avatarUrl ? (
+                <img
+                  className="account-face photo"
+                  src={a.avatarUrl}
+                  alt=""
+                  draggable={false}
+                />
+              ) : (
+                <span className="account-face" style={{ background: a.color }}>
+                  {a.id === UNIFIED_ID ? (
+                    <Layers size={14} strokeWidth={2.25} color="#0a0a0b" />
+                  ) : (
+                    a.label.slice(0, 2)
+                  )}
+                </span>
+              )}
+              {loggedOut ? (
+                <span className="account-status logged-out" aria-hidden>
+                  <LogOut size={9} strokeWidth={2.5} />
+                </span>
+              ) : (
+                a.unread > 0 && (
+                  <span
+                    className="badge"
+                    style={
+                      a.id !== UNIFIED_ID
+                        ? { background: a.color }
+                        : undefined
+                    }
+                  >
+                    {a.unread}
+                  </span>
+                )
+              )}
+            </button>
+          );
+        })}
         <button
           type="button"
-          className="rail-btn"
+          className="rail-btn rail-add"
           aria-label="Add account"
           title="Add account"
           onClick={onAdd}
         >
           <Plus size={16} strokeWidth={1.75} />
         </button>
+      </div>
+      <div className="rail-spacer" />
+      <div className="rail-section">
+        <span className="rail-label">App</span>
         <button
           type="button"
           className="rail-btn"
@@ -763,32 +897,103 @@ function AccountRail({
   );
 }
 
+const SIDEBAR_MAX = 360;
+/** Icon-only rail — only width allowed below the expanded floor. */
+const SIDEBAR_COMPACT_WIDTH = 56;
+/** Narrowest width where folder/label text still fits. */
+const SIDEBAR_EXPANDED_MIN = 210;
+
+/** Binary snap: compact rail, or expanded (≥ labels-fit width). No in-between. */
+function snapSidebarWidth(width: number) {
+  if (width < SIDEBAR_EXPANDED_MIN) return SIDEBAR_COMPACT_WIDTH;
+  return Math.min(Math.max(width, SIDEBAR_EXPANDED_MIN), SIDEBAR_MAX);
+}
+
 function Sidebar({
   account,
   activeFolder,
   inboxCount,
   folderCounts,
+  customFolders,
   labels,
   syncLabel,
+  compact = false,
   onFolder,
   onCompose,
   onEmptyFolder,
+  onCreateFolder,
+  onCreateLabel,
 }: {
   account: Account;
   activeFolder: string;
   inboxCount: number;
   folderCounts: Record<string, number>;
+  customFolders: string[];
   labels: Label[];
   syncLabel: string;
+  compact?: boolean;
   onFolder: (id: string) => void;
   onCompose: () => void;
   onEmptyFolder?: (folderId: "junk" | "trash") => void;
+  onCreateFolder: (name: string) => boolean;
+  onCreateLabel: (name: string, color: string) => void;
 }) {
   const unified = account.id === UNIFIED_ID;
+  const [creating, setCreating] = useState<"folder" | "label" | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newLabelName, setNewLabelName] = useState("");
+  const [newLabelColor, setNewLabelColor] = useState(LABEL_COLORS[4]);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const labelInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (creating === "folder") folderInputRef.current?.focus();
+    if (creating === "label") labelInputRef.current?.focus();
+  }, [creating]);
+
+  useEffect(() => {
+    if (compact) {
+      setCreating(null);
+      setNewFolderName("");
+      setNewLabelName("");
+    }
+  }, [compact]);
+
+  const startCreate = (kind: "folder" | "label") => {
+    if (compact) return;
+    setCreating(kind);
+    if (kind === "folder") {
+      setNewFolderName("");
+    } else {
+      setNewLabelName("");
+      setNewLabelColor(LABEL_COLORS[4]);
+    }
+  };
+
+  const cancelCreate = () => {
+    setCreating(null);
+    setNewFolderName("");
+    setNewLabelName("");
+  };
+
+  const submitFolder = () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    if (onCreateFolder(name)) {
+      cancelCreate();
+    }
+  };
+
+  const submitLabel = () => {
+    const name = newLabelName.trim();
+    if (!name) return;
+    onCreateLabel(name, newLabelColor);
+    cancelCreate();
+  };
 
   return (
-    <aside className="sidebar">
-      <div className="profile">
+    <aside className={`sidebar${compact ? " compact" : ""}`}>
+      <div className="profile" title={account.name}>
         {unified ? (
           <div className="profile-avatar">
             <Layers size={14} strokeWidth={2.25} />
@@ -808,21 +1013,28 @@ function Sidebar({
             {account.label}
           </div>
         )}
-        <div>
+        <div className="profile-copy">
           <div className="profile-name">{account.name}</div>
           <div className="profile-email">{account.email}</div>
         </div>
       </div>
 
-      <button type="button" className="compose" onClick={onCompose}>
+      <button
+        type="button"
+        className="compose"
+        onClick={onCompose}
+        title="Compose (Ctrl+N)"
+        aria-label="Compose"
+      >
         <Plus size={15} strokeWidth={2.25} />
-        Compose
+        <span className="compose-label">Compose</span>
         <kbd>Ctrl+N</kbd>
       </button>
 
       <div className="nav-section">
         {folders.map((f) => {
           const Icon = folderIcons[f.icon];
+          const label = f.id === "inbox" && unified ? "Unified Inbox" : f.name;
           const count =
             f.id === "inbox"
               ? inboxCount
@@ -833,9 +1045,11 @@ function Sidebar({
               type="button"
               className={`nav-item${activeFolder === f.id ? " active" : ""}`}
               onClick={() => onFolder(f.id)}
+              title={count > 0 ? `${label} (${count})` : label}
+              aria-label={count > 0 ? `${label}, ${count}` : label}
             >
               <Icon size={15} strokeWidth={1.75} />
-              {f.id === "inbox" && unified ? "Unified Inbox" : f.name}
+              <span className="nav-label">{label}</span>
               {count > 0 && <span className="count">{count}</span>}
             </button>
           );
@@ -844,9 +1058,58 @@ function Sidebar({
 
       <div>
         <div className="section-label">
-          Folders
-          <Plus size={12} strokeWidth={2} />
+          <span className="section-label-text">Folders</span>
+          <button
+            type="button"
+            className="section-add"
+            aria-label="New folder"
+            title="New folder"
+            disabled={compact}
+            onClick={() =>
+              creating === "folder" ? cancelCreate() : startCreate("folder")
+            }
+          >
+            <Plus size={12} strokeWidth={2} />
+          </button>
         </div>
+        {creating === "folder" && !compact && (
+          <div className="sidebar-create">
+            <input
+              ref={folderInputRef}
+              className="sidebar-create-input"
+              placeholder="Folder name"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitFolder();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelCreate();
+                }
+              }}
+            />
+            <div className="sidebar-create-actions">
+              <button
+                type="button"
+                className="sidebar-create-btn ghost"
+                onClick={cancelCreate}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sidebar-create-btn"
+                disabled={!newFolderName.trim()}
+                onClick={submitFolder}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        )}
         <div className="nav-section">
           {customFolders.map((name) => (
             <button
@@ -854,9 +1117,11 @@ function Sidebar({
               type="button"
               className={`nav-item${activeFolder === name ? " active" : ""}`}
               onClick={() => onFolder(name)}
+              title={name}
+              aria-label={name}
             >
               <Folder size={15} strokeWidth={1.75} />
-              {name}
+              <span className="nav-label">{name}</span>
             </button>
           ))}
         </div>
@@ -864,14 +1129,82 @@ function Sidebar({
 
       <div>
         <div className="section-label">
-          Labels
-          <Plus size={12} strokeWidth={2} />
+          <span className="section-label-text">Labels</span>
+          <button
+            type="button"
+            className="section-add"
+            aria-label="New label"
+            title="New label"
+            disabled={compact}
+            onClick={() =>
+              creating === "label" ? cancelCreate() : startCreate("label")
+            }
+          >
+            <Plus size={12} strokeWidth={2} />
+          </button>
         </div>
+        {creating === "label" && !compact && (
+          <div className="sidebar-create">
+            <input
+              ref={labelInputRef}
+              className="sidebar-create-input"
+              placeholder="Label name"
+              value={newLabelName}
+              onChange={(e) => setNewLabelName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitLabel();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelCreate();
+                }
+              }}
+            />
+            <div className="ctx-new-label-colors">
+              {LABEL_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`ctx-color-swatch${newLabelColor === c ? " active" : ""}`}
+                  style={{ background: c }}
+                  aria-label={`Color ${c}`}
+                  onClick={() => setNewLabelColor(c)}
+                />
+              ))}
+            </div>
+            <div className="sidebar-create-actions">
+              <button
+                type="button"
+                className="sidebar-create-btn ghost"
+                onClick={cancelCreate}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sidebar-create-btn"
+                disabled={!newLabelName.trim()}
+                onClick={submitLabel}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        )}
         <div className="nav-section">
           {labels.map((l) => (
-            <button key={l.id} type="button" className="nav-item">
+            <button
+              key={l.id}
+              type="button"
+              className={`nav-item${activeFolder === `label:${l.id}` ? " active" : ""}`}
+              onClick={() => onFolder(`label:${l.id}`)}
+              title={l.name}
+              aria-label={l.name}
+            >
               <span className="label-dot" style={{ color: l.color }} />
-              {l.name}
+              <span className="nav-label">{l.name}</span>
             </button>
           ))}
         </div>
@@ -884,20 +1217,26 @@ function Sidebar({
             <button
               type="button"
               className="alert-btn ghost"
+              title={activeFolder === "junk" ? "Empty Junk" : "Empty Trash"}
+              aria-label={
+                activeFolder === "junk" ? "Empty Junk" : "Empty Trash"
+              }
               onClick={() =>
                 onEmptyFolder(activeFolder === "junk" ? "junk" : "trash")
               }
             >
               <Eraser size={13} strokeWidth={1.75} />
-              {activeFolder === "junk" ? "Empty Junk" : "Empty Trash"}
+              <span className="nav-label">
+                {activeFolder === "junk" ? "Empty Junk" : "Empty Trash"}
+              </span>
             </button>
           </div>
         )}
 
       <div className="sidebar-footer">
-        <span className="sync-pill">
+        <span className="sync-pill" title={syncLabel}>
           <span className="sync-dot" />
-          {syncLabel}
+          <span className="sync-label">{syncLabel}</span>
         </span>
       </div>
     </aside>
@@ -915,9 +1254,11 @@ function MessageActionMenu({
   x,
   y,
   labels,
+  customFolders,
   onAction,
   onClose,
   onCreateLabel,
+  onCreateFolder,
   initialPanel,
   showAi = false,
 }: {
@@ -925,9 +1266,11 @@ function MessageActionMenu({
   x: number;
   y: number;
   labels: Label[];
+  customFolders: string[];
   onAction: (action: MailAction, detail?: string) => void;
   onClose: () => void;
   onCreateLabel: (name: string, color: string) => void;
+  onCreateFolder?: (name: string) => boolean;
   /** Open a submenu immediately (toolbar Label / Snooze / Move). */
   initialPanel?: "snooze" | "label" | "move";
   showAi?: boolean;
@@ -938,9 +1281,12 @@ function MessageActionMenu({
     initialPanel ?? null,
   );
   const [creatingLabel, setCreatingLabel] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [newLabelName, setNewLabelName] = useState("");
+  const [newFolderName, setNewFolderName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState(LABEL_COLORS[4]);
   const newLabelInputRef = useRef<HTMLInputElement | null>(null);
+  const newFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -967,11 +1313,15 @@ function MessageActionMenu({
     if (dx || dy) {
       el.style.transform = `translate(${dx}px, ${dy}px)`;
     }
-  }, [x, y, panel, creatingLabel]);
+  }, [x, y, panel, creatingLabel, creatingFolder]);
 
   useEffect(() => {
     if (creatingLabel) newLabelInputRef.current?.focus();
   }, [creatingLabel]);
+
+  useEffect(() => {
+    if (creatingFolder) newFolderInputRef.current?.focus();
+  }, [creatingFolder]);
 
   const openPanel = (next: "snooze" | "label" | "move") => {
     if (leaveTimer.current != null) {
@@ -980,6 +1330,7 @@ function MessageActionMenu({
     }
     setPanel(next);
     if (next !== "label") setCreatingLabel(false);
+    if (next !== "move") setCreatingFolder(false);
   };
 
   const submitNewLabel = () => {
@@ -988,6 +1339,16 @@ function MessageActionMenu({
     onCreateLabel(name, newLabelColor);
     setCreatingLabel(false);
     setNewLabelName("");
+  };
+
+  const submitNewFolder = () => {
+    const name = newFolderName.trim();
+    if (!name || !onCreateFolder) return;
+    if (onCreateFolder(name)) {
+      onAction("move", name);
+      setCreatingFolder(false);
+      setNewFolderName("");
+    }
   };
 
   const scheduleClosePanel = () => {
@@ -1056,6 +1417,7 @@ function MessageActionMenu({
     <div className="ctx-root" style={{ left: x, top: y }} ref={ref}>
       <div className="ctx-menu">
         {item("reply", "Reply", Reply)}
+        {item("reply-all", "Reply all", ReplyAll)}
         {item("forward", "Forward", Forward)}
         <div className="ctx-sep" />
         {item(
@@ -1136,6 +1498,67 @@ function MessageActionMenu({
                 </button>
               );
             })}
+            {onCreateFolder && (
+              <>
+                <div className="ctx-sep" />
+                {creatingFolder ? (
+                  <div
+                    className="ctx-new-label"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      ref={newFolderInputRef}
+                      className="ctx-new-label-input"
+                      placeholder="Folder name"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          submitNewFolder();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setCreatingFolder(false);
+                          setNewFolderName("");
+                        }
+                      }}
+                    />
+                    <div className="ctx-new-label-actions">
+                      <button
+                        type="button"
+                        className="ctx-item"
+                        onClick={() => {
+                          setCreatingFolder(false);
+                          setNewFolderName("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="ctx-item ctx-new-label-create"
+                        disabled={!newFolderName.trim()}
+                        onClick={submitNewFolder}
+                      >
+                        <Plus size={14} strokeWidth={2} />
+                        Create
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="ctx-item"
+                    onClick={() => setCreatingFolder(true)}
+                  >
+                    <Plus size={14} strokeWidth={2} />
+                    New folder…
+                  </button>
+                )}
+              </>
+            )}
           </>,
           "ctx-folder-flyout",
         )}
@@ -1277,6 +1700,7 @@ function MessageActionMenu({
 
 function MessageList({
   items,
+  accounts,
   selectedId,
   checkedIds,
   filter,
@@ -1289,6 +1713,7 @@ function MessageList({
   hoverActions,
   reduceMotion,
   labels,
+  customFolders,
   showAi,
   syncing,
   fullScreen,
@@ -1302,8 +1727,10 @@ function MessageList({
   onCompose,
   onAction,
   onCreateLabel,
+  onCreateFolder,
 }: {
   items: Message[];
+  accounts: Account[];
   selectedId: string;
   checkedIds: Set<string>;
   filter: Filter;
@@ -1316,6 +1743,7 @@ function MessageList({
   hoverActions: boolean;
   reduceMotion: boolean;
   labels: Label[];
+  customFolders: string[];
   showAi: boolean;
   syncing?: boolean;
   fullScreen?: boolean;
@@ -1332,6 +1760,7 @@ function MessageList({
   onCompose?: () => void;
   onAction: (messageId: string, action: MailAction, snoozeLabel?: string) => void;
   onCreateLabel: (messageId: string, name: string, color: string) => void;
+  onCreateFolder: (name: string) => boolean;
 }) {
   const otherCount = items.filter((m) => !m.important && m.unread).length;
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -1341,6 +1770,7 @@ function MessageList({
   const checkedMessages = items.filter((m) => checkedIds.has(m.id));
   const anyUnread = checkedMessages.some((m) => m.unread);
   const anyUnstarred = checkedMessages.some((m) => !m.starred);
+  const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
 
   const menuMessage = menu
     ? items.find((m) => m.id === menu.messageId) ?? null
@@ -1518,7 +1948,7 @@ function MessageList({
           </div>
         ) : (
           items.map((m, i) => {
-            const acct = accountFor(m.accountId);
+            const acct = accountFor(m.accountId, accounts);
             const selected = m.id === selectedId;
             const checked = checkedIds.has(m.id);
             const badges = listBadgeCounts(m);
@@ -1597,9 +2027,15 @@ function MessageList({
                         {acct.label}
                       </span>
                     )}
-                    {isCcOnly(m) && <span className="cc-chip">Cc</span>}
+                    {isCcOnly(m, ownEmails) && (
+                      <span className="cc-chip">Cc</span>
+                    )}
                     {m.tag && (
-                      <span className="tag" style={{ background: m.tag.color }}>
+                      <span
+                        className="tag"
+                        style={{ background: m.tag.color }}
+                        title={m.tag.label}
+                      >
                         {m.tag.label}
                       </span>
                     )}
@@ -1719,12 +2155,14 @@ function MessageList({
           x={menu.x}
           y={menu.y}
           labels={labels}
+          customFolders={customFolders}
           showAi={showAi}
           onClose={() => setMenu(null)}
           onCreateLabel={(name, color) => {
             onCreateLabel(menu.messageId, name, color);
             setMenu(null);
           }}
+          onCreateFolder={onCreateFolder}
           onAction={(action, snoozeLabel) => {
             onAction(menu.messageId, action, snoozeLabel);
             setMenu(null);
@@ -1743,6 +2181,16 @@ function HtmlBody({
   forceDark?: boolean;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [showImages, setShowImages] = useState(false);
+  const [hasBlockedImages, setHasBlockedImages] = useState(false);
+  const [userHeight, setUserHeight] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const naturalHeight = useRef(160);
+
+  useEffect(() => {
+    setUserHeight(null);
+  }, [html]);
 
   useEffect(() => {
     const frame = ref.current;
@@ -1750,39 +2198,159 @@ function HtmlBody({
     const doc = frame.contentDocument;
     if (!doc) return;
     const dark = forceDark
-      ? `html, body { margin: 0; padding: 0; background: #141416; color: #e8e8ea; }
+      ? `html, body { margin: 0; padding: 0; overflow: hidden; background: #141416; color: #e8e8ea; }
          body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
          img { max-width: 100%; height: auto; }
          a { color: #7eb0ff; }
          table, td, div { background-color: transparent !important; color: inherit !important; }`
-      : `html, body { margin: 0; padding: 0; background: #fff; color: #1a1a1a; }
+      : `html, body { margin: 0; padding: 0; overflow: hidden; background: #fff; color: #1a1a1a; }
          body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
          img { max-width: 100%; height: auto; }
          a { color: #2563eb; }`;
+    // Block every remote fetch (tracking pixels, CSS imports, media) unless the
+    // user explicitly asks to load images for this message.
+    const csp = showImages
+      ? "default-src 'none'; img-src https: http: data: blob:; style-src 'unsafe-inline'; font-src data:; media-src https: http: data: blob:; base-uri 'none'; form-action 'none';"
+      : "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none';";
     doc.open();
     doc.write(`<!doctype html><html><head><meta charset="utf-8" />
+      <meta http-equiv="Content-Security-Policy" content="${csp}" />
       <style>${dark}</style>
     </head><body>${html}</body></html>`);
     doc.close();
+
+    if (!showImages) {
+      const remote = Array.from(doc.images ?? []).some((img) =>
+        /^https?:/i.test(img.getAttribute("src") ?? ""),
+      );
+      setHasBlockedImages(remote);
+    }
+
+    // Links inside the sandbox cannot navigate; route them through the main
+    // process, which re-validates the protocol.
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      const anchor = target?.closest?.("a");
+      const href = anchor?.getAttribute("href") ?? "";
+      if (!href) return;
+      event.preventDefault();
+      if (/^(https?:|mailto:)/i.test(href)) {
+        void window.intray?.openExternal?.(href);
+      }
+    };
+    doc.addEventListener("click", onClick);
+
+    const measureHeight = () => {
+      const body = doc.body;
+      const root = doc.documentElement;
+      if (!body) return 120;
+      // body.scrollHeight often under-counts collapsed margins; take the max of
+      // root/body metrics and the furthest child bottom edge.
+      const bodyTop = body.getBoundingClientRect().top;
+      let childBottom = 0;
+      for (const child of Array.from(body.children)) {
+        childBottom = Math.max(
+          childBottom,
+          child.getBoundingClientRect().bottom - bodyTop,
+        );
+      }
+      return Math.max(
+        body.scrollHeight,
+        body.offsetHeight,
+        root?.scrollHeight ?? 0,
+        root?.offsetHeight ?? 0,
+        childBottom,
+      );
+    };
+
     const resize = () => {
-      const h = doc.body?.scrollHeight ?? 120;
-      frame.style.height = `${Math.min(Math.max(h + 8, 80), 900)}px`;
+      const h = measureHeight();
+      naturalHeight.current = Math.min(Math.max(h + 12, 80), 2400);
+      if (userHeight == null) {
+        // Fit content so short mail doesn't scroll while the reading pane is empty.
+        frame.style.height = `${Math.min(naturalHeight.current, 900)}px`;
+      } else {
+        // Keep full content height; the shell max-height + overflow scrolls when shrunk.
+        frame.style.height = `${Math.max(naturalHeight.current, userHeight)}px`;
+      }
     };
     resize();
+    // Second pass after layout/fonts settle — first paint often under-measures.
+    const raf = window.requestAnimationFrame(() => resize());
     const ob = new ResizeObserver(resize);
     if (doc.body) ob.observe(doc.body);
-    return () => ob.disconnect();
-  }, [html, forceDark]);
+    if (doc.documentElement) ob.observe(doc.documentElement);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      ob.disconnect();
+      doc.removeEventListener("click", onClick);
+    };
+  }, [html, forceDark, showImages, userHeight]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: PointerEvent) => {
+      const shell = shellRef.current;
+      if (!shell) return;
+      const top = shell.getBoundingClientRect().top;
+      const next = Math.min(Math.max(e.clientY - top, 120), 1200);
+      setUserHeight(next);
+    };
+    const onUp = () => setDragging(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragging]);
 
   return (
-    <iframe
-      ref={ref}
-      className="html-frame"
-      title="Email HTML"
-      // allow-same-origin so we can write/measure the doc; no allow-scripts
-      sandbox="allow-same-origin"
-      referrerPolicy="no-referrer"
-    />
+    <div className="html-frame-wrap">
+      {hasBlockedImages && !showImages && (
+        <button
+          type="button"
+          className="html-images-btn"
+          onClick={() => setShowImages(true)}
+        >
+          Remote images blocked · Load images
+        </button>
+      )}
+      <div
+        ref={shellRef}
+        className={`html-shell${userHeight != null ? " resized" : ""}`}
+        style={
+          userHeight != null
+            ? ({ ["--html-shell-height" as string]: `${userHeight}px` } as CSSProperties)
+            : undefined
+        }
+      >
+        <iframe
+          ref={ref}
+          className="html-frame"
+          title="Email HTML"
+          // allow-same-origin so we can write/measure the doc; no allow-scripts.
+          sandbox="allow-same-origin"
+          referrerPolicy="no-referrer"
+        />
+      </div>
+      <button
+        type="button"
+        className={`html-resize-handle${dragging ? " dragging" : ""}`}
+        aria-label="Drag to resize message height"
+        title="Drag to resize"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          const shell = shellRef.current;
+          const start =
+            userHeight ??
+            shell?.getBoundingClientRect().height ??
+            Math.min(naturalHeight.current, 900);
+          setUserHeight(start);
+          setDragging(true);
+        }}
+      />
+    </div>
   );
 }
 
@@ -1929,9 +2497,7 @@ function ThreadMessageView({
           )}
 
           {message.bodyHtml ? (
-            <div className="html-shell">
-              <HtmlBody html={message.bodyHtml} forceDark={forceDarkHtml} />
-            </div>
+            <HtmlBody html={message.bodyHtml} forceDark={forceDarkHtml} />
           ) : (
             <div className="body-copy">
               {(message.body ?? []).map((p) => (
@@ -1997,17 +2563,20 @@ function ReadingPane({
   conversationView,
   showAi,
   labels,
+  customFolders,
   prefs,
   live,
   account,
+  accounts,
   onBack,
   onAsk,
   onAction,
   onCreateLabel,
+  onCreateFolder,
   onComposeTo,
   onToast,
   onReplySent,
-  focusReplySignal = 0,
+  replyIntent = { key: 0, mode: "reply" as ReplyMode },
 }: {
   message: Message | null;
   stickySubject: boolean;
@@ -2015,22 +2584,63 @@ function ReadingPane({
   conversationView: boolean;
   showAi: boolean;
   labels: Label[];
+  customFolders: string[];
   prefs: Preferences;
   live: boolean;
   account: Account;
+  accounts: Account[];
   onBack?: () => void;
   onAsk: () => void;
   onAction: (action: MailAction, snoozeLabel?: string) => void;
   onCreateLabel: (name: string, color: string) => void;
+  onCreateFolder: (name: string) => boolean;
   onComposeTo: (r: Recipient) => void;
   onToast: (text: string) => void;
   onReplySent?: (message: Message) => void;
-  /** Bumped by parent to focus the reply box (context menu / shortcuts). */
-  focusReplySignal?: number;
+  /** Bumped by parent to focus/seed the reply box (Reply vs Reply all). */
+  replyIntent?: { key: number; mode: ReplyMode };
 }) {
+  const sendable = useMemo(
+    () => accounts.filter((a) => a.id !== UNIFIED_ID),
+    [accounts],
+  );
+  const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
+  const defaultReplyFromId = useMemo(() => {
+    const signedIn = sendable.filter((a) => !a.loggedOut);
+    const pick = (id: string | undefined) => {
+      if (!id) return undefined;
+      const hit = sendable.find((a) => a.id === id);
+      if (!hit) return undefined;
+      if (!hit.loggedOut) return hit.id;
+      return signedIn[0]?.id ?? hit.id;
+    };
+    return (
+      pick(message?.accountId) ??
+      pick(account.id !== UNIFIED_ID ? account.id : undefined) ??
+      signedIn[0]?.id ??
+      sendable[0]?.id ??
+      account.id
+    );
+  }, [message?.accountId, account.id, sendable]);
+
   const [draft, setDraft] = useState("");
+  const [fromId, setFromId] = useState(defaultReplyFromId);
+  const [toMentions, setToMentions] = useState<Recipient[]>([]);
   const [ccMentions, setCcMentions] = useState<Recipient[]>([]);
-  const [sendingReply, setSendingReply] = useState(false);
+  const [bccMentions, setBccMentions] = useState<Recipient[]>([]);
+  const [showCc, setShowCc] = useState(false);
+  const [showBcc, setShowBcc] = useState(false);
+  /** From/To/Cc bar — collapsed while reading; opens on reply focus or Reply/Reply all. */
+  const [recipientsOpen, setRecipientsOpen] = useState(false);
+  const [replySendPhase, setReplySendPhase] = useState<
+    "idle" | "sending" | "sent" | "failed"
+  >("idle");
+  const replyFrom =
+    sendable.find((a) => a.id === fromId) ??
+    sendable.find((a) => a.id === defaultReplyFromId) ??
+    sendable[0] ??
+    account;
+  const replyFromLoggedOut = Boolean(replyFrom.loggedOut);
   const [aiReplies, setAiReplies] = useState<string[]>([]);
   const [unsubState, setUnsubState] = useState<
     "idle" | "scanning" | "done" | "missing"
@@ -2041,6 +2651,10 @@ function ReadingPane({
     panel?: "snooze" | "label" | "move";
   } | null>(null);
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
+  const replyStateRef = useRef({ draft, toMentions, ccMentions, bccMentions });
+  replyStateRef.current = { draft, toMentions, ccMentions, bccMentions };
+  const replyHistory = useUndoStack(() => replyStateRef.current);
+
   const seedReplies = message
     ? (smartRepliesById[message.id] ?? defaultSmartReplies)
     : [];
@@ -2048,8 +2662,8 @@ function ReadingPane({
 
   const predictions = useMemo(() => {
     if (!showAi || !prefs.aiWriteEnabled || !replies.length) return [];
-    const q = draft.trim().toLowerCase();
-    const pool = q
+    const q = draft.toLowerCase();
+    const pool = q.trim()
       ? replies.filter((r) => {
           const t = r.toLowerCase();
           return t.startsWith(q) && t !== q;
@@ -2057,6 +2671,68 @@ function ReadingPane({
       : replies;
     return pool.slice(0, 2);
   }, [showAi, prefs.aiWriteEnabled, replies, draft]);
+
+  const prediction = predictions[0] ?? null;
+  const ghostSuffix = (() => {
+    if (!prediction) return null;
+    if (!prediction.toLowerCase().startsWith(draft.toLowerCase())) return null;
+    const rest = prediction.slice(draft.length);
+    return rest.length > 0 ? rest : null;
+  })();
+
+  const applyReplyState = (next: {
+    draft: string;
+    toMentions: Recipient[];
+    ccMentions: Recipient[];
+    bccMentions: Recipient[];
+  }) => {
+    setDraft(next.draft);
+    setToMentions(next.toMentions);
+    setCcMentions(next.ccMentions);
+    setBccMentions(next.bccMentions);
+    replyHistory.finishApply();
+  };
+
+  const setDraftTracked = (next: string) => {
+    if (next === draft) return;
+    replyHistory.push();
+    setDraft(next);
+  };
+
+  const setToTracked = (next: Recipient[]) => {
+    replyHistory.push();
+    setToMentions(next);
+  };
+
+  const setCcTracked = (next: Recipient[]) => {
+    replyHistory.push();
+    setCcMentions(next);
+  };
+
+  const setBccTracked = (next: Recipient[]) => {
+    replyHistory.push();
+    setBccMentions(next);
+  };
+
+  const undoReply = () => {
+    const prev = replyHistory.undo();
+    if (!prev) return false;
+    applyReplyState(prev);
+    return true;
+  };
+
+  const redoReply = () => {
+    const next = replyHistory.redo();
+    if (!next) return false;
+    applyReplyState(next);
+    return true;
+  };
+
+  const acceptPrediction = (index: number) => {
+    const text = predictions[index];
+    if (!text) return;
+    setDraftTracked(text);
+  };
 
   useEffect(() => {
     setAiReplies([]);
@@ -2073,41 +2749,98 @@ function ReadingPane({
     };
   }, [message?.id, showAi, prefs.aiWriteEnabled, prefs.aiBridge, prefs.aiModelHint]);
 
+  const replyExcludeEmails = [
+    replyFrom.email,
+    ...toMentions.map((p) => p.email),
+    ...ccMentions.map((p) => p.email),
+    ...bccMentions.map((p) => p.email),
+  ].filter(Boolean);
+
   const addCcMention = (contact: Contact) => {
-    setCcMentions((prev) => {
-      if (prev.some((p) => p.email.toLowerCase() === contact.email.toLowerCase())) {
-        return prev;
-      }
-      return [...prev, { name: contact.name, email: contact.email }];
-    });
+    const email = contact.email.toLowerCase();
+    if (
+      toMentions.some((p) => p.email.toLowerCase() === email) ||
+      ccMentions.some((p) => p.email.toLowerCase() === email) ||
+      bccMentions.some((p) => p.email.toLowerCase() === email)
+    ) {
+      return;
+    }
+    setCcTracked([
+      ...ccMentions,
+      { name: contact.name, email: contact.email },
+    ]);
+    setShowCc(true);
+  };
+
+  const seedReplyRecipients = (mode: ReplyMode) => {
+    if (!message) {
+      setToMentions([]);
+      setCcMentions([]);
+      setShowCc(false);
+      return;
+    }
+    const seeded = buildReplyRecipients(message, mode, ownEmails);
+    setToMentions(seeded.to);
+    setCcMentions(seeded.cc);
+    setShowCc(seeded.cc.length > 0);
   };
 
   useEffect(() => {
     setDraft("");
-    setCcMentions([]);
+    setFromId(defaultReplyFromId);
+    setBccMentions([]);
+    setShowBcc(false);
+    setRecipientsOpen(false);
+    seedReplyRecipients("reply");
+    replyHistory.clear();
     setMenu(null);
     setUnsubState("idle");
-    setSendingReply(false);
-  }, [message?.id]);
+    setReplySendPhase("idle");
+    // Re-seed only when the open message / From account changes — not when the
+    // accounts list refreshes mid-draft.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message?.id, defaultReplyFromId]);
 
   useEffect(() => {
-    if (!focusReplySignal || !message) return;
+    if (ccMentions.length) setShowCc(true);
+  }, [ccMentions.length]);
+
+  useEffect(() => {
+    if (bccMentions.length) setShowBcc(true);
+  }, [bccMentions.length]);
+
+  useEffect(() => {
+    if (!replyIntent.key || !message) return;
+    seedReplyRecipients(replyIntent.mode);
+    setRecipientsOpen(true);
     const id = window.requestAnimationFrame(() => {
       replyRef.current?.focus();
       replyRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(id);
-  }, [focusReplySignal, message?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replyIntent.key, replyIntent.mode, message?.id]);
 
   const sendReply = async () => {
-    if (!message || !draft.trim() || sendingReply) return;
-    setSendingReply(true);
+    if (!message || !draft.trim() || replySendPhase === "sending") return;
+    if (toMentions.length === 0) {
+      setRecipientsOpen(true);
+      onToast("Add at least one To recipient");
+      return;
+    }
+    if (replyFromLoggedOut) {
+      setReplySendPhase("failed");
+      onToast("This account is logged out — reconnect in Settings");
+      return;
+    }
+    setReplySendPhase("sending");
     try {
       if (live) {
         const dto = await bridgeSendMail({
-          accountId: message.accountId || account.id,
-          to: [message.email],
+          accountId: replyFrom.id,
+          to: toMentions.map((c) => c.email),
           cc: ccMentions.map((c) => c.email),
+          bcc: bccMentions.map((c) => c.email),
           subject: message.subject.startsWith("Re:")
             ? message.subject
             : `Re: ${message.subject}`,
@@ -2116,15 +2849,21 @@ function ReadingPane({
         });
         onReplySent?.(messageDtoToUi(dto));
       } else {
-        onToast("Reply saved locally (connect an account to send)");
+        // Demo mode: brief delay so the Sending → Sent transition is visible.
+        await new Promise((r) => setTimeout(r, 450));
       }
+      setReplySendPhase("sent");
       setDraft("");
-      setCcMentions([]);
+      seedReplyRecipients("reply");
+      setBccMentions([]);
+      setShowBcc(false);
+      setRecipientsOpen(false);
+      replyHistory.clear();
       onToast("Reply sent");
+      window.setTimeout(() => setReplySendPhase("idle"), 1200);
     } catch (e) {
-      onToast(e instanceof Error ? e.message : "Send failed");
-    } finally {
-      setSendingReply(false);
+      setReplySendPhase("failed");
+      onToast(e instanceof Error ? e.message : "Failed to send");
     }
   };
 
@@ -2137,7 +2876,7 @@ function ReadingPane({
     try {
       const text = await aiSummarizeMessage(prefs, message);
       onToast(text.slice(0, 180) + (text.length > 180 ? "…" : ""));
-      setDraft((d) => (d.trim() ? d : text));
+      if (!draft.trim()) setDraftTracked(text);
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Summarize failed");
     }
@@ -2151,7 +2890,7 @@ function ReadingPane({
     onToast("Translating…");
     try {
       const text = await aiTranslateMessage(prefs, message);
-      setDraft(text);
+      setDraftTracked(text);
       onToast("Translation ready in reply box");
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Translate failed");
@@ -2166,7 +2905,7 @@ function ReadingPane({
     onToast("Writing reply…");
     try {
       const text = await aiWriteReply(prefs, message);
-      setDraft(text);
+      setDraftTracked(text);
     } catch (e) {
       onToast(e instanceof Error ? e.message : "AI write failed");
     }
@@ -2214,7 +2953,7 @@ function ReadingPane({
     action?: MailAction;
   }> = [
     { Icon: Reply, label: "Reply", action: "reply" },
-    { Icon: ReplyAll, label: "Reply all", action: "reply" },
+    { Icon: ReplyAll, label: "Reply all", action: "reply-all" },
     { Icon: Forward, label: "Forward", action: "forward" },
     ...(message.folder === "junk"
       ? [
@@ -2333,17 +3072,24 @@ function ReadingPane({
           y={menu.y}
           initialPanel={menu.panel}
           labels={labels}
+          customFolders={customFolders}
           showAi={showAi}
           onClose={() => setMenu(null)}
           onCreateLabel={(name, color) => {
             onCreateLabel(name, color);
             setMenu(null);
           }}
+          onCreateFolder={onCreateFolder}
           onAction={(action, detail) => {
             onAction(action, detail);
             setMenu(null);
           }}
         />
+      )}
+
+      {/* Pin outside the scrollport so HTML iframes cannot paint through sticky. */}
+      {stickySubject && (
+        <h1 className="reader-subject pinned">{message.subject}</h1>
       )}
 
       <div className="reader-scroll fade-up-delay" key={message.id}>
@@ -2353,11 +3099,9 @@ function ReadingPane({
             {message.thread.length === 1 ? "message" : "messages"}
           </span>
         </div>
-        <h1
-          className={`reader-subject${stickySubject ? " sticky" : ""}`}
-        >
-          {message.subject}
-        </h1>
+        {!stickySubject && (
+          <h1 className="reader-subject">{message.subject}</h1>
+        )}
 
         {openTrack && openSummary && (
           <div className="open-track-banner" role="status">
@@ -2452,40 +3196,229 @@ function ReadingPane({
       </div>
 
       <div className="reply-dock">
-        <div className="reply-box">
-          <RecipientChips
-            label="Cc"
-            people={ccMentions}
-            onRemove={(email) =>
-              setCcMentions((prev) =>
-                prev.filter((p) => p.email.toLowerCase() !== email.toLowerCase()),
-              )
+        <div
+          className={`reply-box${recipientsOpen ? " recipients-open" : ""}`}
+          onFocusCapture={() => setRecipientsOpen(true)}
+          onBlur={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+            if (!draft.trim()) setRecipientsOpen(false);
+          }}
+          onKeyDown={(e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            const key = e.key.toLowerCase();
+            if (key === "z" && !e.shiftKey) {
+              if (undoReply()) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+              return;
             }
-            onAdd={(r) => {
-              setCcMentions((prev) => {
-                if (
-                  prev.some(
-                    (p) => p.email.toLowerCase() === r.email.toLowerCase(),
+            if ((key === "z" && e.shiftKey) || key === "y") {
+              if (redoReply()) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }
+          }}
+        >
+          {recipientsOpen ? (
+            <div className="reply-recipients">
+              <div className="reply-meta-bar">
+                <div className="reply-from-compact">
+                  <span className="reply-from-prefix">From</span>
+                  <AppSelect
+                    compact
+                    ariaLabel="Send reply from account"
+                    value={replyFrom.id}
+                    onChange={(id) => {
+                      setFromId(id);
+                      setReplySendPhase("idle");
+                    }}
+                    options={sendable.map((a) => ({
+                      id: a.id,
+                      label: a.name,
+                      detail: a.loggedOut ? `${a.email} · Logged out` : a.email,
+                      leading: (
+                        <span
+                          className="account-chip"
+                          style={{
+                            background: "transparent",
+                            color: a.color,
+                            borderColor: a.color,
+                            opacity: a.loggedOut ? 0.55 : 1,
+                          }}
+                        >
+                          {a.label}
+                        </span>
+                      ),
+                    }))}
+                  />
+                </div>
+                <div className="reply-meta-toggles">
+                  <button
+                    type="button"
+                    className={`reply-meta-toggle${showCc ? " active" : ""}`}
+                    aria-pressed={showCc}
+                    onClick={() => setShowCc((v) => !v)}
+                  >
+                    Cc
+                    {ccMentions.length > 0 ? (
+                      <span className="reply-meta-count">{ccMentions.length}</span>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    className={`reply-meta-toggle${showBcc ? " active" : ""}`}
+                    aria-pressed={showBcc}
+                    onClick={() => setShowBcc((v) => !v)}
+                  >
+                    Bcc
+                    {bccMentions.length > 0 ? (
+                      <span className="reply-meta-count">{bccMentions.length}</span>
+                    ) : null}
+                  </button>
+                </div>
+              </div>
+              <RecipientChips
+                label="To"
+                people={toMentions}
+                excludeEmails={replyExcludeEmails}
+                onRemove={(email) =>
+                  setToTracked(
+                    toMentions.filter(
+                      (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                    ),
                   )
-                ) {
-                  return prev;
                 }
-                return [...prev, r];
-              });
-            }}
-            placeholder="Cc email…"
-          />
-          <MentionTextarea
-            textareaRef={replyRef}
-            placeholder={`Reply to ${message.from}… Type @ to Cc someone`}
-            value={draft}
-            onChange={setDraft}
-            onMention={addCcMention}
-            excludeEmails={[
-              message.email,
-              ...ccMentions.map((p) => p.email),
-            ]}
-          />
+                onAdd={(r) => {
+                  if (
+                    replyExcludeEmails.some(
+                      (e) => e.toLowerCase() === r.email.toLowerCase(),
+                    )
+                  ) {
+                    return;
+                  }
+                  setToTracked([...toMentions, r]);
+                }}
+                placeholder="To email…"
+              />
+              {showCc && (
+                <RecipientChips
+                  label="Cc"
+                  people={ccMentions}
+                  excludeEmails={replyExcludeEmails}
+                  onRemove={(email) =>
+                    setCcTracked(
+                      ccMentions.filter(
+                        (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                      ),
+                    )
+                  }
+                  onAdd={(r) => {
+                    if (
+                      replyExcludeEmails.some(
+                        (e) => e.toLowerCase() === r.email.toLowerCase(),
+                      )
+                    ) {
+                      return;
+                    }
+                    setCcTracked([...ccMentions, r]);
+                  }}
+                  placeholder="Cc email…"
+                />
+              )}
+              {showBcc && (
+                <RecipientChips
+                  label="Bcc"
+                  people={bccMentions}
+                  excludeEmails={replyExcludeEmails}
+                  onRemove={(email) =>
+                    setBccTracked(
+                      bccMentions.filter(
+                        (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                      ),
+                    )
+                  }
+                  onAdd={(r) => {
+                    if (
+                      replyExcludeEmails.some(
+                        (e) => e.toLowerCase() === r.email.toLowerCase(),
+                      )
+                    ) {
+                      return;
+                    }
+                    setBccTracked([...bccMentions, r]);
+                  }}
+                  placeholder="Bcc email…"
+                />
+              )}
+            </div>
+          ) : null}
+          <div className="reply-input-stack">
+            {ghostSuffix != null && prediction && (
+              <div className="reply-ghost" aria-hidden>
+                <span className="reply-ghost-typed">{draft}</span>
+                <span className="reply-ghost-rest">{ghostSuffix}</span>
+              </div>
+            )}
+            <MentionTextarea
+              textareaRef={replyRef}
+              placeholder={
+                ghostSuffix != null
+                  ? ""
+                  : toMentions.length > 1 || ccMentions.length > 0
+                    ? "Reply all… Type @ to Cc someone"
+                    : `Reply to ${toMentions[0]?.name || message.from}… Type @ to Cc someone`
+              }
+              value={draft}
+              onChange={setDraftTracked}
+              onMention={addCcMention}
+              excludeEmails={replyExcludeEmails}
+              aria-autocomplete={predictions.length ? "both" : undefined}
+              aria-description={
+                predictions.length
+                  ? "Press Tab or 1–2 to accept a suggested reply. Ctrl+Z to undo."
+                  : undefined
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Tab" && !e.shiftKey && ghostSuffix != null) {
+                  e.preventDefault();
+                  acceptPrediction(0);
+                  return;
+                }
+                if (
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.altKey &&
+                  (e.key === "1" || e.key === "2")
+                ) {
+                  const idx = Number(e.key) - 1;
+                  const text = predictions[idx];
+                  if (!text) return;
+                  const q = draft.toLowerCase();
+                  if (q && !text.toLowerCase().startsWith(q)) return;
+                  e.preventDefault();
+                  acceptPrediction(idx);
+                }
+              }}
+            />
+          </div>
+          {predictions.length > 0 && (
+            <div className="reply-suggests" role="listbox" aria-label="Reply suggestions">
+              {predictions.map((text, i) => (
+                <button
+                  key={text}
+                  type="button"
+                  className="reply-suggest"
+                  role="option"
+                  onClick={() => acceptPrediction(i)}
+                >
+                  <kbd className="reply-suggest-key">Tab {i + 1}</kbd>
+                  <span className="reply-suggest-text">{text}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="reply-actions">
             <div style={{ display: "flex", gap: 4 }}>
               <button type="button" className="icon-btn" aria-label="Attach">
@@ -2504,49 +3437,40 @@ function ReadingPane({
             </div>
             <button
               type="button"
-              className="send"
-              disabled={sendingReply || !draft.trim()}
+              className={`send send-${replyFromLoggedOut && replySendPhase === "idle" ? "logged-out" : replySendPhase}`}
+              disabled={
+                replySendPhase === "sending" ||
+                replySendPhase === "sent" ||
+                replyFromLoggedOut ||
+                (!draft.trim() && replySendPhase === "idle") ||
+                (toMentions.length === 0 && replySendPhase === "idle")
+              }
+              title={
+                replyFromLoggedOut
+                  ? "This account is logged out — reconnect in Settings"
+                  : undefined
+              }
               onClick={() => void sendReply()}
             >
-              {sendingReply ? "Sending…" : "Send"}
+              {replySendPhase === "sending" ? (
+                <Loader2 size={14} strokeWidth={2.25} className="spin" />
+              ) : replySendPhase === "sent" ? (
+                <Check size={14} strokeWidth={2.25} />
+              ) : replySendPhase === "failed" || replyFromLoggedOut ? (
+                <AlertCircle size={14} strokeWidth={2.25} />
+              ) : null}
+              {replyFromLoggedOut && replySendPhase === "idle"
+                ? "Logged out"
+                : replySendPhase === "sending"
+                  ? "Sending…"
+                  : replySendPhase === "sent"
+                    ? "Sent"
+                    : replySendPhase === "failed"
+                      ? "Failed to Send"
+                      : "Send"}
             </button>
           </div>
         </div>
-        {predictions.length > 0 && (
-          <div className="smart-row" role="listbox" aria-label="Reply predictions">
-            {predictions.map((text) => {
-              const typed = draft.trim();
-              const matchLen =
-                typed && text.toLowerCase().startsWith(typed.toLowerCase())
-                  ? typed.length
-                  : 0;
-              return (
-                <button
-                  key={text}
-                  type="button"
-                  className="smart"
-                  role="option"
-                  onClick={() => setDraft(text)}
-                >
-                  <span className="smart-text">
-                    {matchLen > 0 ? (
-                      <>
-                        <span className="smart-typed">
-                          {text.slice(0, matchLen)}
-                        </span>
-                        <span className="smart-rest">
-                          {text.slice(matchLen)}
-                        </span>
-                      </>
-                    ) : (
-                      text
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
     </section>
   );
@@ -2598,12 +3522,14 @@ function ModalShell({
 
 function ShortcutsCheatSheet({
   pack,
+  overrides,
   onClose,
 }: {
   pack: ShortcutPackId;
+  overrides: Preferences["shortcutOverrides"];
   onClose: () => void;
 }) {
-  const rows = listShortcuts(pack);
+  const rows = listShortcuts(pack, overrides ?? {});
   const groups = ["Navigate", "Actions", "Compose", "Jump", "Help"] as const;
   return (
     <div className="modal-root" onClick={onClose} role="presentation">
@@ -2627,9 +3553,11 @@ function ShortcutsCheatSheet({
               <div key={group}>
                 <div className="section-label">{group}</div>
                 {g.map((s) => (
-                  <div key={`${s.action}-${s.keys}`} className="settings-row">
+                  <div key={s.action} className="settings-row">
                     <strong>{s.label}</strong>
-                    <kbd className="keycap">{s.keys}</kbd>
+                    <kbd className={`keycap${s.customized ? " custom" : ""}`}>
+                      {s.keys}
+                    </kbd>
                   </div>
                 ))}
               </div>
@@ -2637,8 +3565,8 @@ function ShortcutsCheatSheet({
           })}
         </div>
         <p className="modal-note">
-          Change packs in Settings → Shortcuts. Muscle memory from Gmail or
-          Superhuman transfers here.
+          Change packs or remap keys in Settings → Shortcuts. Muscle memory from
+          Gmail or Superhuman transfers here.
         </p>
       </div>
     </div>
@@ -2703,21 +3631,101 @@ function ComposeModal({
   onQueued?: (queueId: string, seconds: number) => void;
 }) {
   const sendable = accounts.filter((a) => a.id !== UNIFIED_ID);
+  const signedIn = sendable.filter((a) => !a.loggedOut);
   const defaultFrom =
-    account.id === UNIFIED_ID
-      ? (sendable.find((a) => a.id === "work") ?? sendable[0] ?? account)
-      : account;
+    account.id !== UNIFIED_ID && !account.loggedOut
+      ? account
+      : (signedIn.find((a) => a.id === account.id) ??
+        signedIn.find((a) => a.id === "work") ??
+        signedIn[0] ??
+        sendable[0] ??
+        account);
   const [fromId, setFromId] = useState(defaultFrom.id);
   const from = sendable.find((a) => a.id === fromId) ?? defaultFrom;
+  const fromLoggedOut = Boolean(from.loggedOut);
   const [to, setTo] = useState<Recipient[]>(() => initialTo ?? []);
+  const [cc, setCc] = useState<Recipient[]>([]);
+  const [bcc, setBcc] = useState<Recipient[]>([]);
+  const [showCc, setShowCc] = useState(false);
+  const [showBcc, setShowBcc] = useState(false);
   const [subject, setSubject] = useState(initialSubject);
   const [body, setBody] = useState(initialBody);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [sendPhase, setSendPhase] = useState<
+    "idle" | "sending" | "sent" | "failed"
+  >("idle");
   const [sendError, setSendError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepth = useRef(0);
+  const composeStateRef = useRef({ to, cc, bcc, subject, body });
+  composeStateRef.current = { to, cc, bcc, subject, body };
+  const composeHistory = useUndoStack(() => composeStateRef.current);
+
+  const applyComposeState = (next: {
+    to: Recipient[];
+    cc: Recipient[];
+    bcc: Recipient[];
+    subject: string;
+    body: string;
+  }) => {
+    setTo(next.to);
+    setCc(next.cc);
+    setBcc(next.bcc);
+    setSubject(next.subject);
+    setBody(next.body);
+    composeHistory.finishApply();
+  };
+
+  const setToTracked = (next: Recipient[]) => {
+    composeHistory.push();
+    setTo(next);
+  };
+
+  const setCcTracked = (next: Recipient[]) => {
+    composeHistory.push();
+    setCc(next);
+    if (next.length) setShowCc(true);
+  };
+
+  const setBccTracked = (next: Recipient[]) => {
+    composeHistory.push();
+    setBcc(next);
+    if (next.length) setShowBcc(true);
+  };
+
+  const setSubjectTracked = (next: string) => {
+    if (next === subject) return;
+    composeHistory.push();
+    setSubject(next);
+  };
+
+  const setBodyTracked = (next: string) => {
+    if (next === body) return;
+    composeHistory.push();
+    setBody(next);
+  };
+
+  const composeExclude = [
+    from.email,
+    ...to.map((p) => p.email),
+    ...cc.map((p) => p.email),
+    ...bcc.map((p) => p.email),
+  ];
+
+  const undoCompose = () => {
+    const prev = composeHistory.undo();
+    if (!prev) return false;
+    applyComposeState(prev);
+    return true;
+  };
+
+  const redoCompose = () => {
+    const next = composeHistory.redo();
+    if (!next) return false;
+    applyComposeState(next);
+    return true;
+  };
 
   const signature = signatureForAccount(prefs, from.id);
   const signatureHtml = looksLikeHtml(signature);
@@ -2773,11 +3781,18 @@ function ComposeModal({
   };
 
   const handleSend = async () => {
+    if (sendPhase === "sending" || sendPhase === "sent") return;
+    if (fromLoggedOut) {
+      setSendPhase("failed");
+      setSendError("This account is logged out — reconnect in Settings.");
+      return;
+    }
     if (!to.length) {
+      setSendPhase("failed");
       setSendError("Add at least one recipient.");
       return;
     }
-    setSending(true);
+    setSendPhase("sending");
     setSendError(null);
     try {
       const bodyText = signature.trim()
@@ -2801,7 +3816,8 @@ function ComposeModal({
         const draftPayload = {
           accountId: from.id,
           to: to.map((r) => r.email),
-          cc: undefined as string[] | undefined,
+          cc: cc.length ? cc.map((r) => r.email) : undefined,
+          bcc: bcc.length ? bcc.map((r) => r.email) : undefined,
           subject,
           bodyText,
           attachments: encoded,
@@ -2809,13 +3825,16 @@ function ComposeModal({
         const delay = prefs.undoSendSeconds;
         if (delay > 0) {
           const queued = await bridgeSendLater(draftPayload, delay);
+          setSendPhase("sent");
           onQueued?.(queued.queueId, delay);
-          onClose();
+          window.setTimeout(() => onClose(), 700);
           return;
         }
         const dto = await bridgeSendMail(draftPayload);
         message = messageDtoToUi(dto);
       } else {
+        // Demo mode: brief delay so Sending → Sent is visible.
+        await new Promise((r) => setTimeout(r, 450));
         const id = `local-sent:${Date.now()}`;
         const preview = body.trim().slice(0, 120) || "(no subject)";
         message = {
@@ -2859,22 +3878,40 @@ function ComposeModal({
         };
       }
 
+      setSendPhase("sent");
       onSent?.(message);
-      onClose();
+      window.setTimeout(() => onClose(), 700);
     } catch (e) {
+      setSendPhase("failed");
       setSendError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSending(false);
     }
   };
 
   const addRecipient = (r: Recipient) => {
-    setTo((prev) => {
-      if (prev.some((p) => p.email.toLowerCase() === r.email.toLowerCase())) {
-        return prev;
-      }
-      return [...prev, r];
-    });
+    if (
+      composeExclude.some((e) => e.toLowerCase() === r.email.toLowerCase())
+    ) {
+      return;
+    }
+    setToTracked([...to, r]);
+  };
+
+  const addCc = (r: Recipient) => {
+    if (
+      composeExclude.some((e) => e.toLowerCase() === r.email.toLowerCase())
+    ) {
+      return;
+    }
+    setCcTracked([...cc, r]);
+  };
+
+  const addBcc = (r: Recipient) => {
+    if (
+      composeExclude.some((e) => e.toLowerCase() === r.email.toLowerCase())
+    ) {
+      return;
+    }
+    setBccTracked([...bcc, r]);
   };
 
   const addTo = (contact: Contact) => {
@@ -2889,6 +3926,23 @@ function ComposeModal({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
+        onKeyDown={(e) => {
+          if (!(e.ctrlKey || e.metaKey)) return;
+          const key = e.key.toLowerCase();
+          if (key === "z" && !e.shiftKey) {
+            if (undoCompose()) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+            return;
+          }
+          if ((key === "z" && e.shiftKey) || key === "y") {
+            if (redoCompose()) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }
+        }}
       >
         {draggingFiles && (
           <div className="compose-drop-overlay" aria-hidden>
@@ -2899,52 +3953,110 @@ function ComposeModal({
         )}
 
         <div className="compose-meta">
-          <div className="compose-field">
-            <span className="compose-field-label">From</span>
-            <div className="compose-from">
-              <select
-                className="compose-from-select"
+          <div className="reply-meta-bar">
+            <div className="reply-from-compact">
+              <span className="reply-from-prefix">From</span>
+              <AppSelect
+                compact
+                ariaLabel="Send from account"
                 value={from.id}
-                onChange={(e) => setFromId(e.target.value)}
-                aria-label="Send from account"
-              >
-                {sendable.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name} · {a.email}
-                  </option>
-                ))}
-              </select>
-              <span
-                className="account-chip"
-                style={{
-                  background: "transparent",
-                  color: from.color,
-                  borderColor: from.color,
+                onChange={(id) => {
+                  setFromId(id);
+                  setSendPhase("idle");
+                  setSendError(null);
                 }}
+                options={sendable.map((a) => ({
+                  id: a.id,
+                  label: a.name,
+                  detail: a.loggedOut ? `${a.email} · Logged out` : a.email,
+                  leading: (
+                    <span
+                      className="account-chip"
+                      style={{
+                        background: "transparent",
+                        color: a.color,
+                        borderColor: a.color,
+                        opacity: a.loggedOut ? 0.55 : 1,
+                      }}
+                    >
+                      {a.label}
+                    </span>
+                  ),
+                }))}
+              />
+            </div>
+            <div className="reply-meta-toggles">
+              <button
+                type="button"
+                className={`reply-meta-toggle${showCc ? " active" : ""}`}
+                aria-pressed={showCc}
+                onClick={() => setShowCc((v) => !v)}
               >
-                {from.label}
-              </span>
+                Cc
+                {cc.length > 0 ? (
+                  <span className="reply-meta-count">{cc.length}</span>
+                ) : null}
+              </button>
+              <button
+                type="button"
+                className={`reply-meta-toggle${showBcc ? " active" : ""}`}
+                aria-pressed={showBcc}
+                onClick={() => setShowBcc((v) => !v)}
+              >
+                Bcc
+                {bcc.length > 0 ? (
+                  <span className="reply-meta-count">{bcc.length}</span>
+                ) : null}
+              </button>
             </div>
           </div>
 
-          <div className="compose-field compose-field-to">
-            <span className="compose-field-label">To</span>
+          <RecipientChips
+            label="To"
+            people={to}
+            excludeEmails={composeExclude}
+            onRemove={(email) =>
+              setToTracked(
+                to.filter(
+                  (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                ),
+              )
+            }
+            onAdd={addRecipient}
+            placeholder="Name or email"
+          />
+          {showCc && (
             <RecipientChips
-              label="To"
-              hideLabel
-              people={to}
-              excludeEmails={[from.email]}
+              label="Cc"
+              people={cc}
+              excludeEmails={composeExclude}
               onRemove={(email) =>
-                setTo((prev) =>
-                  prev.filter(
+                setCcTracked(
+                  cc.filter(
                     (p) => p.email.toLowerCase() !== email.toLowerCase(),
                   ),
                 )
               }
-              onAdd={addRecipient}
-              placeholder="Name or email"
+              onAdd={addCc}
+              placeholder="Cc email…"
             />
-          </div>
+          )}
+          {showBcc && (
+            <RecipientChips
+              label="Bcc"
+              people={bcc}
+              excludeEmails={composeExclude}
+              onRemove={(email) =>
+                setBccTracked(
+                  bcc.filter(
+                    (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                  ),
+                )
+              }
+              onAdd={addBcc}
+              placeholder="Bcc email…"
+            />
+          )}
 
           <div className="compose-field">
             <span className="compose-field-label">Subject</span>
@@ -2952,7 +4064,7 @@ function ComposeModal({
               className="compose-subject"
               placeholder="What’s this about?"
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={(e) => setSubjectTracked(e.target.value)}
             />
           </div>
         </div>
@@ -2964,9 +4076,9 @@ function ComposeModal({
             autoFocus
             placeholder="Write your message… Type @ to add someone — or drop files to attach"
             value={body}
-            onChange={setBody}
+            onChange={setBodyTracked}
             onMention={addTo}
-            excludeEmails={[from.email, ...to.map((p) => p.email)]}
+            excludeEmails={composeExclude}
           />
           {signature.trim() && (
             <aside
@@ -3092,16 +4204,37 @@ function ComposeModal({
             </button>
             <button
               type="button"
-              className="send"
+              className={`send send-${fromLoggedOut && sendPhase === "idle" ? "logged-out" : sendPhase}`}
               onClick={() => void handleSend()}
-              disabled={sending}
+              disabled={
+                sendPhase === "sending" ||
+                sendPhase === "sent" ||
+                fromLoggedOut
+              }
+              title={
+                fromLoggedOut
+                  ? "This account is logged out — reconnect in Settings"
+                  : undefined
+              }
             >
-              {sending ? (
+              {sendPhase === "sending" ? (
                 <Loader2 size={14} strokeWidth={2.25} className="spin" />
+              ) : sendPhase === "sent" ? (
+                <Check size={14} strokeWidth={2.25} />
+              ) : sendPhase === "failed" || fromLoggedOut ? (
+                <AlertCircle size={14} strokeWidth={2.25} />
               ) : (
                 <Check size={14} strokeWidth={2.25} />
               )}
-              {sending ? "Sending…" : "Send"}
+              {fromLoggedOut && sendPhase === "idle"
+                ? "Logged out"
+                : sendPhase === "sending"
+                  ? "Sending…"
+                  : sendPhase === "sent"
+                    ? "Sent"
+                    : sendPhase === "failed"
+                      ? "Failed to Send"
+                      : "Send"}
             </button>
           </div>
         </div>
@@ -3110,17 +4243,42 @@ function ComposeModal({
   );
 }
 
+const PANE_KEY = "intray.pane-widths.v1";
+
+function loadPaneWidths(): { sidebar: number; list: number } {
+  try {
+    const raw = localStorage.getItem(PANE_KEY);
+    if (!raw) return { sidebar: 232, list: 340 };
+    const parsed = JSON.parse(raw) as { sidebar?: number; list?: number };
+    return {
+      sidebar: snapSidebarWidth(parsed.sidebar ?? 232),
+      list: Math.min(Math.max(parsed.list ?? 340, 240), 560),
+    };
+  } catch {
+    return { sidebar: 232, list: 340 };
+  }
+}
+
 export default function App() {
   const [prefs, setPrefs] = useState<Preferences>(() => loadPreferences());
   const [theme, setTheme] = useState<"dark" | "light">(() =>
     resolvedTheme(loadPreferences().theme),
   );
+  const [paneWidths, setPaneWidths] = useState(loadPaneWidths);
+  const paneDrag = useRef<{
+    key: "sidebar" | "list";
+    startX: number;
+    startW: number;
+  } | null>(null);
   const [live, setLive] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>(() =>
     seedAccounts.map((a) => ({ ...a })),
   );
   const [labels, setLabels] = useState<Label[]>(() =>
     seedLabels.map((l) => ({ ...l })),
+  );
+  const [customFolders, setCustomFolders] = useState<string[]>(() =>
+    loadCustomFolders(),
   );
   const [mail, setMail] = useState<Message[]>(() =>
     seedMessages.map((m) => ({ ...m })),
@@ -3175,7 +4333,10 @@ export default function App() {
     body?: string;
     title?: string;
   }>({});
-  const [focusReplySignal, setFocusReplySignal] = useState(0);
+  const [replyIntent, setReplyIntent] = useState<{
+    key: number;
+    mode: ReplyMode;
+  }>({ key: 0, mode: "reply" });
   const [searchTokens, setSearchTokens] = useState<SearchToken[]>([]);
   const searchQuery = useMemo(
     () => serializeSearch(searchTokens),
@@ -3245,7 +4406,8 @@ export default function App() {
     q?: string;
   }) => {
     const aid = opts?.accountId ?? accountId;
-    const folder = opts?.folder ?? folderId;
+    const requested = opts?.folder ?? folderId;
+    const folder = requested.startsWith("label:") ? "inbox" : requested;
     const f = opts?.filter ?? filter;
     const q = opts?.q ?? searchQuery;
     const result = await bridgeListMail({
@@ -3333,11 +4495,21 @@ export default function App() {
     return bridgeOnSyncProgress((status) => {
       setSyncStatus(status);
       setSyncing(status.state === "syncing");
+      if (
+        status.state === "error" &&
+        isAuthFailureMessage(status.error) &&
+        status.accountId
+      ) {
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.id === status.accountId ? { ...a, loggedOut: true } : a,
+          ),
+        );
+      }
       if (status.state === "idle" && live) {
         void refreshLiveMail();
         void bridgeAccounts().then((real) => {
           setAccounts((prev) => {
-            const unified = prev.find((a) => a.id === UNIFIED_ID);
             const mapped = real.map(accountDtoToUi);
             return [
               {
@@ -3347,7 +4519,6 @@ export default function App() {
                 email: "All accounts",
                 color: "#ededed",
                 unread: mapped.reduce((n, a) => n + a.unread, 0),
-                ...(unified ? {} : {}),
               },
               ...mapped,
             ];
@@ -3503,12 +4674,15 @@ export default function App() {
     if (!target) return;
 
     // Reply / forward are real compose flows — not toast-only stubs.
-    if (action === "reply") {
+    if (action === "reply" || action === "reply-all") {
       setAskOpen(false);
       setAskFocusThread(false);
       setSelectedId(messageId);
       if (prefs.layout === "stack") setStackView("reader");
-      setFocusReplySignal((n) => n + 1);
+      setReplyIntent((prev) => ({
+        key: prev.key + 1,
+        mode: action === "reply-all" ? "reply-all" : "reply",
+      }));
       return;
     }
     if (action === "forward") {
@@ -3883,20 +5057,98 @@ export default function App() {
     showToast(`Emptied ${label}`);
   };
 
+  const ensureLabel = (
+    name: string,
+    color: string,
+  ): Promise<{ label: Label; created: boolean } | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return Promise.resolve(null);
+
+    const existing = labels.find(
+      (l) => l.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (existing) return Promise.resolve({ label: existing, created: false });
+
+    const localLabel = (): Label => {
+      let id = slugLabelId(trimmed);
+      let n = 2;
+      while (labels.some((l) => l.id === id)) {
+        id = `${slugLabelId(trimmed)}-${n++}`;
+      }
+      return { id, name: trimmed, color };
+    };
+
+    if (live) {
+      return bridgeCreateLabel({ name: trimmed, color })
+        .then((dto) => ({
+          label: { id: dto.id, name: dto.name, color: dto.color },
+          created: true,
+        }))
+        .catch(() => ({ label: localLabel(), created: true }));
+    }
+
+    return Promise.resolve({ label: localLabel(), created: true });
+  };
+
+  const createFolder = (name: string): boolean => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+
+    const systemIds = new Set(folders.map((f) => f.id));
+    if (systemIds.has(trimmed.toLowerCase())) {
+      showToast(`“${trimmed}” is a system folder`);
+      return false;
+    }
+    if (
+      customFolders.some((f) => f.toLowerCase() === trimmed.toLowerCase())
+    ) {
+      showToast(`Folder “${trimmed}” already exists`);
+      return false;
+    }
+
+    setCustomFolders((prev) => {
+      const next = [...prev, trimmed];
+      saveCustomFolders(next);
+      return next;
+    });
+    setFolderId(trimmed);
+    setFilter("all");
+    setStackView("list");
+    clearChecks();
+    showToast(`Created folder “${trimmed}”`);
+    return true;
+  };
+
+  const createLabel = (name: string, color: string) => {
+    void ensureLabel(name, color).then((result) => {
+      if (!result) return;
+      const { label, created } = result;
+      if (created) {
+        setLabels((prev) =>
+          prev.some((l) => l.id === label.id) ? prev : [...prev, label],
+        );
+      }
+      setFolderId(`label:${label.id}`);
+      setFilter("all");
+      setStackView("list");
+      clearChecks();
+      showToast(
+        created
+          ? `Created label “${label.name}”`
+          : `Label “${label.name}” already exists`,
+      );
+    });
+  };
+
   const createLabelForMessage = (
     messageId: string,
     name: string,
     color: string,
   ) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-
-    const existing = labels.find(
-      (l) => l.name.toLowerCase() === trimmed.toLowerCase(),
-    );
-
-    const apply = (label: Label) => {
-      if (!existing) {
+    void ensureLabel(name, color).then((result) => {
+      if (!result) return;
+      const { label, created } = result;
+      if (created) {
         setLabels((prev) =>
           prev.some((l) => l.id === label.id) ? prev : [...prev, label],
         );
@@ -3916,41 +5168,10 @@ export default function App() {
         void bridgeMutateMail(messageId, "label", { detail: label.id });
       }
       showToast(
-        existing
-          ? `Labeled “${label.name}”`
-          : `Created label “${label.name}”`,
+        created
+          ? `Created label “${label.name}”`
+          : `Labeled “${label.name}”`,
       );
-    };
-
-    if (existing) {
-      apply(existing);
-      return;
-    }
-
-    if (live) {
-      void bridgeCreateLabel({ name: trimmed, color })
-        .then((dto) => apply({ id: dto.id, name: dto.name, color: dto.color }))
-        .catch(() => {
-          apply({
-            id: slugLabelId(trimmed),
-            name: trimmed,
-            color,
-          });
-        });
-      return;
-    }
-
-    apply({
-      id: (() => {
-        let id = slugLabelId(trimmed);
-        let n = 2;
-        while (labels.some((l) => l.id === id)) {
-          id = `${slugLabelId(trimmed)}-${n++}`;
-        }
-        return id;
-      })(),
-      name: trimmed,
-      color,
     });
   };
 
@@ -4009,10 +5230,16 @@ export default function App() {
   const scoped = useMemo(() => {
     return mail.filter((m) => {
       if (accountId !== UNIFIED_ID && m.accountId !== accountId) return false;
+      if (folderId.startsWith("label:")) {
+        const labelId = folderId.slice("label:".length);
+        const label = labels.find((l) => l.id === labelId);
+        if (!label) return false;
+        return m.tag?.label === label.name;
+      }
       if (folderId === "inbox") return m.folder === "inbox";
       return m.folder === folderId;
     });
-  }, [mail, accountId, folderId]);
+  }, [mail, accountId, folderId, labels]);
 
   const folderCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -4183,8 +5410,10 @@ export default function App() {
         else if (selected) applyAction(selected.id, "toggle-read");
         break;
       case "reply":
-      case "replyAll":
         if (selected) applyAction(selected.id, "reply");
+        break;
+      case "replyAll":
+        if (selected) applyAction(selected.id, "reply-all");
         break;
       case "forward":
         if (selected) applyAction(selected.id, "forward");
@@ -4254,7 +5483,12 @@ export default function App() {
       )
         return;
 
-      const result = resolveShortcut(prefs.shortcutPack, e, chord);
+      const result = resolveShortcut(
+        prefs.shortcutPack,
+        e,
+        chord,
+        prefs.shortcutOverrides ?? {},
+      );
       if (result.type === "none") {
         if (chord) setChord(null);
         return;
@@ -4272,13 +5506,19 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const listTitle =
-    folderId === "inbox"
-      ? accountId === UNIFIED_ID
-        ? "Unified Inbox"
-        : "Inbox"
-      : (folders.find((f) => f.id === folderId)?.name ??
-        (customFolders.includes(folderId) ? folderId : "Mail"));
+  const listTitle = (() => {
+    if (folderId === "inbox") {
+      return accountId === UNIFIED_ID ? "Unified Inbox" : "Inbox";
+    }
+    if (folderId.startsWith("label:")) {
+      const labelId = folderId.slice("label:".length);
+      return labels.find((l) => l.id === labelId)?.name ?? "Label";
+    }
+    return (
+      folders.find((f) => f.id === folderId)?.name ??
+      (customFolders.includes(folderId) ? folderId : "Mail")
+    );
+  })();
 
   const showUnifiedChrome = accountId === UNIFIED_ID;
 
@@ -4350,7 +5590,15 @@ export default function App() {
           );
         }}
       />
-      <div className="shell">
+      <div
+        className="shell"
+        style={
+          {
+            ["--sidebar" as string]: `${paneWidths.sidebar}px`,
+            ["--list" as string]: `${paneWidths.list}px`,
+          } as CSSProperties
+        }
+      >
         <AccountRail
           accounts={accounts}
           activeId={accountId}
@@ -4371,7 +5619,9 @@ export default function App() {
         <Sidebar
           account={account}
           activeFolder={folderId}
+          customFolders={customFolders}
           labels={labels}
+          compact={paneWidths.sidebar < SIDEBAR_EXPANDED_MIN}
           syncLabel={
             syncing
               ? syncStatus?.progress || "Syncing…"
@@ -4396,9 +5646,57 @@ export default function App() {
           onEmptyFolder={(folder) => {
             void emptyFolder(folder);
           }}
+          onCreateFolder={createFolder}
+          onCreateLabel={createLabel}
         />
+        {prefs.layout !== "stack" && (
+          <button
+            type="button"
+            className="pane-resizer"
+            aria-label="Resize folder pane"
+            title="Drag to resize"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              paneDrag.current = {
+                key: "sidebar",
+                startX: e.clientX,
+                startW: paneWidths.sidebar,
+              };
+              const target = e.currentTarget;
+              target.classList.add("dragging");
+              const onMove = (ev: PointerEvent) => {
+                const drag = paneDrag.current;
+                if (!drag || drag.key !== "sidebar") return;
+                // Snap live: as soon as labels wouldn't fit, jump to the icon rail.
+                const next = snapSidebarWidth(
+                  drag.startW + (ev.clientX - drag.startX),
+                );
+                setPaneWidths((prev) =>
+                  prev.sidebar === next ? prev : { ...prev, sidebar: next },
+                );
+              };
+              const onUp = () => {
+                target.classList.remove("dragging");
+                paneDrag.current = null;
+                setPaneWidths((prev) => {
+                  const next = {
+                    ...prev,
+                    sidebar: snapSidebarWidth(prev.sidebar),
+                  };
+                  localStorage.setItem(PANE_KEY, JSON.stringify(next));
+                  return next;
+                });
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+              };
+              window.addEventListener("pointermove", onMove);
+              window.addEventListener("pointerup", onUp);
+            }}
+          />
+        )}
         <MessageList
           items={filtered}
+          accounts={accounts}
           selectedId={selected?.id ?? ""}
           checkedIds={checkedIds}
           filter={filter}
@@ -4411,6 +5709,7 @@ export default function App() {
           hoverActions={prefs.hoverActions}
           reduceMotion={prefs.reduceMotion}
           labels={labels}
+          customFolders={customFolders}
           showAi={showAi}
           syncing={syncing}
           fullScreen={prefs.layout === "stack"}
@@ -4461,7 +5760,47 @@ export default function App() {
             void requestMailAction(messageId, action, detail);
           }}
           onCreateLabel={createLabelForMessage}
+          onCreateFolder={createFolder}
         />
+        {prefs.layout !== "stack" && (
+          <button
+            type="button"
+            className="pane-resizer"
+            aria-label="Resize message list"
+            title="Drag to resize"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              paneDrag.current = {
+                key: "list",
+                startX: e.clientX,
+                startW: paneWidths.list,
+              };
+              const target = e.currentTarget;
+              target.classList.add("dragging");
+              const onMove = (ev: PointerEvent) => {
+                const drag = paneDrag.current;
+                if (!drag || drag.key !== "list") return;
+                const next = Math.min(
+                  Math.max(drag.startW + (ev.clientX - drag.startX), 240),
+                  560,
+                );
+                setPaneWidths((prev) => ({ ...prev, list: next }));
+              };
+              const onUp = () => {
+                target.classList.remove("dragging");
+                paneDrag.current = null;
+                setPaneWidths((prev) => {
+                  localStorage.setItem(PANE_KEY, JSON.stringify(prev));
+                  return prev;
+                });
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+              };
+              window.addEventListener("pointermove", onMove);
+              window.addEventListener("pointerup", onUp);
+            }}
+          />
+        )}
         {showAi && askOpen ? (
           <FloatingAsk
             open={askOpen}
@@ -4497,10 +5836,12 @@ export default function App() {
             prefs={prefs}
             live={live}
             account={account}
+            accounts={accounts}
             onBack={
               prefs.layout === "stack" ? () => setStackView("list") : undefined
             }
             labels={labels}
+            customFolders={customFolders}
             onAsk={() => {
               setAskFocusThread(true);
               setAskOpen(true);
@@ -4514,9 +5855,10 @@ export default function App() {
               if (!selected) return;
               createLabelForMessage(selected.id, name, color);
             }}
+            onCreateFolder={createFolder}
             onComposeTo={(r) => openCompose({ to: [r] })}
             onToast={showToast}
-            focusReplySignal={focusReplySignal}
+            replyIntent={replyIntent}
             onReplySent={(message) => {
               setMail((prev) => {
                 const idx = prev.findIndex((m) => m.id === message.id);
@@ -4627,6 +5969,7 @@ export default function App() {
       {cheatOpen && (
         <ShortcutsCheatSheet
           pack={prefs.shortcutPack}
+          overrides={prefs.shortcutOverrides}
           onClose={() => setCheatOpen(false)}
         />
       )}
