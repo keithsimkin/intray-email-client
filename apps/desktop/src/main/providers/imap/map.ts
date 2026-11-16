@@ -5,17 +5,29 @@ export function imapEnvelopeToRow(
   accountId: string,
   env: ImapEnvelope,
 ): MessageRow {
-  const pid = `${env.uidValidity}:${env.uid}`;
+  // X-GM-MSGID is stable across Gmail labels, so All Mail and Trash collapse
+  // to one row. Other IMAP servers keep the UIDVALIDITY:UID key.
+  const pid = env.gmMsgId
+    ? `gm:${env.gmMsgId}`
+    : `${env.uidValidity}:${env.uid}`;
+  const threadId = env.gmThrId ? `gm:${env.gmThrId}` : env.threadId;
   const dateMs = env.date?.getTime() ?? Date.now();
   const unread = env.flags.some((f) => f.toLowerCase() === "\\seen") ? 0 : 1;
-  const starred = env.flags.some((f) => f.toLowerCase() === "\\flagged")
-    ? 1
-    : 0;
+  const starred =
+    env.starred != null
+      ? env.starred
+        ? 1
+        : 0
+      : env.flags.some((f) => f.toLowerCase() === "\\flagged")
+        ? 1
+        : 0;
+  const important =
+    env.important != null ? (env.important ? 1 : 0) : starred || unread ? 1 : 0;
 
   return {
     id: `${accountId}:${pid}`,
     account_id: accountId,
-    thread_id: env.threadId,
+    thread_id: threadId,
     provider_id: pid,
     folder: env.folder,
     subject: env.subject,
@@ -26,7 +38,7 @@ export function imapEnvelopeToRow(
     cc_json: JSON.stringify(env.cc),
     date_ms: dateMs,
     unread,
-    important: starred || unread ? 1 : 0,
+    important,
     starred,
     has_attachment: env.hasAttachment ? 1 : 0,
     label_ids_json: JSON.stringify({
@@ -34,6 +46,9 @@ export function imapEnvelopeToRow(
       uid: env.uid,
       uidValidity: env.uidValidity,
       flags: env.flags,
+      ...(env.gmMsgId ? { gmMsgId: env.gmMsgId } : {}),
+      ...(env.gmThrId ? { gmThrId: env.gmThrId } : {}),
+      ...(env.gmLabels ? { gmLabels: env.gmLabels } : {}),
     }),
     ui_label_id: null,
     snooze_until_ms: null,

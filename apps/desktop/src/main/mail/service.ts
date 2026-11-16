@@ -26,6 +26,8 @@ import {
   type MessageRow,
 } from "../db";
 import {
+  accountUsesImap,
+  isGmailImapAccount,
   loadCredentials,
   saveCredentials,
   type ImapCredentials,
@@ -53,17 +55,21 @@ import {
   runGmailOAuth,
 } from "../providers/gmail/oauth";
 import {
-  deleteImapMessageForever,
   fetchMessageSource,
   findSentMessage,
-  moveImapMessage,
   parsedToBodies,
+  pushImapChange,
   sendSmtp,
-  setImapFlags,
   verifyImapLogin,
+  type ImapChangeAction,
 } from "../providers/imap/client";
 import { mailboxMetaFromRow } from "../providers/imap/map";
 import { presetFor } from "../providers/imap/presets";
+import {
+  gmailAppPasswordFormatError,
+  isGmailImapTarget,
+  normalizeGmailAppPassword,
+} from "../../shared/gmailImap";
 import { assertAddressList, buildMessageId, buildRawMessage } from "./mime";
 import { sanitizeEmailHtml } from "./sanitize";
 import {
@@ -89,7 +95,7 @@ import type {
 /** Auth / credential failures that mean the account needs to reconnect. */
 export function isAuthFailure(error?: string | null): boolean {
   if (!error) return false;
-  return /credentials? (missing|not found)|authentication failed|invalid_grant|unauthorized|revoked|login required|logged out|\b401\b|\b403\b|token.*(expired|invalid)|imap.*auth/i.test(
+  return /credentials? (missing|not found)|authentication failed|invalid_grant|unauthorized|revoked|login required|logged out|\b401\b|\b403\b|token.*(expired|invalid)|imap.*auth|refused imap|rejected this password|app password/i.test(
     error,
   );
 }
@@ -258,7 +264,7 @@ export function hasRealAccounts(): boolean {
 export async function addGmailAccount(): Promise<AccountDto> {
   if (!gmailOAuthConfigured()) {
     throw new Error(
-      "Set GMAIL_CLIENT_ID (Desktop OAuth client) to connect Gmail.",
+      "Google sign-in needs GMAIL_CLIENT_ID (Desktop OAuth client) and is limited to test users until Google verifies the app. Connect Gmail with an app password instead.",
     );
   }
   const { tokens, profile } = await runGmailOAuth();
@@ -318,12 +324,25 @@ function resolveImapCreds(input: AddImapAccountInput): ImapCredentials {
   const rawSmtpHost = (input.smtpHost || preset?.smtpHost || imapHost).trim();
   if (!rawSmtpHost) throw new Error("SMTP host is required.");
   const smtpHost = assertHost(rawSmtpHost, "SMTP");
+  const email = input.email.trim().toLowerCase();
+  const gmail = isGmailImapTarget({
+    brand: input.provider,
+    imapHost,
+    smtpHost,
+  });
+  let password = input.password;
+  if (gmail) {
+    const formatError = gmailAppPasswordFormatError(password);
+    if (formatError) throw new Error(formatError);
+    password = normalizeGmailAppPassword(password);
+  }
   return {
     provider: "imap",
     brand: input.provider,
-    email: input.email.trim().toLowerCase(),
-    username: input.username?.trim() || undefined,
-    password: input.password,
+    email,
+    // Gmail app passwords authenticate as the full address.
+    username: gmail ? email : input.username?.trim() || undefined,
+    password,
     imapHost,
     imapPort: assertPort(
       input.imapPort ?? preset?.imapPort ?? 993,
@@ -335,6 +354,24 @@ function resolveImapCreds(input: AddImapAccountInput): ImapCredentials {
       "SMTP",
     ),
   };
+}
+
+function usesImap(account: AccountRow): boolean {
+  return accountUsesImap(account.id, account.provider);
+}
+
+async function pushAccountImapChange(
+  account: AccountRow,
+  row: MessageRow,
+  action: ImapChangeAction,
+  folder?: string,
+): Promise<void> {
+  const meta = mailboxMetaFromRow(row);
+  if (!meta) return;
+  await pushImapChange(account.id, meta.mailbox, meta.uid, action, {
+    gmail: isGmailImapAccount(account.id),
+    folder,
+  });
 }
 
 export async function addImapAccount(
@@ -465,7 +502,7 @@ export async function getMail(messageId: string): Promise<MessageDto | null> {
   for (const r of rows) {
     if (getBody(r.id)) continue;
     try {
-      if (account?.provider === "gmail") {
+      if (account && !usesImap(account)) {
         const full = await getMessageFull(r.account_id, r.provider_id);
         upsertMessage(gmailMessageToRow(r.account_id, full));
         const bodies = bodiesFromGmail(full);
@@ -555,7 +592,7 @@ export async function mutateMail(
   }
   if (action === "move") {
     const folder = options.detail || "archive";
-    if (account.provider === "gmail") {
+    if (!usesImap(account)) {
       if (folder === "trash") {
         await trashMessage(row.account_id, row.provider_id);
       } else if (folder === "junk") {
@@ -566,28 +603,10 @@ export async function mutateMail(
         await modifyLabels(row.account_id, row.provider_id, ["INBOX"], ["SPAM"]);
       }
     } else {
-      const meta = mailboxMetaFromRow(row);
-      if (meta) {
-        try {
-          const target =
-            folder === "trash"
-              ? "Trash"
-              : folder === "junk"
-                ? "Junk"
-                : folder === "archive"
-                  ? "Archive"
-                  : folder === "inbox"
-                    ? "INBOX"
-                    : folder;
-          await moveImapMessage(
-            row.account_id,
-            meta.mailbox,
-            meta.uid,
-            target,
-          );
-        } catch {
-          /* keep local move */
-        }
+      try {
+        await pushAccountImapChange(account, row, "move", folder);
+      } catch {
+        /* keep local move */
       }
     }
     updateMessageFlags(row.id, {
@@ -600,20 +619,17 @@ export async function mutateMail(
   }
 
   if (action === "spam") {
-    if (account.provider === "gmail") {
+    if (!usesImap(account)) {
       try {
         await spamMessage(row.account_id, row.provider_id);
       } catch {
         /* local move still applies */
       }
     } else {
-      const meta = mailboxMetaFromRow(row);
-      if (meta) {
-        try {
-          await moveImapMessage(row.account_id, meta.mailbox, meta.uid, "Junk");
-        } catch {
-          /* local */
-        }
+      try {
+        await pushAccountImapChange(account, row, "spam");
+      } catch {
+        /* local */
       }
     }
     updateMessageFlags(row.id, { folder: "junk", unread: 0 });
@@ -622,20 +638,17 @@ export async function mutateMail(
   }
 
   if (action === "not-spam") {
-    if (account.provider === "gmail") {
+    if (!usesImap(account)) {
       try {
         await unspamMessage(row.account_id, row.provider_id);
       } catch {
         /* local */
       }
     } else {
-      const meta = mailboxMetaFromRow(row);
-      if (meta) {
-        try {
-          await moveImapMessage(row.account_id, meta.mailbox, meta.uid, "INBOX");
-        } catch {
-          /* local */
-        }
+      try {
+        await pushAccountImapChange(account, row, "not-spam");
+      } catch {
+        /* local */
       }
     }
     updateMessageFlags(row.id, { folder: "inbox", unread: 1 });
@@ -644,24 +657,17 @@ export async function mutateMail(
   }
 
   if (action === "delete-forever") {
-    if (account.provider === "gmail") {
+    if (!usesImap(account)) {
       try {
         await deleteMessageForever(row.account_id, row.provider_id);
       } catch {
         /* still remove locally */
       }
     } else {
-      const meta = mailboxMetaFromRow(row);
-      if (meta) {
-        try {
-          await deleteImapMessageForever(
-            row.account_id,
-            meta.mailbox,
-            meta.uid,
-          );
-        } catch {
-          /* local */
-        }
+      try {
+        await pushAccountImapChange(account, row, "delete-forever");
+      } catch {
+        /* local */
       }
     }
     deleteMessageById(row.id);
@@ -669,7 +675,7 @@ export async function mutateMail(
     return null;
   }
 
-  if (account.provider === "gmail") {
+  if (!usesImap(account)) {
     switch (action) {
       case "archive":
         await modifyLabels(row.account_id, row.provider_id, [], ["INBOX"]);
@@ -697,47 +703,16 @@ export async function mutateMail(
         break;
     }
   } else {
-    const meta = mailboxMetaFromRow(row);
-    if (meta) {
+    if (
+      action === "archive" ||
+      action === "trash" ||
+      action === "read" ||
+      action === "unread" ||
+      action === "star" ||
+      action === "unstar"
+    ) {
       try {
-        switch (action) {
-          case "archive":
-            await moveImapMessage(
-              row.account_id,
-              meta.mailbox,
-              meta.uid,
-              "Archive",
-            );
-            break;
-          case "trash":
-            await moveImapMessage(
-              row.account_id,
-              meta.mailbox,
-              meta.uid,
-              "Trash",
-            );
-            break;
-          case "read":
-            await setImapFlags(row.account_id, meta.mailbox, meta.uid, {
-              add: ["\\Seen"],
-            });
-            break;
-          case "unread":
-            await setImapFlags(row.account_id, meta.mailbox, meta.uid, {
-              remove: ["\\Seen"],
-            });
-            break;
-          case "star":
-            await setImapFlags(row.account_id, meta.mailbox, meta.uid, {
-              add: ["\\Flagged"],
-            });
-            break;
-          case "unstar":
-            await setImapFlags(row.account_id, meta.mailbox, meta.uid, {
-              remove: ["\\Flagged"],
-            });
-            break;
-        }
+        await pushAccountImapChange(account, row, action);
       } catch {
         /* local flag update still applies */
       }
@@ -878,7 +853,7 @@ export async function sendMail(
 
   const messageId = opts.messageId ?? buildMessageId(account.email);
 
-  if (account.provider === "gmail") {
+  if (!usesImap(account)) {
     // Idempotency: on a retry, check whether Gmail already has this Message-ID
     // (e.g. the app crashed after the API accepted the send).
     if (opts.retry) {

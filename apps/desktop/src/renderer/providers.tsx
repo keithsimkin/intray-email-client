@@ -1,5 +1,11 @@
 import { Mail } from "lucide-react";
 import {
+  GMAIL_IMAP_HOST,
+  GMAIL_IMAP_PORT,
+  GMAIL_SMTP_HOST,
+  GMAIL_SMTP_PORT,
+} from "../shared/gmailImap";
+import {
   ImgBrand,
   SimpleBrandIcon,
   brandIcons,
@@ -26,6 +32,10 @@ export type MailProvider = {
   color: string;
   imapHost?: string;
   imapPort?: number;
+  smtpHost?: string;
+  smtpPort?: number;
+  /** Short label on the provider card. Defaults to OAuth or IMAP. */
+  badge?: string;
   guide?: string;
 };
 
@@ -34,10 +44,15 @@ export const mailProviders: MailProvider[] = [
     id: "gmail",
     name: "Gmail",
     shortName: "Gmail",
-    description: "Sign in with Google (OAuth)",
-    auth: "oauth",
-    oauthLabel: "Continue with Google",
+    description: "App password · recommended",
+    auth: "imap",
+    badge: "Recommended",
+    oauthLabel: "Sign in with Google (beta / testers)",
     color: "#ea4335",
+    imapHost: GMAIL_IMAP_HOST,
+    imapPort: GMAIL_IMAP_PORT,
+    smtpHost: GMAIL_SMTP_HOST,
+    smtpPort: GMAIL_SMTP_PORT,
   },
   {
     id: "outlook",

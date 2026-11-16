@@ -1,3 +1,9 @@
+import {
+  GMAIL_IMAP_HOST,
+  GMAIL_IMAP_PORT,
+  GMAIL_SMTP_HOST,
+  GMAIL_SMTP_PORT,
+} from "../../../shared/gmailImap";
 import type { ProviderId } from "../../../shared/types";
 
 export type ImapPreset = {
@@ -10,6 +16,14 @@ export type ImapPreset = {
 };
 
 const PRESETS: Record<string, ImapPreset> = {
+  gmail: {
+    provider: "gmail",
+    color: "#ea4335",
+    imapHost: GMAIL_IMAP_HOST,
+    imapPort: GMAIL_IMAP_PORT,
+    smtpHost: GMAIL_SMTP_HOST,
+    smtpPort: GMAIL_SMTP_PORT,
+  },
   icloud: {
     provider: "icloud",
     color: "#3693F3",
@@ -60,15 +74,27 @@ export function presetFor(
 
 /** Common IMAP folder name → Intray folder id */
 export function normalizeFolderPath(path: string): string {
-  const p = path.replace(/^INBOX[./]/i, "").toLowerCase();
-  if (!path || /^inbox$/i.test(path) || path.toUpperCase() === "INBOX") {
-    return "inbox";
+  const raw = path.trim();
+  if (!raw || /^inbox$/i.test(raw)) return "inbox";
+
+  const lower = raw.toLowerCase();
+  // Gmail exposes every label as a mailbox. All Mail, Starred, and Important
+  // are not the inbox — filing them there duplicates or mis-files mail.
+  if (
+    /\[g(?:oogle)?mail\]\/(?:all mail|alle nachrichten|tous les messages)$/i.test(
+      lower,
+    ) ||
+    /\[g(?:oogle)?mail\]\/(?:starred|important)$/i.test(lower)
+  ) {
+    return "archive";
   }
-  if (/sent/i.test(p) || /sent messages/i.test(p)) return "sent";
+
+  const p = lower.replace(/^inbox[./]/i, "");
+  if (/sent/i.test(p)) return "sent";
   if (/draft/i.test(p)) return "drafts";
-  if (/trash|deleted/i.test(p)) return "trash";
+  if (/trash|deleted|papierkorb|corbeille|\bbin\b/i.test(p)) return "trash";
   if (/junk|spam/i.test(p)) return "junk";
-  if (/archive/i.test(p)) return "archive";
+  if (/archive|all mail/i.test(p)) return "archive";
   if (/snooze/i.test(p)) return "snoozed";
   return "inbox";
 }

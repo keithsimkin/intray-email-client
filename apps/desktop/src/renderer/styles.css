@@ -5456,6 +5456,70 @@ button.keycap,
   font-size: 12px;
 }
 
+.add-account-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.add-account-guide ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.add-account-guide li + li {
+  margin-top: 4px;
+}
+
+.add-account-guide a {
+  color: var(--fg);
+  text-underline-offset: 2px;
+}
+
+.add-account-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.add-account-or::before,
+.add-account-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.add-account-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.add-account-secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.add-account-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .add-field {
   display: flex;
   flex-direction: column;
