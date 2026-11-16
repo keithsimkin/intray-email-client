@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Intray brand board</title>
+  <style>
+    :root {
+      --brand: #760e0a;
+      --signal: #c4453d;
+      --signal-soft: #c4453d28;
+      --bg: #0a0a0b;
+      --bg-elevated: #111113;
+      --fg: #ededed;
+      --muted: #8a8f98;
+      --line: #ffffff14;
+      --radius: 14px;
+      --font-sans: "Geist", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font-sans);
+      color: var(--foreground, var(--fg));
+      -webkit-font-smoothing: antialiased;
+    }
+    .board { display: flex; flex-direction: column; gap: 18px; width: 100%; }
+    .hero {
+      position: relative; overflow: hidden; border-radius: var(--radius);
+      padding: 28px 24px 26px;
+      background:
+        radial-gradient(ellipse 70% 80% at 85% 20%, #c4453d33, transparent 55%),
+        radial-gradient(ellipse 50% 60% at 10% 90%, #760e0a44, transparent 50%),
+        linear-gradient(165deg, #141416 0%, #0a0a0b 55%, #120808 100%);
+      border: 1px solid var(--line);
+    }
+    .hero-row { display: flex; align-items: center; gap: 18px; }
+    .hero-copy h1 {
+      margin: 0; font-size: 28px; font-weight: 600;
+      letter-spacing: -0.045em; line-height: 1.05;
+    }
+    .hero-copy p {
+      margin: 8px 0 0; color: var(--muted); font-size: 13px;
+      line-height: 1.45; max-width: 42ch;
+    }
+    .underline {
+      display: block; width: 52px; height: 3px; margin-top: 10px;
+      border-radius: 999px; background: var(--brand);
+    }
+    .tile { width: 72px; height: 72px; flex-shrink: 0; border-radius: 16px; overflow: hidden; }
+    .section {
+      border-radius: var(--radius);
+      background: var(--card, var(--bg-elevated));
+      border: 1px solid var(--border, var(--line));
+      padding: 16px;
+    }
+    .section h2 {
+      margin: 0 0 12px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+    }
+    .swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .swatch {
+      border-radius: 12px; overflow: hidden;
+      border: 1px solid var(--line); background: #0e0e10;
+    }
+    .swatch-chip { height: 56px; }
+    .swatch-meta { padding: 8px 10px 10px; }
+    .swatch-meta strong { display: block; font-size: 12px; font-weight: 600; letter-spacing: -0.02em; }
+    .swatch-meta span { font-size: 11px; color: var(--muted); font-family: var(--font-mono, ui-monospace, monospace); }
+    .icons { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; }
+    .icon-card { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 72px; }
+    .icon-card label { font-size: 11px; color: var(--muted); }
+    .mark-box {
+      display: grid; place-items: center; width: 56px; height: 56px;
+      border-radius: 12px; background: #161618; border: 1px solid var(--line); color: var(--fg);
+    }
+    .mark-box.signal { color: var(--signal); }
+    .mark-box.brand-bg { background: var(--brand); color: #fff; border-color: transparent; }
+    .note {
+      margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45;
+    }
+    .note code {
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 11px; color: var(--fg);
+    }
+  </style>
+</head>
+<body>
+  <!-- Same path for tile + mark so mouth geometry matches -->
+  <svg width="0" height="0" aria-hidden="true">
+    <symbol id="ram-64" viewBox="0 0 64 64">
+      <path d="M32.5 52.4 L32.5 47.2 Q32.5 44.4 36.0 44.4 L45.5 44.0 L51.5 39.4 L54.6 36.8 L49.0 30.4 L42.0 22.6 L34.8 16.2 L27.6 12.6 Q22.4 10.8 17.2 12.8 Q11.8 15.4 10.6 21.0 Q9.8 26.8 13.8 30.6 Q17.4 33.6 22.2 32.0 Q25.8 30.6 26.4 26.4 Q26.8 23.2 23.8 22.2 Q20.8 21.4 19.2 23.6" fill="none" stroke="currentColor" stroke-width="5.4" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="8"/>
+    </symbol>
+    <symbol id="ram-32" viewBox="0 0 32 32">
+      <path d="M16.25 26.20 L16.25 23.60 Q16.25 22.20 18.00 22.20 L22.75 22.00 L25.75 19.70 L27.30 18.40 L24.50 15.20 L21.00 11.30 L17.40 8.10 L13.80 6.30 Q11.20 5.40 8.60 6.40 Q5.90 7.70 5.30 10.50 Q4.90 13.40 6.90 15.30 Q8.70 16.80 11.10 16.00 Q12.90 15.30 13.20 13.20 Q13.40 11.60 11.90 11.10 Q10.40 10.70 9.60 11.80" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="8"/>
+    </symbol>
+  </svg>
+
+  <div class="board">
+    <section class="hero">
+      <div class="hero-row">
+        <div class="tile" style="background:var(--brand); color:#fff; display:grid; place-items:center;">
+          <svg width="56" height="56" viewBox="0 0 64 64" aria-hidden="true"><use href="#ram-64"/></svg>
+        </div>
+        <div class="hero-copy">
+          <h1>intray</h1>
+          <span class="underline" aria-hidden="true"></span>
+          <p>One shared ram path for app tile, tray, and UI mark — thicker stroke, matched mouth step.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Same path · every size</h2>
+      <div class="icons">
+        <div class="icon-card">
+          <div style="width:64px;height:64px;border-radius:14px;background:var(--brand);color:#fff;display:grid;place-items:center;">
+            <svg width="64" height="64" viewBox="0 0 64 64"><use href="#ram-64"/></svg>
+          </div>
+          <label>App 64</label>
+        </div>
+        <div class="icon-card">
+          <div style="width:32px;height:32px;border-radius:8px;background:var(--brand);color:#fff;display:grid;place-items:center;">
+            <svg width="32" height="32" viewBox="0 0 64 64"><use href="#ram-64"/></svg>
+          </div>
+          <label>App 32</label>
+        </div>
+        <div class="icon-card">
+          <div class="mark-box">
+            <svg width="28" height="28" viewBox="0 0 32 32"><use href="#ram-32"/></svg>
+          </div>
+          <label>Mark</label>
+        </div>
+        <div class="icon-card">
+          <div class="mark-box signal">
+            <svg width="28" height="28" viewBox="0 0 32 32"><use href="#ram-32"/></svg>
+          </div>
+          <label>Signal</label>
+        </div>
+        <div class="icon-card">
+          <div class="mark-box brand-bg">
+            <svg width="28" height="28" viewBox="0 0 32 32"><use href="#ram-32"/></svg>
+          </div>
+          <label>On brand</label>
+        </div>
+      </div>
+      <p class="note" style="margin-top:14px;">
+        Stroke is <code>5.4</code> on the 64 tile and <code>2.7</code> on the 32 mark (~25% thicker than before).
+        Mouth uses a rounded elbow → horizontal ledge → diagonal to a sharp tip.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>Palette</h2>
+      <div class="swatches">
+        <div class="swatch">
+          <div class="swatch-chip" style="background:#760E0A"></div>
+          <div class="swatch-meta"><strong>Brand</strong><span>#760E0A</span></div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-chip" style="background:#C4453D"></div>
+          <div class="swatch-meta"><strong>Signal</strong><span>#C4453D</span></div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-chip" style="background:#0A0A0B"></div>
+          <div class="swatch-meta"><strong>Surface</strong><span>#0A0A0B</span></div>
+        </div>
+        <div class="swatch">
+          <div class="swatch-chip" style="background:#EDEDED"></div>
+          <div class="swatch-meta"><strong>Foreground</strong><span>#EDEDED</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

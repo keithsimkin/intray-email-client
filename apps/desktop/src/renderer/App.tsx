@@ -1,0 +1,4643 @@
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import {
+  Archive,
+  ArrowLeft,
+  Bell,
+  Bot,
+  Check,
+  CheckCheck,
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Eraser,
+  FileText,
+  Folder,
+  Forward,
+  Inbox,
+  Calendar,
+  Languages,
+  Layers,
+  Link2,
+  Loader2,
+  Mail,
+  MailOpen,
+  MinusSquare,
+  MoreHorizontal,
+  Paperclip,
+  Plus,
+  RefreshCw,
+  Reply,
+  ReplyAll,
+  Send,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Star,
+  Tag,
+  Trash2,
+  AlertCircle,
+  ShieldAlert,
+  UserMinus,
+  X,
+} from "lucide-react";
+import { AddAccountModal } from "./AddAccountModal";
+import {
+  AlertDialog,
+  nextAlertId,
+  type AlertRequest,
+} from "./AlertDialog";
+import { FloatingAsk } from "./FloatingAsk";
+import { IntrayBrandLockup } from "./IntrayBrand";
+import { Onboarding } from "./Onboarding";
+import {
+  completeOnboarding,
+  isOnboardingComplete,
+} from "./onboardingStorage";
+import { SearchBar } from "./SearchBar";
+import type { Contact } from "./contacts";
+import {
+  aiFindUnsubscribe,
+  looksLikeNewsletter,
+  openUnsubscribeTarget,
+} from "./newsletter";
+import {
+  messageMatchesSearch,
+  serializeSearch,
+  type SearchToken,
+} from "./searchQuery";
+import {
+  UNIFIED_ID,
+  accounts as seedAccounts,
+  customFolders,
+  defaultSmartReplies,
+  folders,
+  labels as seedLabels,
+  meeting,
+  messages as seedMessages,
+  smartRepliesById,
+  type Account,
+  type Label,
+  type Message,
+  type OpenTracking,
+  type Recipient,
+  type ThreadMessage,
+} from "./data/mock";
+import {
+  MentionTextarea,
+  RecipientChips,
+} from "./MentionTextarea";
+import {
+  looksLikeHtml,
+  sanitizeSignatureHtml,
+} from "./signatures";
+import {
+  aiSuggestLabel,
+  aiSuggestReplies,
+  aiSummarizeMessage,
+  aiTranslateMessage,
+  aiWriteReply,
+} from "./aiClient";
+import {
+  registerTrackedSend,
+  trackingSummary,
+} from "./openTracking";
+import {
+  accentColors,
+  aiBridgeMeta,
+  loadPreferences,
+  resolvedTheme,
+  savePreferences,
+  type Preferences,
+} from "./preferences";
+import {
+  listShortcuts,
+  packMeta,
+  resolveShortcut,
+  type ShortcutAction,
+  type ShortcutPackId,
+} from "./shortcuts";
+import { SettingsModal } from "./SettingsModal";
+import {
+  accountDtoToUi,
+  bridgeAccounts,
+  bridgeCancelSend,
+  bridgeCreateLabel,
+  bridgeGetMail,
+  bridgeHasRealAccounts,
+  bridgeListLabels,
+  bridgeListMail,
+  bridgeMutateMail,
+  bridgeOnNotifyOpen,
+  bridgeOnSendFlushed,
+  bridgeOnSyncProgress,
+  bridgeOnUnsnoozed,
+  bridgeSendLater,
+  bridgeSendMail,
+  bridgeSetChromeTheme,
+  bridgeSync,
+  messageDtoToUi,
+} from "./mailApi";
+import { notifyMeeting, syncTaskbarBadge } from "./notify";
+import type { SyncStatus } from "../shared/types";
+
+type MailAction =
+  | "reply"
+  | "forward"
+  | "toggle-read"
+  | "star"
+  | "snooze"
+  | "archive"
+  | "trash"
+  | "spam"
+  | "not-spam"
+  | "delete-forever"
+  | "move"
+  | "label"
+  | "auto-label"
+  | "clear-label";
+
+type Filter = "important" | "other" | "all";
+
+const folderIcons = {
+  inbox: Inbox,
+  file: FileText,
+  send: Send,
+  archive: Archive,
+  alert: AlertCircle,
+  trash: Trash2,
+  clock: Clock,
+} as const;
+
+function accountFor(id: string, list: Account[] = seedAccounts): Account {
+  return list.find((a) => a.id === id) ?? list[0];
+}
+
+/** Plain-text quote used when Forward opens compose. */
+function forwardDraft(message: Message): { subject: string; body: string } {
+  const subject = /^fwd:/i.test(message.subject.trim())
+    ? message.subject
+    : `Fwd: ${message.subject}`;
+  const latest = message.thread[message.thread.length - 1];
+  const plain = latest?.body?.join("\n\n")?.trim() ?? "";
+  const fromHtml = latest?.bodyHtml
+    ? latest.bodyHtml
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    : "";
+  const content = plain || fromHtml || message.preview || "";
+  const body = [
+    "",
+    "",
+    "---------- Forwarded message ----------",
+    `From: ${message.from} <${message.email}>`,
+    `Date: ${message.time}`,
+    `Subject: ${message.subject}`,
+    "",
+    content,
+  ].join("\n");
+  return { subject, body };
+}
+
+/** Actions that remove a thread from the current folder view. */
+function leavesCurrentFolder(action: MailAction): boolean {
+  return (
+    action === "archive" ||
+    action === "trash" ||
+    action === "spam" ||
+    action === "not-spam" ||
+    action === "delete-forever" ||
+    action === "snooze" ||
+    action === "move"
+  );
+}
+
+const seedOwnEmails = new Set(
+  seedAccounts
+    .filter((a) => a.id !== UNIFIED_ID)
+    .map((a) => a.email.toLowerCase()),
+);
+
+function isOwnRecipient(r: Recipient) {
+  return seedOwnEmails.has(r.email.toLowerCase());
+}
+
+function listBadgeCounts(m: Message) {
+  const threadAttachments = m.thread.reduce((n, t) => {
+    if (t.attachments?.length) return n + t.attachments.length;
+    if (t.attachment) return n + 1;
+    return n;
+  }, 0);
+  const attachmentCount =
+    m.attachmentCount ??
+    (m.hasAttachment ? Math.max(1, threadAttachments) : threadAttachments);
+  const linkCount = m.linkCount ?? 0;
+  const mediaCount =
+    m.mediaCount ?? (m.meeting || m.thread.some((t) => t.meeting) ? 1 : 0);
+  return { attachmentCount, linkCount, mediaCount };
+}
+
+function stripHtml(value: string) {
+  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractMessageLinks(m: Message): { href: string; label: string }[] {
+  const out: { href: string; label: string }[] = [];
+  const seen = new Set<string>();
+
+  const push = (href: string, label?: string) => {
+    const clean = href.trim();
+    if (!clean || clean === "#" || seen.has(clean)) return;
+    if (/^javascript:/i.test(clean)) return;
+    seen.add(clean);
+    const fallback = clean.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+    const text = (label && stripHtml(label)) || fallback;
+    out.push({
+      href: clean,
+      label: text.length > 42 ? `${text.slice(0, 40)}…` : text,
+    });
+  };
+
+  if (m.meeting?.url) push(m.meeting.url, m.meeting.title);
+  for (const t of m.thread) {
+    if (t.meeting?.url) push(t.meeting.url, t.meeting.title);
+    const html = t.bodyHtml ?? "";
+    const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match: RegExpExecArray | null;
+    while ((match = anchorRe.exec(html))) {
+      push(match[1], match[2]);
+    }
+    for (const line of t.body ?? []) {
+      const urlRe = /https?:\/\/[^\s<>"']+/gi;
+      let um: RegExpExecArray | null;
+      while ((um = urlRe.exec(line))) {
+        push(um[0].replace(/[),.;]+$/, ""));
+      }
+    }
+  }
+
+  return out.slice(0, 6);
+}
+
+function PersonAvatar({
+  name,
+  initials,
+  color,
+  avatarUrl,
+  className = "avatar",
+}: {
+  name: string;
+  initials: string;
+  color: string;
+  avatarUrl?: string;
+  className?: string;
+}) {
+  if (avatarUrl) {
+    return (
+      <img
+        className={`${className} photo`}
+        src={avatarUrl}
+        alt=""
+        title={name}
+        draggable={false}
+      />
+    );
+  }
+  return (
+    <div className={className} style={{ background: color }} aria-hidden>
+      {initials}
+    </div>
+  );
+}
+
+/** WhatsApp-style ticks: gray = delivered, blue = opened/read */
+function DeliveryTicks({
+  tracking,
+  size = 14,
+}: {
+  tracking: OpenTracking;
+  size?: number;
+}) {
+  const read = tracking.opens.length > 0;
+  const label = read
+    ? tracking.openedAt
+      ? `Opened · ${tracking.openedAt}`
+      : "Opened"
+    : "Delivered";
+  return (
+    <span
+      className={`delivery-ticks${read ? " read" : " delivered"}`}
+      title={label}
+      aria-label={label}
+    >
+      <CheckCheck size={size} strokeWidth={2.25} />
+    </span>
+  );
+}
+
+function threadAttachments(tm: {
+  attachment?: { name: string; size: string };
+  attachments?: { name: string; size: string }[];
+}) {
+  if (tm.attachments?.length) return tm.attachments;
+  if (tm.attachment) return [tm.attachment];
+  return [];
+}
+
+/** True when you're only on Cc (not on To) for the newest message. */
+function isCcOnly(message: Message) {
+  const tm = message.thread[message.thread.length - 1];
+  if (!tm?.cc?.some(isOwnRecipient)) return false;
+  if (tm.to?.some(isOwnRecipient)) return false;
+  return true;
+}
+
+function RecipientName({
+  recipient,
+  onCompose,
+}: {
+  recipient: Recipient;
+  onCompose: (r: Recipient) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const you = isOwnRecipient(recipient);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <span className="recipient-wrap" ref={ref}>
+      <button
+        type="button"
+        className={`recipient${you ? " you" : ""}${open ? " open" : ""}`}
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        {you ? "You" : recipient.name}
+      </button>
+      {open && (
+        <div className="recipient-pop" role="dialog">
+          {you ? (
+            <span className="recipient-email static">{recipient.email}</span>
+          ) : (
+            <button
+              type="button"
+              className="recipient-email"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCompose(recipient);
+                setOpen(false);
+              }}
+            >
+              {recipient.email}
+            </button>
+          )}
+          {!you && (
+            <span className="recipient-pop-hint">Click email to compose</span>
+          )}
+        </div>
+      )}
+    </span>
+  );
+}
+
+function formatRecipients(
+  list: Recipient[],
+  onCompose: (r: Recipient) => void,
+) {
+  return list.map((r, i) => (
+    <span key={r.email} className="recipient-item">
+      {i > 0 && <span className="recipient-sep">, </span>}
+      <RecipientName recipient={r} onCompose={onCompose} />
+    </span>
+  ));
+}
+
+/** Local heuristic stand-in for the AI bridge auto-labeler. */
+function suggestLabel(message: Message): Label | null {
+  const hay = [
+    message.from,
+    message.email,
+    message.subject,
+    message.preview,
+    ...message.thread.flatMap((t) => [
+      t.from,
+      t.email,
+      ...(t.body ?? []),
+      t.bodyHtml ?? "",
+    ]),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const rules: { id: string; test: RegExp }[] = [
+    { id: "receipts", test: /receipt|invoice|stripe|paid|\$[\d,]/ },
+    {
+      id: "security",
+      test: /security|dependabot|vulnerabilit|otp|verify|2fa|login alert/,
+    },
+    {
+      id: "social",
+      test: /linkedin|twitter|instagram|facebook|appeared in \d+ searches/,
+    },
+    {
+      id: "news",
+      test: /newsletter|digest|weekly summary|unsubscribe/,
+    },
+    {
+      id: "updates",
+      test: /\blinear\b|shipped|release|changelog|roadmap/,
+    },
+    { id: "promo", test: /% off|sale|deal|promo|discount/ },
+    {
+      id: "waiting",
+      test: /waiting|follow up|circling back|any update/,
+    },
+  ];
+
+  for (const rule of rules) {
+    if (rule.test.test(hay)) {
+      return seedLabels.find((l) => l.id === rule.id) ?? null;
+    }
+  }
+  if (/intro|meeting|connect|client|ledgerly|northwind|acme/.test(hay)) {
+    return seedLabels.find((l) => l.id === "updates") ?? null;
+  }
+  return null;
+}
+
+const LABEL_COLORS = [
+  "#ff5c5c",
+  "#f5a524",
+  "#f5d042",
+  "#3dd68c",
+  "#5b8def",
+  "#8b7cf6",
+  "#46c5e8",
+  "#ea4335",
+];
+
+function slugLabelId(name: string) {
+  const base = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return base || `label-${Date.now().toString(36)}`;
+}
+
+type AppNotification = {
+  id: string;
+  kind: "mail" | "meeting" | "ai" | "sync";
+  title: string;
+  body: string;
+  time: string;
+  unread?: boolean;
+  messageId?: string;
+};
+
+function NotificationsMenu({
+  items,
+  onClose,
+  onOpen,
+  onMarkAllRead,
+}: {
+  items: AppNotification[];
+  onClose: () => void;
+  onOpen: (n: AppNotification) => void;
+  onMarkAllRead: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const unread = items.filter((n) => n.unread).length;
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="notif-menu" ref={ref} role="dialog" aria-label="Notifications">
+      <div className="notif-menu-head">
+        <div>
+          <strong>Notifications</strong>
+          <span>
+            {unread > 0 ? `${unread} new` : "You're caught up"}
+          </span>
+        </div>
+        {unread > 0 && (
+          <button type="button" className="pill-btn" onClick={onMarkAllRead}>
+            Mark all read
+          </button>
+        )}
+      </div>
+      <div className="notif-menu-list">
+        {items.length === 0 ? (
+          <div className="notif-empty">No notifications yet</div>
+        ) : (
+          items.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              className={`notif-item${n.unread ? " unread" : ""}`}
+              onClick={() => onOpen(n)}
+            >
+              <span className={`notif-kind ${n.kind}`} aria-hidden>
+                {n.kind === "mail" ? (
+                  <Mail size={14} strokeWidth={1.75} />
+                ) : n.kind === "meeting" ? (
+                  <Clock size={14} strokeWidth={1.75} />
+                ) : n.kind === "ai" ? (
+                  <Sparkles size={14} strokeWidth={1.75} />
+                ) : (
+                  <RefreshCw size={14} strokeWidth={1.75} />
+                )}
+              </span>
+              <span className="notif-copy">
+                <strong>{n.title}</strong>
+                <span>{n.body}</span>
+              </span>
+              <span className="notif-meta">
+                <span className="notif-time">{n.time}</span>
+                {n.unread && <span className="notif-dot" aria-hidden />}
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TitleBar({
+  onAsk,
+  askOpen,
+  searchRef,
+  showAi,
+  searchTokens,
+  onSearchTokens,
+  labels,
+  notifications,
+  onOpenNotification,
+  onMarkNotificationsRead,
+}: {
+  onAsk: () => void;
+  askOpen: boolean;
+  searchRef?: RefObject<HTMLInputElement | null>;
+  showAi: boolean;
+  searchTokens: SearchToken[];
+  onSearchTokens: (tokens: SearchToken[]) => void;
+  labels: Label[];
+  notifications: AppNotification[];
+  onOpenNotification: (n: AppNotification) => void;
+  onMarkNotificationsRead: () => void;
+}) {
+  const [notifOpen, setNotifOpen] = useState(false);
+  const unread = notifications.filter((n) => n.unread).length;
+
+  return (
+    <header className="titlebar">
+      <div className="titlebar-left">
+        <IntrayBrandLockup size={16} />
+      </div>
+      <SearchBar
+        inputRef={searchRef}
+        tokens={searchTokens}
+        onTokensChange={onSearchTokens}
+        labels={labels}
+      />
+      <div className="titlebar-right">
+        {showAi && (
+          <button
+            type="button"
+            className={`icon-btn${askOpen ? " active" : ""}`}
+            aria-label="Ask AI across inbox"
+            title="Ask AI · all mail"
+            onClick={() => {
+              setNotifOpen(false);
+              onAsk();
+            }}
+          >
+            <Bot size={15} strokeWidth={1.75} />
+          </button>
+        )}
+        <div className="notif-anchor">
+          <button
+            type="button"
+            className={`icon-btn${notifOpen ? " active" : ""}`}
+            aria-label="Notifications"
+            aria-expanded={notifOpen}
+            title="Notifications"
+            onClick={() => setNotifOpen((v) => !v)}
+          >
+            <Bell size={15} strokeWidth={1.75} />
+            {unread > 0 && (
+              <span className="notif-badge">{unread > 9 ? "9+" : unread}</span>
+            )}
+          </button>
+          {notifOpen && (
+            <NotificationsMenu
+              items={notifications}
+              onClose={() => setNotifOpen(false)}
+              onMarkAllRead={() => {
+                onMarkNotificationsRead();
+              }}
+              onOpen={(n) => {
+                setNotifOpen(false);
+                onOpenNotification(n);
+              }}
+            />
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function AccountRail({
+  accounts,
+  activeId,
+  onSelect,
+  onAdd,
+  onSettings,
+}: {
+  accounts: Account[];
+  activeId: string;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+  onSettings: () => void;
+}) {
+  return (
+    <aside className="rail">
+      <div className="rail-section">
+        <span className="rail-label">Mail</span>
+        {accounts.map((a) => (
+          <button
+            key={a.id}
+            type="button"
+            className={`account${activeId === a.id ? " active" : ""}`}
+            onClick={() => onSelect(a.id)}
+            title={a.id === UNIFIED_ID ? "Unified Inbox" : a.email}
+          >
+            {a.id !== UNIFIED_ID && a.avatarUrl ? (
+              <img
+                className="account-face photo"
+                src={a.avatarUrl}
+                alt=""
+                draggable={false}
+              />
+            ) : (
+              <span className="account-face" style={{ background: a.color }}>
+                {a.id === UNIFIED_ID ? (
+                  <Layers size={14} strokeWidth={2.25} color="#0a0a0b" />
+                ) : (
+                  a.label.slice(0, 2)
+                )}
+              </span>
+            )}
+            {a.unread > 0 && <span className="badge">{a.unread}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="rail-spacer" />
+      <div className="rail-section">
+        <span className="rail-label">App</span>
+        <button
+          type="button"
+          className="rail-btn"
+          aria-label="Add account"
+          title="Add account"
+          onClick={onAdd}
+        >
+          <Plus size={16} strokeWidth={1.75} />
+        </button>
+        <button
+          type="button"
+          className="rail-btn"
+          aria-label="Settings"
+          title="Settings"
+          onClick={onSettings}
+        >
+          <Settings size={16} strokeWidth={1.75} />
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function Sidebar({
+  account,
+  activeFolder,
+  inboxCount,
+  folderCounts,
+  labels,
+  syncLabel,
+  onFolder,
+  onCompose,
+  onEmptyFolder,
+}: {
+  account: Account;
+  activeFolder: string;
+  inboxCount: number;
+  folderCounts: Record<string, number>;
+  labels: Label[];
+  syncLabel: string;
+  onFolder: (id: string) => void;
+  onCompose: () => void;
+  onEmptyFolder?: (folderId: "junk" | "trash") => void;
+}) {
+  const unified = account.id === UNIFIED_ID;
+
+  return (
+    <aside className="sidebar">
+      <div className="profile">
+        {unified ? (
+          <div className="profile-avatar">
+            <Layers size={14} strokeWidth={2.25} />
+          </div>
+        ) : account.avatarUrl ? (
+          <img
+            className="profile-avatar photo"
+            src={account.avatarUrl}
+            alt=""
+            draggable={false}
+          />
+        ) : (
+          <div
+            className="profile-avatar"
+            style={{ background: account.color, color: "#0a0a0b" }}
+          >
+            {account.label}
+          </div>
+        )}
+        <div>
+          <div className="profile-name">{account.name}</div>
+          <div className="profile-email">{account.email}</div>
+        </div>
+      </div>
+
+      <button type="button" className="compose" onClick={onCompose}>
+        <Plus size={15} strokeWidth={2.25} />
+        Compose
+        <kbd>Ctrl+N</kbd>
+      </button>
+
+      <div className="nav-section">
+        {folders.map((f) => {
+          const Icon = folderIcons[f.icon];
+          const count =
+            f.id === "inbox"
+              ? inboxCount
+              : (folderCounts[f.id] ?? f.count ?? 0);
+          return (
+            <button
+              key={f.id}
+              type="button"
+              className={`nav-item${activeFolder === f.id ? " active" : ""}`}
+              onClick={() => onFolder(f.id)}
+            >
+              <Icon size={15} strokeWidth={1.75} />
+              {f.id === "inbox" && unified ? "Unified Inbox" : f.name}
+              {count > 0 && <span className="count">{count}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div>
+        <div className="section-label">
+          Folders
+          <Plus size={12} strokeWidth={2} />
+        </div>
+        <div className="nav-section">
+          {customFolders.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`nav-item${activeFolder === name ? " active" : ""}`}
+              onClick={() => onFolder(name)}
+            >
+              <Folder size={15} strokeWidth={1.75} />
+              {name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="section-label">
+          Labels
+          <Plus size={12} strokeWidth={2} />
+        </div>
+        <div className="nav-section">
+          {labels.map((l) => (
+            <button key={l.id} type="button" className="nav-item">
+              <span className="label-dot" style={{ color: l.color }} />
+              {l.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {(activeFolder === "junk" || activeFolder === "trash") &&
+        onEmptyFolder &&
+        (folderCounts[activeFolder] ?? 0) > 0 && (
+          <div className="folder-toolbar">
+            <button
+              type="button"
+              className="alert-btn ghost"
+              onClick={() =>
+                onEmptyFolder(activeFolder === "junk" ? "junk" : "trash")
+              }
+            >
+              <Eraser size={13} strokeWidth={1.75} />
+              {activeFolder === "junk" ? "Empty Junk" : "Empty Trash"}
+            </button>
+          </div>
+        )}
+
+      <div className="sidebar-footer">
+        <span className="sync-pill">
+          <span className="sync-dot" />
+          {syncLabel}
+        </span>
+      </div>
+    </aside>
+  );
+}
+
+type MenuState = {
+  messageId: string;
+  x: number;
+  y: number;
+};
+
+function MessageActionMenu({
+  message,
+  x,
+  y,
+  labels,
+  onAction,
+  onClose,
+  onCreateLabel,
+  initialPanel,
+  showAi = false,
+}: {
+  message: Message;
+  x: number;
+  y: number;
+  labels: Label[];
+  onAction: (action: MailAction, detail?: string) => void;
+  onClose: () => void;
+  onCreateLabel: (name: string, color: string) => void;
+  /** Open a submenu immediately (toolbar Label / Snooze / Move). */
+  initialPanel?: "snooze" | "label" | "move";
+  showAi?: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const leaveTimer = useRef<number | null>(null);
+  const [panel, setPanel] = useState<"snooze" | "label" | "move" | null>(
+    initialPanel ?? null,
+  );
+  const [creatingLabel, setCreatingLabel] = useState(false);
+  const [newLabelName, setNewLabelName] = useState("");
+  const [newLabelColor, setNewLabelColor] = useState(LABEL_COLORS[4]);
+  const newLabelInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+      if (leaveTimer.current != null) window.clearTimeout(leaveTimer.current);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dx = Math.min(0, window.innerWidth - 8 - rect.right);
+    const dy = Math.min(0, window.innerHeight - 8 - rect.bottom);
+    if (dx || dy) {
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
+  }, [x, y, panel, creatingLabel]);
+
+  useEffect(() => {
+    if (creatingLabel) newLabelInputRef.current?.focus();
+  }, [creatingLabel]);
+
+  const openPanel = (next: "snooze" | "label" | "move") => {
+    if (leaveTimer.current != null) {
+      window.clearTimeout(leaveTimer.current);
+      leaveTimer.current = null;
+    }
+    setPanel(next);
+    if (next !== "label") setCreatingLabel(false);
+  };
+
+  const submitNewLabel = () => {
+    const name = newLabelName.trim();
+    if (!name) return;
+    onCreateLabel(name, newLabelColor);
+    setCreatingLabel(false);
+    setNewLabelName("");
+  };
+
+  const scheduleClosePanel = () => {
+    if (leaveTimer.current != null) window.clearTimeout(leaveTimer.current);
+    leaveTimer.current = window.setTimeout(() => setPanel(null), 120);
+  };
+
+  const clearPanel = () => {
+    if (leaveTimer.current != null) {
+      window.clearTimeout(leaveTimer.current);
+      leaveTimer.current = null;
+    }
+    setPanel(null);
+  };
+
+  const item = (
+    action: MailAction,
+    label: string,
+    Icon: typeof Archive,
+    opts?: { danger?: boolean; detail?: string },
+  ) => (
+    <button
+      key={label}
+      type="button"
+      className={`ctx-item${opts?.danger ? " danger" : ""}`}
+      onMouseEnter={clearPanel}
+      onClick={() => onAction(action, opts?.detail)}
+    >
+      <Icon size={14} strokeWidth={1.75} />
+      {label}
+    </button>
+  );
+
+  const submenu = (
+    id: "snooze" | "label" | "move",
+    label: string,
+    Icon: typeof Archive,
+    flyout: ReactNode,
+    flyoutClass?: string,
+  ) => (
+    <div
+      className="ctx-submenu"
+      onMouseEnter={() => openPanel(id)}
+      onMouseLeave={scheduleClosePanel}
+    >
+      <button
+        type="button"
+        className={`ctx-item${panel === id ? " active" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={panel === id}
+        onClick={() => openPanel(id)}
+      >
+        <Icon size={14} strokeWidth={1.75} />
+        {label}
+        <ChevronRight size={14} strokeWidth={1.75} className="ctx-chevron" />
+      </button>
+      {panel === id && (
+        <div className={`ctx-flyout${flyoutClass ? ` ${flyoutClass}` : ""}`}>
+          {flyout}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="ctx-root" style={{ left: x, top: y }} ref={ref}>
+      <div className="ctx-menu">
+        {item("reply", "Reply", Reply)}
+        {item("forward", "Forward", Forward)}
+        <div className="ctx-sep" />
+        {item(
+          "toggle-read",
+          message.unread ? "Mark as read" : "Mark as unread",
+          message.unread ? MailOpen : Mail,
+        )}
+        {item(
+          "star",
+          message.starred ? "Unstar" : "Star",
+          Star,
+        )}
+        <div className="ctx-sep" />
+        {submenu(
+          "snooze",
+          "Snooze",
+          Clock,
+          ["Later today", "Tomorrow", "This weekend", "Next week"].map(
+            (label) => (
+              <button
+                key={label}
+                type="button"
+                className="ctx-item"
+                onClick={() => onAction("snooze", label)}
+              >
+                {label}
+              </button>
+            ),
+          ),
+        )}
+        {item("archive", "Archive", Archive)}
+        {submenu(
+          "move",
+          "Add to Folder",
+          Folder,
+          <>
+            {folders.map((f) => {
+              const Icon = folderIcons[f.icon];
+              const active = message.folder === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={`ctx-item${active ? " active" : ""}`}
+                  onClick={() => onAction("move", f.id)}
+                >
+                  <Icon size={14} strokeWidth={1.75} />
+                  {f.name}
+                  {active && (
+                    <Check
+                      size={14}
+                      strokeWidth={2.25}
+                      className="ctx-check"
+                    />
+                  )}
+                </button>
+              );
+            })}
+            <div className="ctx-sep" />
+            {customFolders.map((name) => {
+              const active = message.folder === name;
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  className={`ctx-item${active ? " active" : ""}`}
+                  onClick={() => onAction("move", name)}
+                >
+                  <Folder size={14} strokeWidth={1.75} />
+                  {name}
+                  {active && (
+                    <Check
+                      size={14}
+                      strokeWidth={2.25}
+                      className="ctx-check"
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </>,
+          "ctx-folder-flyout",
+        )}
+        {submenu(
+          "label",
+          "Label",
+          Tag,
+          <>
+            {showAi && (
+              <>
+                <button
+                  type="button"
+                  className="ctx-item"
+                  onClick={() => onAction("auto-label")}
+                >
+                  <Sparkles size={14} strokeWidth={1.75} />
+                  Auto-label with AI
+                </button>
+                <div className="ctx-sep" />
+              </>
+            )}
+            {labels.map((l) => {
+              const active = message.tag?.label === l.name;
+              return (
+                <button
+                  key={l.id}
+                  type="button"
+                  className={`ctx-item${active ? " active" : ""}`}
+                  onClick={() =>
+                    onAction(active ? "clear-label" : "label", l.id)
+                  }
+                >
+                  <span className="label-dot" style={{ color: l.color }} />
+                  {l.name}
+                  {active && (
+                    <Check
+                      size={14}
+                      strokeWidth={2.25}
+                      className="ctx-check"
+                    />
+                  )}
+                </button>
+              );
+            })}
+            <div className="ctx-sep" />
+            {creatingLabel ? (
+              <div
+                className="ctx-new-label"
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <input
+                  ref={newLabelInputRef}
+                  className="ctx-new-label-input"
+                  placeholder="Label name"
+                  value={newLabelName}
+                  onChange={(e) => setNewLabelName(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitNewLabel();
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setCreatingLabel(false);
+                      setNewLabelName("");
+                    }
+                  }}
+                />
+                <div className="ctx-new-label-colors">
+                  {LABEL_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      className={`ctx-color-swatch${newLabelColor === c ? " active" : ""}`}
+                      style={{ background: c }}
+                      aria-label={`Color ${c}`}
+                      onClick={() => setNewLabelColor(c)}
+                    />
+                  ))}
+                </div>
+                <div className="ctx-new-label-actions">
+                  <button
+                    type="button"
+                    className="ctx-item"
+                    onClick={() => {
+                      setCreatingLabel(false);
+                      setNewLabelName("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="ctx-item ctx-new-label-create"
+                    disabled={!newLabelName.trim()}
+                    onClick={submitNewLabel}
+                  >
+                    <Plus size={14} strokeWidth={2} />
+                    Create
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="ctx-item"
+                onClick={() => setCreatingLabel(true)}
+              >
+                <Plus size={14} strokeWidth={2} />
+                New label…
+              </button>
+            )}
+          </>,
+          "ctx-label-flyout",
+        )}
+        <div className="ctx-sep" />
+        {message.folder === "junk" ? (
+          <>
+            {item("not-spam", "Not spam", Inbox)}
+            {item("trash", "Move to Trash", Trash2)}
+            {item("delete-forever", "Delete forever", Eraser, { danger: true })}
+          </>
+        ) : message.folder === "trash" ? (
+          <>
+            {item("move", "Move to Inbox", Inbox, { detail: "inbox" })}
+            {item("delete-forever", "Delete forever", Eraser, { danger: true })}
+          </>
+        ) : (
+          <>
+            {item("spam", "Mark as spam", ShieldAlert, { danger: true })}
+            {item("trash", "Delete", Trash2, { danger: true })}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MessageList({
+  items,
+  selectedId,
+  checkedIds,
+  filter,
+  unified,
+  title,
+  showSplit,
+  showAvatars,
+  showPreviewLines,
+  showUnreadBadge,
+  hoverActions,
+  reduceMotion,
+  labels,
+  showAi,
+  syncing,
+  fullScreen,
+  onFilter,
+  onSelect,
+  onToggleCheck,
+  onSelectAll,
+  onClearChecks,
+  onBulkAction,
+  onRefresh,
+  onCompose,
+  onAction,
+  onCreateLabel,
+}: {
+  items: Message[];
+  selectedId: string;
+  checkedIds: Set<string>;
+  filter: Filter;
+  unified: boolean;
+  title: string;
+  showSplit: boolean;
+  showAvatars: boolean;
+  showPreviewLines: boolean;
+  showUnreadBadge: boolean;
+  hoverActions: boolean;
+  reduceMotion: boolean;
+  labels: Label[];
+  showAi: boolean;
+  syncing?: boolean;
+  fullScreen?: boolean;
+  onFilter: (f: Filter) => void;
+  onSelect: (id: string) => void;
+  onToggleCheck: (
+    id: string,
+    opts: { shiftKey: boolean; additive: boolean },
+  ) => void;
+  onSelectAll: () => void;
+  onClearChecks: () => void;
+  onBulkAction: (action: MailAction, detail?: string) => void;
+  onRefresh: () => void;
+  onCompose?: () => void;
+  onAction: (messageId: string, action: MailAction, snoozeLabel?: string) => void;
+  onCreateLabel: (messageId: string, name: string, color: string) => void;
+}) {
+  const otherCount = items.filter((m) => !m.important && m.unread).length;
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const checkedCount = checkedIds.size;
+  const allChecked = items.length > 0 && items.every((m) => checkedIds.has(m.id));
+  const someChecked = checkedCount > 0 && !allChecked;
+  const checkedMessages = items.filter((m) => checkedIds.has(m.id));
+  const anyUnread = checkedMessages.some((m) => m.unread);
+  const anyUnstarred = checkedMessages.some((m) => !m.starred);
+
+  const menuMessage = menu
+    ? items.find((m) => m.id === menu.messageId) ?? null
+    : null;
+
+  const openMenu = (messageId: string, x: number, y: number) => {
+    setMenu({ messageId, x, y });
+  };
+
+  return (
+    <section
+      className={`list${fullScreen ? " list-fullscreen" : ""}${checkedCount > 0 ? " list-selecting" : ""}`}
+    >
+      <div className="list-header">
+        {checkedCount > 0 ? (
+          <div className="bulk-bar" role="toolbar" aria-label="Bulk selection">
+            <button
+              type="button"
+              className={`message-check${allChecked ? " on" : someChecked ? " mixed" : ""}`}
+              aria-label={allChecked ? "Deselect all" : "Select all"}
+              title={allChecked ? "Deselect all" : "Select all"}
+              aria-checked={allChecked ? true : someChecked ? "mixed" : false}
+              role="checkbox"
+              onClick={() => (allChecked ? onClearChecks() : onSelectAll())}
+            >
+              {allChecked ? (
+                <CheckSquare size={15} strokeWidth={1.75} />
+              ) : someChecked ? (
+                <MinusSquare size={15} strokeWidth={1.75} />
+              ) : (
+                <Square size={15} strokeWidth={1.75} />
+              )}
+            </button>
+            <span className="bulk-count">{checkedCount}&nbsp;selected</span>
+            <span className="bulk-sep" aria-hidden />
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Archive selected"
+              title="Archive"
+              onClick={() => onBulkAction("archive")}
+            >
+              <Archive size={14} strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={anyUnread ? "Mark as read" : "Mark as unread"}
+              title={anyUnread ? "Mark as read" : "Mark as unread"}
+              onClick={() => onBulkAction("toggle-read")}
+            >
+              {anyUnread ? (
+                <MailOpen size={14} strokeWidth={1.75} />
+              ) : (
+                <Mail size={14} strokeWidth={1.75} />
+              )}
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={anyUnstarred ? "Star" : "Unstar"}
+              title={anyUnstarred ? "Star" : "Unstar"}
+              onClick={() => onBulkAction("star")}
+            >
+              <Star
+                size={14}
+                strokeWidth={1.75}
+                fill={anyUnstarred ? "none" : "currentColor"}
+              />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Snooze selected"
+              title="Snooze"
+              onClick={() => onBulkAction("snooze", "Tomorrow")}
+            >
+              <Clock size={14} strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Mark selected as spam"
+              title="Mark as spam"
+              onClick={() => onBulkAction("spam")}
+            >
+              <ShieldAlert size={14} strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn danger"
+              aria-label="Delete selected"
+              title="Delete"
+              onClick={() => onBulkAction("trash")}
+            >
+              <Trash2 size={14} strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn danger"
+              aria-label="Delete selected forever"
+              title="Delete forever"
+              onClick={() => onBulkAction("delete-forever")}
+            >
+              <Eraser size={14} strokeWidth={1.75} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="list-title">
+              {title}
+              {fullScreen && (
+                <span className="list-count">{items.length}</span>
+              )}
+            </div>
+            <div className="list-actions">
+              {fullScreen && onCompose && (
+                <button
+                  type="button"
+                  className="compose list-compose"
+                  onClick={onCompose}
+                >
+                  <Plus size={15} strokeWidth={2.25} />
+                  Compose
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Refresh"
+                onClick={onRefresh}
+                disabled={syncing}
+              >
+                <RefreshCw
+                  size={14}
+                  strokeWidth={1.75}
+                  className={syncing ? "spin" : undefined}
+                />
+              </button>
+              <button type="button" className="icon-btn" aria-label="Sweep">
+                <Eraser size={14} strokeWidth={1.75} />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {showSplit && (
+        <div className="list-tabs">
+          {(
+            [
+              ["all", "All"],
+              ["important", "Important"],
+              ["other", `Other${otherCount ? ` (${otherCount})` : ""}`],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`tab${filter === id ? " active" : ""}`}
+              onClick={() => onFilter(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="message-scroll">
+        {items.length === 0 ? (
+          <div className="empty-list">
+            <Inbox size={22} strokeWidth={1.5} />
+            <p>Nothing here</p>
+            <span>Try another filter or account.</span>
+          </div>
+        ) : (
+          items.map((m, i) => {
+            const acct = accountFor(m.accountId);
+            const selected = m.id === selectedId;
+            const checked = checkedIds.has(m.id);
+            const badges = listBadgeCounts(m);
+            const links = extractMessageLinks(m);
+            const starred = Boolean(m.starred);
+            return (
+              <div
+                key={m.id}
+                className={`message-row${reduceMotion ? "" : " fade-up"}${selected ? " selected" : ""}${checked ? " checked" : ""}${menu?.messageId === m.id ? " menu-target" : ""}${m.unread ? " unread" : ""}${starred ? " starred" : ""}${hoverActions ? " hover-actions" : ""}${showAvatars ? "" : " no-avatar"}`}
+                style={
+                  reduceMotion ? undefined : { animationDelay: `${i * 0.03}s` }
+                }
+                onClick={(e) => {
+                  if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                    e.preventDefault();
+                    onToggleCheck(m.id, {
+                      shiftKey: e.shiftKey,
+                      additive: e.metaKey || e.ctrlKey,
+                    });
+                    return;
+                  }
+                  onSelect(m.id);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openMenu(m.id, e.clientX, e.clientY);
+                }}
+              >
+                <div className="message-select">
+                  {showAvatars && (
+                    <PersonAvatar
+                      name={m.from}
+                      initials={m.initials}
+                      color={m.avatarColor}
+                      avatarUrl={m.avatarUrl}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className={`message-check${checked ? " on" : ""}`}
+                    aria-label={checked ? "Deselect message" : "Select message"}
+                    aria-checked={checked}
+                    role="checkbox"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleCheck(m.id, {
+                        shiftKey: e.shiftKey,
+                        additive: true,
+                      });
+                    }}
+                  >
+                    {checked ? (
+                      <CheckSquare size={12} strokeWidth={2} />
+                    ) : (
+                      <Square size={12} strokeWidth={2} />
+                    )}
+                  </button>
+                </div>
+                <div className="message-main">
+                  <div className="from-row">
+                    <span className="from">{m.from}</span>
+                    <span className="message-time-inline">· {m.time}</span>
+                    {m.openTracking && (
+                      <DeliveryTicks tracking={m.openTracking} size={13} />
+                    )}
+                    {unified && (
+                      <span
+                        className="account-chip"
+                        style={{
+                          background: "transparent",
+                          color:
+                            acct.color === "#ededed" ? "#c5c8ce" : acct.color,
+                          borderColor: acct.color,
+                        }}
+                      >
+                        {acct.label}
+                      </span>
+                    )}
+                    {isCcOnly(m) && <span className="cc-chip">Cc</span>}
+                    {m.tag && (
+                      <span className="tag" style={{ background: m.tag.color }}>
+                        {m.tag.label}
+                      </span>
+                    )}
+                    <div className="message-row-actions">
+                      <button
+                        type="button"
+                        className={`message-star${starred ? " on" : ""}`}
+                        aria-label={starred ? "Unstar" : "Star"}
+                        aria-pressed={starred}
+                        title={starred ? "Unstar" : "Star"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAction(m.id, "star");
+                        }}
+                      >
+                        <Star
+                          size={13}
+                          strokeWidth={1.75}
+                          fill={starred ? "currentColor" : "none"}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        className="message-more"
+                        aria-label="Message actions"
+                        title="More actions"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const rect = (
+                            e.currentTarget as HTMLButtonElement
+                          ).getBoundingClientRect();
+                          openMenu(m.id, rect.right, rect.bottom + 4);
+                        }}
+                      >
+                        <MoreHorizontal size={14} strokeWidth={1.75} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="subject-row">
+                    {showUnreadBadge && m.unread && (
+                      <span className="unread-dot" aria-label="Unread" />
+                    )}
+                    <div className="subject">{m.subject}</div>
+                  </div>
+                  {showPreviewLines && (
+                    <div className="preview">{m.preview}</div>
+                  )}
+                  {(fullScreen ||
+                    badges.attachmentCount > 0 ||
+                    badges.mediaCount > 0 ||
+                    m.meeting ||
+                    links.length > 0) && (
+                    <div className="message-foot">
+                      {(badges.attachmentCount > 0 ||
+                        badges.mediaCount > 0 ||
+                        m.meeting ||
+                        links.length > 0) && (
+                        <div className="message-badges">
+                          {badges.attachmentCount > 0 && (
+                            <span
+                              className="meta-pill files"
+                              title={`${badges.attachmentCount} attachment${badges.attachmentCount === 1 ? "" : "s"}`}
+                            >
+                              <Paperclip size={12} strokeWidth={1.75} />
+                              {badges.attachmentCount}
+                            </span>
+                          )}
+                          {(badges.mediaCount > 0 || m.meeting) && (
+                            <span
+                              className="meta-pill media"
+                              title={
+                                m.meeting
+                                  ? m.meeting.title
+                                  : `${badges.mediaCount} meeting${badges.mediaCount === 1 ? "" : "s"}`
+                              }
+                            >
+                              <Calendar size={12} strokeWidth={1.75} />
+                              {m.meeting ? "Meet" : badges.mediaCount}
+                            </span>
+                          )}
+                          {links.slice(0, 2).map((link) => (
+                            <a
+                              key={link.href}
+                              className="meta-link"
+                              href={link.href}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={link.href}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Link2 size={11} strokeWidth={1.75} />
+                              {link.label}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                      {fullScreen && (
+                        <span className="message-time-end">
+                          {m.openTracking && (
+                            <DeliveryTicks tracking={m.openTracking} size={13} />
+                          )}
+                          {m.time}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {menu && menuMessage && (
+        <MessageActionMenu
+          message={menuMessage}
+          x={menu.x}
+          y={menu.y}
+          labels={labels}
+          showAi={showAi}
+          onClose={() => setMenu(null)}
+          onCreateLabel={(name, color) => {
+            onCreateLabel(menu.messageId, name, color);
+            setMenu(null);
+          }}
+          onAction={(action, snoozeLabel) => {
+            onAction(menu.messageId, action, snoozeLabel);
+            setMenu(null);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function HtmlBody({
+  html,
+  forceDark,
+}: {
+  html: string;
+  forceDark?: boolean;
+}) {
+  const ref = useRef<HTMLIFrameElement>(null);
+
+  useEffect(() => {
+    const frame = ref.current;
+    if (!frame) return;
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    const dark = forceDark
+      ? `html, body { margin: 0; padding: 0; background: #141416; color: #e8e8ea; }
+         body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
+         img { max-width: 100%; height: auto; }
+         a { color: #7eb0ff; }
+         table, td, div { background-color: transparent !important; color: inherit !important; }`
+      : `html, body { margin: 0; padding: 0; background: #fff; color: #1a1a1a; }
+         body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
+         img { max-width: 100%; height: auto; }
+         a { color: #2563eb; }`;
+    doc.open();
+    doc.write(`<!doctype html><html><head><meta charset="utf-8" />
+      <style>${dark}</style>
+    </head><body>${html}</body></html>`);
+    doc.close();
+    const resize = () => {
+      const h = doc.body?.scrollHeight ?? 120;
+      frame.style.height = `${Math.min(Math.max(h + 8, 80), 900)}px`;
+    };
+    resize();
+    const ob = new ResizeObserver(resize);
+    if (doc.body) ob.observe(doc.body);
+    return () => ob.disconnect();
+  }, [html, forceDark]);
+
+  return (
+    <iframe
+      ref={ref}
+      className="html-frame"
+      title="Email HTML"
+      // allow-same-origin so we can write/measure the doc; no allow-scripts
+      sandbox="allow-same-origin"
+      referrerPolicy="no-referrer"
+    />
+  );
+}
+
+function ThreadMessageView({
+  message,
+  defaultExpanded,
+  forceDarkHtml,
+  showAi,
+  onComposeTo,
+  onSummarize,
+  onTranslate,
+}: {
+  message: ThreadMessage;
+  defaultExpanded: boolean;
+  forceDarkHtml?: boolean;
+  showAi: boolean;
+  onComposeTo: (r: Recipient) => void;
+  onSummarize?: () => void;
+  onTranslate?: () => void;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const hasRecipients =
+    (message.to && message.to.length > 0) ||
+    (message.cc && message.cc.length > 0);
+
+  const showTools = Boolean(message.noTrackers) || showAi;
+  const sender: Recipient = { name: message.from, email: message.email };
+  const toggleExpanded = () => setExpanded((v) => !v);
+
+  return (
+    <article className={`thread-msg${expanded ? " expanded" : ""}`}>
+      <div className="thread-msg-top">
+        <div className="thread-msg-head">
+          <div className="msg-from">
+            <button
+              type="button"
+              className="msg-from-toggle"
+              onClick={toggleExpanded}
+              aria-expanded={expanded}
+              aria-label={expanded ? "Collapse message" : "Expand message"}
+            >
+              <PersonAvatar
+                name={message.from}
+                initials={message.initials}
+                color={message.avatarColor}
+                avatarUrl={message.avatarUrl}
+              />
+            </button>
+            <div className="msg-from-text">
+              <strong>
+                <RecipientName recipient={sender} onCompose={onComposeTo} />
+              </strong>
+              <span className="msg-from-meta">
+                <button
+                  type="button"
+                  className="msg-sender-email"
+                  title={`Compose to ${message.email}`}
+                  onClick={() => onComposeTo(sender)}
+                >
+                  {message.email}
+                </button>
+                <span className="msg-from-sep" aria-hidden>
+                  ·
+                </span>
+                <button
+                  type="button"
+                  className="msg-from-time"
+                  onClick={toggleExpanded}
+                >
+                  {message.time}
+                </button>
+              </span>
+            </div>
+          </div>
+          {!expanded && message.body?.[0] && (
+            <button
+              type="button"
+              className="thread-collapse-preview"
+              onClick={toggleExpanded}
+            >
+              {message.body[0]}
+            </button>
+          )}
+        </div>
+
+        {expanded && showTools && (
+          <div className="msg-tools">
+            {message.noTrackers && (
+              <span
+                className="tracker"
+                title="No trackers found"
+                aria-label="No trackers found"
+              >
+                <ShieldCheck size={14} strokeWidth={1.75} />
+              </span>
+            )}
+            {showAi && (
+              <>
+                <button
+                  type="button"
+                  className="msg-tool-btn"
+                  title="Translate"
+                  aria-label="Translate"
+                  onClick={() => onTranslate?.()}
+                >
+                  <Languages size={14} strokeWidth={1.75} />
+                </button>
+                <button
+                  type="button"
+                  className="msg-tool-btn"
+                  title="Summarize"
+                  aria-label="Summarize"
+                  onClick={() => onSummarize?.()}
+                >
+                  <Sparkles size={14} strokeWidth={1.75} />
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {expanded && (
+        <div className="thread-msg-body">
+          {hasRecipients && (
+            <div className="msg-recipients">
+              {message.to && message.to.length > 0 && (
+                <div className="recipient-row">
+                  <span className="recipient-label">To</span>
+                  <span className="recipient-list">
+                    {formatRecipients(message.to, onComposeTo)}
+                  </span>
+                </div>
+              )}
+              {message.cc && message.cc.length > 0 && (
+                <div className="recipient-row">
+                  <span className="recipient-label">Cc</span>
+                  <span className="recipient-list">
+                    {formatRecipients(message.cc, onComposeTo)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {message.bodyHtml ? (
+            <div className="html-shell">
+              <HtmlBody html={message.bodyHtml} forceDark={forceDarkHtml} />
+            </div>
+          ) : (
+            <div className="body-copy">
+              {(message.body ?? []).map((p) => (
+                <p key={p}>{p}</p>
+              ))}
+            </div>
+          )}
+
+          {message.meeting && (
+            <div className="meeting-card">
+              <div className="meeting-card-icon" aria-hidden>
+                <Calendar size={15} strokeWidth={1.75} />
+              </div>
+              <div className="meeting-card-meta">
+                <strong>{message.meeting.title}</strong>
+                <span className="meeting-card-sep" aria-hidden>
+                  ·
+                </span>
+                <span>{message.meeting.when}</span>
+              </div>
+              {message.meeting.url && (
+                <a
+                  className="meeting-card-join"
+                  href={message.meeting.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  Join
+                </a>
+              )}
+            </div>
+          )}
+
+          {threadAttachments(message).length > 0 && (
+            <div className="attachment-list">
+              {threadAttachments(message).map((file) => (
+                <div key={`${file.name}-${file.size}`} className="attachment">
+                  <div className="attachment-icon">
+                    <FileText size={15} strokeWidth={1.75} />
+                  </div>
+                  <div className="attachment-meta">
+                    <strong>{file.name}</strong>
+                    <span className="attachment-sep" aria-hidden>
+                      ·
+                    </span>
+                    <span>{file.size}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function ReadingPane({
+  message,
+  stickySubject,
+  forceDarkHtml,
+  conversationView,
+  showAi,
+  labels,
+  prefs,
+  live,
+  account,
+  onBack,
+  onAsk,
+  onAction,
+  onCreateLabel,
+  onComposeTo,
+  onToast,
+  onReplySent,
+  focusReplySignal = 0,
+}: {
+  message: Message | null;
+  stickySubject: boolean;
+  forceDarkHtml: boolean;
+  conversationView: boolean;
+  showAi: boolean;
+  labels: Label[];
+  prefs: Preferences;
+  live: boolean;
+  account: Account;
+  onBack?: () => void;
+  onAsk: () => void;
+  onAction: (action: MailAction, snoozeLabel?: string) => void;
+  onCreateLabel: (name: string, color: string) => void;
+  onComposeTo: (r: Recipient) => void;
+  onToast: (text: string) => void;
+  onReplySent?: (message: Message) => void;
+  /** Bumped by parent to focus the reply box (context menu / shortcuts). */
+  focusReplySignal?: number;
+}) {
+  const [draft, setDraft] = useState("");
+  const [ccMentions, setCcMentions] = useState<Recipient[]>([]);
+  const [sendingReply, setSendingReply] = useState(false);
+  const [aiReplies, setAiReplies] = useState<string[]>([]);
+  const [unsubState, setUnsubState] = useState<
+    "idle" | "scanning" | "done" | "missing"
+  >("idle");
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    panel?: "snooze" | "label" | "move";
+  } | null>(null);
+  const replyRef = useRef<HTMLTextAreaElement | null>(null);
+  const seedReplies = message
+    ? (smartRepliesById[message.id] ?? defaultSmartReplies)
+    : [];
+  const replies = aiReplies.length ? aiReplies : seedReplies;
+
+  const predictions = useMemo(() => {
+    if (!showAi || !prefs.aiWriteEnabled || !replies.length) return [];
+    const q = draft.trim().toLowerCase();
+    const pool = q
+      ? replies.filter((r) => {
+          const t = r.toLowerCase();
+          return t.startsWith(q) && t !== q;
+        })
+      : replies;
+    return pool.slice(0, 2);
+  }, [showAi, prefs.aiWriteEnabled, replies, draft]);
+
+  useEffect(() => {
+    setAiReplies([]);
+    if (!message || !showAi || !prefs.aiWriteEnabled || prefs.aiBridge === "none")
+      return;
+    let cancelled = false;
+    void aiSuggestReplies(prefs, message)
+      .then((list) => {
+        if (!cancelled && list.length) setAiReplies(list);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [message?.id, showAi, prefs.aiWriteEnabled, prefs.aiBridge, prefs.aiModelHint]);
+
+  const addCcMention = (contact: Contact) => {
+    setCcMentions((prev) => {
+      if (prev.some((p) => p.email.toLowerCase() === contact.email.toLowerCase())) {
+        return prev;
+      }
+      return [...prev, { name: contact.name, email: contact.email }];
+    });
+  };
+
+  useEffect(() => {
+    setDraft("");
+    setCcMentions([]);
+    setMenu(null);
+    setUnsubState("idle");
+    setSendingReply(false);
+  }, [message?.id]);
+
+  useEffect(() => {
+    if (!focusReplySignal || !message) return;
+    const id = window.requestAnimationFrame(() => {
+      replyRef.current?.focus();
+      replyRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [focusReplySignal, message?.id]);
+
+  const sendReply = async () => {
+    if (!message || !draft.trim() || sendingReply) return;
+    setSendingReply(true);
+    try {
+      if (live) {
+        const dto = await bridgeSendMail({
+          accountId: message.accountId || account.id,
+          to: [message.email],
+          cc: ccMentions.map((c) => c.email),
+          subject: message.subject.startsWith("Re:")
+            ? message.subject
+            : `Re: ${message.subject}`,
+          bodyText: draft,
+          replyToMessageId: message.id,
+        });
+        onReplySent?.(messageDtoToUi(dto));
+      } else {
+        onToast("Reply saved locally (connect an account to send)");
+      }
+      setDraft("");
+      setCcMentions([]);
+      onToast("Reply sent");
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "Send failed");
+    } finally {
+      setSendingReply(false);
+    }
+  };
+
+  const runSummarize = async () => {
+    if (!message || prefs.aiBridge === "none") {
+      onToast("Pick an AI provider in Settings");
+      return;
+    }
+    onToast("Summarizing…");
+    try {
+      const text = await aiSummarizeMessage(prefs, message);
+      onToast(text.slice(0, 180) + (text.length > 180 ? "…" : ""));
+      setDraft((d) => (d.trim() ? d : text));
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "Summarize failed");
+    }
+  };
+
+  const runTranslate = async () => {
+    if (!message || prefs.aiBridge === "none") {
+      onToast("Pick an AI provider in Settings");
+      return;
+    }
+    onToast("Translating…");
+    try {
+      const text = await aiTranslateMessage(prefs, message);
+      setDraft(text);
+      onToast("Translation ready in reply box");
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "Translate failed");
+    }
+  };
+
+  const runAiWrite = async () => {
+    if (!message || prefs.aiBridge === "none") {
+      onToast("Pick an AI provider in Settings");
+      return;
+    }
+    onToast("Writing reply…");
+    try {
+      const text = await aiWriteReply(prefs, message);
+      setDraft(text);
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "AI write failed");
+    }
+  };
+
+  if (!message) {
+    return (
+      <section className="reader empty-reader">
+        <Layers size={28} strokeWidth={1.5} />
+        <h2>Unified Inbox</h2>
+        <p>Select a message from any account — they all live here together.</p>
+      </section>
+    );
+  }
+
+  const links = extractMessageLinks(message);
+  const marketing = looksLikeNewsletter(message);
+  const showUnsubscribe = showAi && marketing && unsubState !== "done";
+  const openTrack = message.openTracking;
+  const openSummary = openTrack ? trackingSummary(openTrack) : null;
+
+  const runUnsubscribe = async () => {
+    if (unsubState === "scanning") return;
+    setUnsubState("scanning");
+    onToast(`AI is finding an unsubscribe path for ${message.from}…`);
+    const target = await aiFindUnsubscribe(message);
+    if (!target) {
+      setUnsubState("missing");
+      onToast("AI couldn’t find an unsubscribe link in this mail");
+      return;
+    }
+    openUnsubscribeTarget(target);
+    setUnsubState("done");
+    onToast(
+      target.kind === "mailto"
+        ? `Opening unsubscribe email for ${message.from}`
+        : `Opened unsubscribe for ${message.from}`,
+    );
+    onAction("archive");
+  };
+
+  const toolbar: Array<{
+    Icon: typeof Archive;
+    label: string;
+    action?: MailAction;
+  }> = [
+    { Icon: Reply, label: "Reply", action: "reply" },
+    { Icon: ReplyAll, label: "Reply all", action: "reply" },
+    { Icon: Forward, label: "Forward", action: "forward" },
+    ...(message.folder === "junk"
+      ? [
+          { Icon: Inbox, label: "Not spam", action: "not-spam" as MailAction },
+          {
+            Icon: Eraser,
+            label: "Delete forever",
+            action: "delete-forever" as MailAction,
+          },
+        ]
+      : message.folder === "trash"
+        ? [
+            {
+              Icon: Eraser,
+              label: "Delete forever",
+              action: "delete-forever" as MailAction,
+            },
+          ]
+        : [
+            {
+              Icon: ShieldAlert,
+              label: "Mark as spam",
+              action: "spam" as MailAction,
+            },
+            { Icon: Trash2, label: "Delete", action: "trash" as MailAction },
+          ]),
+    { Icon: Clock, label: "Snooze", action: "snooze" },
+    { Icon: Archive, label: "Archive", action: "archive" },
+    { Icon: Folder, label: "Move", action: "move" },
+    { Icon: Tag, label: "Label", action: "label" },
+    { Icon: Star, label: "Star", action: "star" },
+    {
+      Icon: message.unread ? MailOpen : Mail,
+      label: message.unread ? "Mark as read" : "Mark as unread",
+      action: "toggle-read",
+    },
+  ];
+
+  return (
+    <section className="reader">
+      <div className="reader-toolbar">
+        {onBack && (
+          <button
+            type="button"
+            className="reader-back"
+            onClick={onBack}
+            aria-label="Back to inbox"
+          >
+            <ArrowLeft size={15} strokeWidth={1.75} />
+            Inbox
+          </button>
+        )}
+        {toolbar.map(({ Icon, label, action }) => (
+          <button
+            key={label}
+            type="button"
+            className="icon-btn"
+            aria-label={label}
+            title={label}
+            onClick={(e) => {
+              if (
+                action === "snooze" ||
+                action === "label" ||
+                action === "move"
+              ) {
+                const rect = (
+                  e.currentTarget as HTMLButtonElement
+                ).getBoundingClientRect();
+                setMenu({
+                  x: rect.left,
+                  y: rect.bottom + 4,
+                  panel: action,
+                });
+                return;
+              }
+              if (action) onAction(action);
+            }}
+          >
+            <Icon size={16} strokeWidth={1.75} />
+          </button>
+        ))}
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="More"
+          title="More"
+          onClick={(e) => {
+            const rect = (
+              e.currentTarget as HTMLButtonElement
+            ).getBoundingClientRect();
+            setMenu({ x: rect.left, y: rect.bottom + 4 });
+          }}
+        >
+          <MoreHorizontal size={16} strokeWidth={1.75} />
+        </button>
+        {showAi && (
+          <>
+            <div className="toolbar-spacer" />
+            <button
+              type="button"
+              className="pill-btn"
+              onClick={onAsk}
+              title="Ask AI about this mail"
+            >
+              <Sparkles size={13} strokeWidth={1.75} />
+              Ask AI
+            </button>
+          </>
+        )}
+      </div>
+
+      {menu && (
+        <MessageActionMenu
+          message={message}
+          x={menu.x}
+          y={menu.y}
+          initialPanel={menu.panel}
+          labels={labels}
+          showAi={showAi}
+          onClose={() => setMenu(null)}
+          onCreateLabel={(name, color) => {
+            onCreateLabel(name, color);
+            setMenu(null);
+          }}
+          onAction={(action, detail) => {
+            onAction(action, detail);
+            setMenu(null);
+          }}
+        />
+      )}
+
+      <div className="reader-scroll fade-up-delay" key={message.id}>
+        <div className="reader-meta-row">
+          <span className="thread-count">
+            {message.thread.length}{" "}
+            {message.thread.length === 1 ? "message" : "messages"}
+          </span>
+        </div>
+        <h1
+          className={`reader-subject${stickySubject ? " sticky" : ""}`}
+        >
+          {message.subject}
+        </h1>
+
+        {openTrack && openSummary && (
+          <div className="open-track-banner" role="status">
+            <div className="open-track-copy">
+              <DeliveryTicks tracking={openTrack} size={16} />
+              <div>
+                <strong>{openSummary.title}</strong>
+                <span>{openSummary.detail}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showUnsubscribe && (
+          <div className="unsub-banner" role="status">
+            <div className="unsub-banner-copy">
+              <div>
+                <strong>Looks like a newsletter or promo</strong>
+                <span>
+                  Find the unsubscribe link and archive this thread.
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="unsub-btn"
+              disabled={unsubState === "scanning"}
+              onClick={() => void runUnsubscribe()}
+            >
+              {unsubState === "scanning" ? (
+                <Loader2 size={13} strokeWidth={2} className="spin" />
+              ) : (
+                <UserMinus size={13} strokeWidth={1.75} />
+              )}
+              {unsubState === "scanning"
+                ? "Finding…"
+                : unsubState === "missing"
+                  ? "Try again"
+                  : "Unsubscribe"}
+            </button>
+          </div>
+        )}
+
+        {unsubState === "done" && (
+          <div className="unsub-banner done" role="status">
+            <div className="unsub-banner-copy">
+              <Check size={14} strokeWidth={2} />
+              <div>
+                <strong>Unsubscribe opened</strong>
+                <span>This thread was archived. Undo from the toast if needed.</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="thread">
+          {(conversationView
+            ? message.thread
+            : message.thread.slice(-1)
+          ).map((tm, idx, arr) => (
+            <ThreadMessageView
+              key={tm.id}
+              message={tm}
+              defaultExpanded={idx === arr.length - 1}
+              forceDarkHtml={forceDarkHtml}
+              showAi={showAi}
+              onComposeTo={onComposeTo}
+              onSummarize={() => void runSummarize()}
+              onTranslate={() => void runTranslate()}
+            />
+          ))}
+        </div>
+
+        {links.length > 0 && (
+          <div className="reader-links" aria-label="Links in this thread">
+            <span className="reader-links-label">Links</span>
+            {links.map((link) => (
+              <a
+                key={link.href}
+                className="reader-link-row"
+                href={link.href}
+                target="_blank"
+                rel="noreferrer"
+                title={link.href}
+              >
+                <Link2 size={14} strokeWidth={1.75} />
+                <span>{link.label}</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="reply-dock">
+        <div className="reply-box">
+          <RecipientChips
+            label="Cc"
+            people={ccMentions}
+            onRemove={(email) =>
+              setCcMentions((prev) =>
+                prev.filter((p) => p.email.toLowerCase() !== email.toLowerCase()),
+              )
+            }
+            onAdd={(r) => {
+              setCcMentions((prev) => {
+                if (
+                  prev.some(
+                    (p) => p.email.toLowerCase() === r.email.toLowerCase(),
+                  )
+                ) {
+                  return prev;
+                }
+                return [...prev, r];
+              });
+            }}
+            placeholder="Cc email…"
+          />
+          <MentionTextarea
+            textareaRef={replyRef}
+            placeholder={`Reply to ${message.from}… Type @ to Cc someone`}
+            value={draft}
+            onChange={setDraft}
+            onMention={addCcMention}
+            excludeEmails={[
+              message.email,
+              ...ccMentions.map((p) => p.email),
+            ]}
+          />
+          <div className="reply-actions">
+            <div style={{ display: "flex", gap: 4 }}>
+              <button type="button" className="icon-btn" aria-label="Attach">
+                <Paperclip size={15} strokeWidth={1.75} />
+              </button>
+              {showAi && prefs.aiWriteEnabled && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="AI write"
+                  onClick={() => void runAiWrite()}
+                >
+                  <Sparkles size={15} strokeWidth={1.75} />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              className="send"
+              disabled={sendingReply || !draft.trim()}
+              onClick={() => void sendReply()}
+            >
+              {sendingReply ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+        {predictions.length > 0 && (
+          <div className="smart-row" role="listbox" aria-label="Reply predictions">
+            {predictions.map((text) => {
+              const typed = draft.trim();
+              const matchLen =
+                typed && text.toLowerCase().startsWith(typed.toLowerCase())
+                  ? typed.length
+                  : 0;
+              return (
+                <button
+                  key={text}
+                  type="button"
+                  className="smart"
+                  role="option"
+                  onClick={() => setDraft(text)}
+                >
+                  <span className="smart-text">
+                    {matchLen > 0 ? (
+                      <>
+                        <span className="smart-typed">
+                          {text.slice(0, matchLen)}
+                        </span>
+                        <span className="smart-rest">
+                          {text.slice(matchLen)}
+                        </span>
+                      </>
+                    ) : (
+                      text
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ModalShell({
+  title,
+  onClose,
+  children,
+  wide,
+  size,
+  compose,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  wide?: boolean;
+  size?: "settings";
+  compose?: boolean;
+}) {
+  const sizeClass =
+    size === "settings"
+      ? " modal-settings"
+      : compose
+        ? " modal-wide modal-compose"
+        : wide
+          ? " modal-wide"
+          : "";
+  return (
+    <div className="modal-root" role="presentation" onClick={onClose}>
+      <div
+        className={`modal${sizeClass}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modal-head">
+          <h2>{title}</h2>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
+            <X size={16} strokeWidth={1.75} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ShortcutsCheatSheet({
+  pack,
+  onClose,
+}: {
+  pack: ShortcutPackId;
+  onClose: () => void;
+}) {
+  const rows = listShortcuts(pack);
+  const groups = ["Navigate", "Actions", "Compose", "Jump", "Help"] as const;
+  return (
+    <div className="modal-root" onClick={onClose} role="presentation">
+      <div
+        className="modal modal-wide cheat-sheet"
+        role="dialog"
+        aria-label="Keyboard shortcuts"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modal-head">
+          <h2>Keyboard shortcuts · {packMeta[pack].name}</h2>
+          <button type="button" className="icon-btn" onClick={onClose}>
+            <X size={16} strokeWidth={1.75} />
+          </button>
+        </div>
+        <div className="cheat-grid">
+          {groups.map((group) => {
+            const g = rows.filter((r) => r.group === group);
+            if (!g.length) return null;
+            return (
+              <div key={group}>
+                <div className="section-label">{group}</div>
+                {g.map((s) => (
+                  <div key={`${s.action}-${s.keys}`} className="settings-row">
+                    <strong>{s.label}</strong>
+                    <kbd className="keycap">{s.keys}</kbd>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+        <p className="modal-note">
+          Change packs in Settings → Shortcuts. Muscle memory from Gmail or
+          Superhuman transfers here.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function signatureForAccount(prefs: Preferences, accountId: string) {
+  const per = prefs.signaturesByAccount[accountId];
+  if (per != null && per.length > 0) return per;
+  return prefs.signature;
+}
+
+type PendingAttachment = {
+  id: string;
+  file: File;
+};
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const base64 = result.includes(",") ? result.split(",")[1]! : result;
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function ComposeModal({
+  account,
+  accounts,
+  prefs,
+  showAi,
+  live,
+  initialTo,
+  initialSubject = "",
+  initialBody = "",
+  title = "New message",
+  onClose,
+  onSent,
+  onQueued,
+}: {
+  account: Account;
+  accounts: Account[];
+  prefs: Preferences;
+  showAi: boolean;
+  live: boolean;
+  initialTo?: Recipient[];
+  initialSubject?: string;
+  initialBody?: string;
+  title?: string;
+  onClose: () => void;
+  onSent?: (message: Message) => void;
+  onQueued?: (queueId: string, seconds: number) => void;
+}) {
+  const sendable = accounts.filter((a) => a.id !== UNIFIED_ID);
+  const defaultFrom =
+    account.id === UNIFIED_ID
+      ? (sendable.find((a) => a.id === "work") ?? sendable[0] ?? account)
+      : account;
+  const [fromId, setFromId] = useState(defaultFrom.id);
+  const from = sendable.find((a) => a.id === fromId) ?? defaultFrom;
+  const [to, setTo] = useState<Recipient[]>(() => initialTo ?? []);
+  const [subject, setSubject] = useState(initialSubject);
+  const [body, setBody] = useState(initialBody);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepth = useRef(0);
+
+  const signature = signatureForAccount(prefs, from.id);
+  const signatureHtml = looksLikeHtml(signature);
+  const sigLines = signatureHtml
+    ? []
+    : signature.split("\n").map((l) => l.trim()).filter(Boolean);
+  const sigTitle = sigLines[0] ?? from.name;
+  const sigDetail = sigLines.slice(1);
+
+  const addFiles = (list: FileList | File[]) => {
+    const files = Array.from(list).filter((f) => f.size > 0);
+    if (!files.length) return;
+    setAttachments((prev) => {
+      const next = [...prev];
+      for (const file of files) {
+        const id = `${file.name}:${file.size}:${file.lastModified}`;
+        if (next.some((a) => a.id === id)) continue;
+        next.push({ id, file });
+      }
+      return next;
+    });
+  };
+
+  const onDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (![...e.dataTransfer.types].includes("Files")) return;
+    dragDepth.current += 1;
+    setDraggingFiles(true);
+  };
+
+  const onDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if ([...e.dataTransfer.types].includes("Files")) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+
+  const onDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDraggingFiles(false);
+  };
+
+  const onDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = 0;
+    setDraggingFiles(false);
+    if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+  };
+
+  const handleSend = async () => {
+    if (!to.length) {
+      setSendError("Add at least one recipient.");
+      return;
+    }
+    setSending(true);
+    setSendError(null);
+    try {
+      const bodyText = signature.trim()
+        ? `${body.replace(/\s+$/, "")}${body.trim() ? "\n\n" : ""}--\n${signature}`
+        : body;
+      const track = prefs.trackOpens;
+      let message: Message;
+
+      if (live) {
+        const encoded =
+          attachments.length > 0
+            ? await Promise.all(
+                attachments.map(async (a) => ({
+                  filename: a.file.name,
+                  contentType: a.file.type || "application/octet-stream",
+                  contentBase64: await fileToBase64(a.file),
+                  size: a.file.size,
+                })),
+              )
+            : undefined;
+        const draftPayload = {
+          accountId: from.id,
+          to: to.map((r) => r.email),
+          cc: undefined as string[] | undefined,
+          subject,
+          bodyText,
+          attachments: encoded,
+        };
+        const delay = prefs.undoSendSeconds;
+        if (delay > 0) {
+          const queued = await bridgeSendLater(draftPayload, delay);
+          onQueued?.(queued.queueId, delay);
+          onClose();
+          return;
+        }
+        const dto = await bridgeSendMail(draftPayload);
+        message = messageDtoToUi(dto);
+      } else {
+        const id = `local-sent:${Date.now()}`;
+        const preview = body.trim().slice(0, 120) || "(no subject)";
+        message = {
+          id,
+          accountId: from.id,
+          from: to[0]!.name || to[0]!.email,
+          initials: (to[0]!.name || to[0]!.email).slice(0, 2).toUpperCase(),
+          avatarColor: from.color,
+          email: to[0]!.email,
+          subject: subject || "(no subject)",
+          preview,
+          time: "Just now",
+          unread: false,
+          important: false,
+          folder: "sent",
+          hasAttachment: attachments.length > 0,
+          attachmentCount: attachments.length || undefined,
+          thread: [
+            {
+              id: `${id}:a`,
+              from: from.name,
+              initials: from.label.slice(0, 2),
+              avatarColor: from.color,
+              email: from.email,
+              time: "Just now",
+              to: [...to],
+              body: bodyText.split(/\n+/).filter(Boolean),
+            },
+          ],
+        };
+      }
+
+      if (track) {
+        message = {
+          ...message,
+          openTracking: registerTrackedSend({
+            messageId: message.id,
+            subject: message.subject,
+            to: to.map((r) => r.email),
+          }),
+        };
+      }
+
+      onSent?.(message);
+      onClose();
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const addRecipient = (r: Recipient) => {
+    setTo((prev) => {
+      if (prev.some((p) => p.email.toLowerCase() === r.email.toLowerCase())) {
+        return prev;
+      }
+      return [...prev, r];
+    });
+  };
+
+  const addTo = (contact: Contact) => {
+    addRecipient({ name: contact.name, email: contact.email });
+  };
+
+  return (
+    <ModalShell title={title} onClose={onClose} compose>
+      <div
+        className={`compose-form${draggingFiles ? " drag-over" : ""}`}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        {draggingFiles && (
+          <div className="compose-drop-overlay" aria-hidden>
+            <Paperclip size={22} strokeWidth={1.75} />
+            <strong>Drop files to attach</strong>
+            <span>Release to add them to this message</span>
+          </div>
+        )}
+
+        <div className="compose-meta">
+          <div className="compose-field">
+            <span className="compose-field-label">From</span>
+            <div className="compose-from">
+              <select
+                className="compose-from-select"
+                value={from.id}
+                onChange={(e) => setFromId(e.target.value)}
+                aria-label="Send from account"
+              >
+                {sendable.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} · {a.email}
+                  </option>
+                ))}
+              </select>
+              <span
+                className="account-chip"
+                style={{
+                  background: "transparent",
+                  color: from.color,
+                  borderColor: from.color,
+                }}
+              >
+                {from.label}
+              </span>
+            </div>
+          </div>
+
+          <div className="compose-field compose-field-to">
+            <span className="compose-field-label">To</span>
+            <RecipientChips
+              label="To"
+              hideLabel
+              people={to}
+              excludeEmails={[from.email]}
+              onRemove={(email) =>
+                setTo((prev) =>
+                  prev.filter(
+                    (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                  ),
+                )
+              }
+              onAdd={addRecipient}
+              placeholder="Name or email"
+            />
+          </div>
+
+          <div className="compose-field">
+            <span className="compose-field-label">Subject</span>
+            <input
+              className="compose-subject"
+              placeholder="What’s this about?"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="compose-editor">
+          <MentionTextarea
+            className="compose-body"
+            rows={9}
+            autoFocus
+            placeholder="Write your message… Type @ to add someone — or drop files to attach"
+            value={body}
+            onChange={setBody}
+            onMention={addTo}
+            excludeEmails={[from.email, ...to.map((p) => p.email)]}
+          />
+          {signature.trim() && (
+            <aside
+              className={`compose-signature${signatureHtml ? " html" : ""}`}
+            >
+              {!signatureHtml && (
+                <div
+                  className="compose-signature-rail"
+                  style={{ background: from.color }}
+                  aria-hidden
+                />
+              )}
+              <div className="compose-signature-body">
+                <span className="compose-signature-kicker">
+                  Intray signature · {from.email}
+                </span>
+                {signatureHtml ? (
+                  <div
+                    className="signature-html"
+                    dangerouslySetInnerHTML={{
+                      __html: sanitizeSignatureHtml(signature),
+                    }}
+                  />
+                ) : (
+                  <>
+                    <strong>{sigTitle}</strong>
+                    {sigDetail.map((line) => (
+                      <span key={line}>{line}</span>
+                    ))}
+                  </>
+                )}
+              </div>
+              {!signatureHtml && (
+                <span
+                  className="account-chip compose-signature-chip"
+                  style={{
+                    background: "transparent",
+                    color: from.color,
+                    borderColor: from.color,
+                  }}
+                >
+                  {from.label}
+                </span>
+              )}
+            </aside>
+          )}
+        </div>
+
+        {attachments.length > 0 && (
+          <div className="compose-attachments" aria-label="Attachments">
+            {attachments.map((a) => (
+              <div key={a.id} className="compose-attach-chip">
+                <span className="compose-attach-icon" aria-hidden>
+                  <Paperclip size={13} strokeWidth={2} />
+                </span>
+                <div className="compose-attach-meta">
+                  <strong title={a.file.name}>{a.file.name}</strong>
+                  <span>{formatFileSize(a.file.size)}</span>
+                </div>
+                <button
+                  type="button"
+                  className="compose-attach-remove"
+                  aria-label={`Remove ${a.file.name}`}
+                  onClick={() =>
+                    setAttachments((prev) =>
+                      prev.filter((item) => item.id !== a.id),
+                    )
+                  }
+                >
+                  <X size={13} strokeWidth={2} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="compose-actions">
+          <div className="compose-actions-left">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files?.length) addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Attach files"
+              title="Attach files"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip size={15} strokeWidth={1.75} />
+            </button>
+            {showAi && (
+              <button type="button" className="icon-btn" aria-label="AI write">
+                <Sparkles size={15} strokeWidth={1.75} />
+              </button>
+            )}
+            {attachments.length > 0 && (
+              <span className="compose-attach-count">
+                {attachments.length} file{attachments.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+          <div className="compose-actions-right">
+            {prefs.trackOpens && (
+              <span className="compose-track-hint" title="Open tracking on">
+                <CheckCheck size={13} strokeWidth={2.25} />
+                Track opens
+              </span>
+            )}
+            {sendError && (
+              <span className="add-account-error" style={{ marginRight: 8 }}>
+                {sendError}
+              </span>
+            )}
+            <button type="button" className="pill-btn" onClick={onClose}>
+              Discard
+            </button>
+            <button
+              type="button"
+              className="send"
+              onClick={() => void handleSend()}
+              disabled={sending}
+            >
+              {sending ? (
+                <Loader2 size={14} strokeWidth={2.25} className="spin" />
+              ) : (
+                <Check size={14} strokeWidth={2.25} />
+              )}
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+export default function App() {
+  const [prefs, setPrefs] = useState<Preferences>(() => loadPreferences());
+  const [theme, setTheme] = useState<"dark" | "light">(() =>
+    resolvedTheme(loadPreferences().theme),
+  );
+  const [live, setLive] = useState(false);
+  const [accounts, setAccounts] = useState<Account[]>(() =>
+    seedAccounts.map((a) => ({ ...a })),
+  );
+  const [labels, setLabels] = useState<Label[]>(() =>
+    seedLabels.map((l) => ({ ...l })),
+  );
+  const [mail, setMail] = useState<Message[]>(() =>
+    seedMessages.map((m) => ({ ...m })),
+  );
+  const [accountId, setAccountId] = useState(UNIFIED_ID);
+  const [folderId, setFolderId] = useState("inbox");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [stackView, setStackView] = useState<"list" | "reader">("list");
+  const [selectedId, setSelectedId] = useState(seedMessages[0].id);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
+  const checkAnchorRef = useRef<number | null>(null);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askFocusThread, setAskFocusThread] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    const unreadMail = seedMessages
+      .filter((m) => m.unread && m.folder === "inbox")
+      .slice(0, 4)
+      .map((m) => ({
+        id: `mail-${m.id}`,
+        kind: "mail" as const,
+        title: m.from,
+        body: m.subject,
+        time: m.time,
+        unread: true,
+        messageId: m.id,
+      }));
+    return [
+      {
+        id: "meeting-1",
+        kind: "meeting",
+        title: meeting.title,
+        body: "Starting now — join from the tray or calendar",
+        time: "now",
+        unread: true,
+      },
+      ...unreadMail,
+      {
+        id: "ai-1",
+        kind: "ai",
+        title: "AI labeled 3 emails",
+        body: "Security, Receipts, and Updates applied automatically",
+        time: "Earlier",
+        unread: true,
+      },
+    ];
+  });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeDraft, setComposeDraft] = useState<{
+    to?: Recipient[];
+    subject?: string;
+    body?: string;
+    title?: string;
+  }>({});
+  const [focusReplySignal, setFocusReplySignal] = useState(0);
+  const [searchTokens, setSearchTokens] = useState<SearchToken[]>([]);
+  const searchQuery = useMemo(
+    () => serializeSearch(searchTokens),
+    [searchTokens],
+  );
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const openCompose = (opts?: {
+    to?: Recipient[];
+    subject?: string;
+    body?: string;
+    title?: string;
+  }) => {
+    setComposeDraft({
+      to: opts?.to?.length ? opts.to : undefined,
+      subject: opts?.subject,
+      body: opts?.body,
+      title: opts?.title,
+    });
+    setComposeOpen(true);
+  };
+
+  const closeCompose = () => {
+    setComposeOpen(false);
+    setComposeDraft({});
+  };
+  const [addAccountOpen, setAddAccountOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(
+    () => !isOnboardingComplete(),
+  );
+  const [onboardingAccountLinked, setOnboardingAccountLinked] = useState(false);
+  const [cheatOpen, setCheatOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [alert, setAlert] = useState<AlertRequest | null>(null);
+  const alertResolveRef = useRef<((ok: boolean) => void) | null>(null);
+  const [chord, setChord] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const lastActionRef = useRef<
+    { id: string; snapshot: Message }[] | null
+  >(null);
+  const searchTimer = useRef<number | null>(null);
+  const notifiedMeetingRef = useRef(false);
+
+  const clearChecks = () => {
+    setCheckedIds(new Set());
+    checkAnchorRef.current = null;
+  };
+
+  const askConfirm = (req: Omit<AlertRequest, "id">): Promise<boolean> =>
+    new Promise((resolve) => {
+      alertResolveRef.current = resolve;
+      setAlert({ ...req, id: nextAlertId() });
+    });
+
+  const closeAlert = (ok: boolean) => {
+    setAlert(null);
+    const resolve = alertResolveRef.current;
+    alertResolveRef.current = null;
+    resolve?.(ok);
+  };
+
+  const refreshLiveMail = async (opts?: {
+    accountId?: string;
+    folder?: string;
+    filter?: Filter;
+    q?: string;
+  }) => {
+    const aid = opts?.accountId ?? accountId;
+    const folder = opts?.folder ?? folderId;
+    const f = opts?.filter ?? filter;
+    const q = opts?.q ?? searchQuery;
+    const result = await bridgeListMail({
+      accountId: aid === UNIFIED_ID ? "all" : aid,
+      folder,
+      filter: f,
+      limit: 80,
+      q: q.trim() || undefined,
+    });
+    const messages = result.messages.map(messageDtoToUi);
+    setMail(messages);
+    setSelectedId((prev) =>
+      messages.some((m) => m.id === prev) ? prev : (messages[0]?.id ?? ""),
+    );
+  };
+
+  const loadLiveWorkspace = async (selectAccountId?: string) => {
+    const real = await bridgeAccounts();
+    if (!real.length) {
+      setLive(false);
+      setAccounts(seedAccounts.map((a) => ({ ...a })));
+      setMail(seedMessages.map((m) => ({ ...m })));
+      setSelectedId(seedMessages[0].id);
+      return;
+    }
+    const uiAccounts: Account[] = [
+      {
+        id: UNIFIED_ID,
+        label: "All",
+        name: "Unified Inbox",
+        email: "All accounts",
+        color: "#ededed",
+        unread: real.reduce((n, a) => n + a.unread, 0),
+      },
+      ...real.map(accountDtoToUi),
+    ];
+    setLive(true);
+    setAccounts(uiAccounts);
+    const nextId = selectAccountId ?? UNIFIED_ID;
+    setAccountId(nextId);
+    setFolderId("inbox");
+    setFilter("all");
+    setStackView("list");
+    try {
+      const remoteLabels = await bridgeListLabels();
+      if (remoteLabels.length) {
+        setLabels(
+          remoteLabels.map((l) => ({
+            id: l.id,
+            name: l.name,
+            color: l.color,
+          })),
+        );
+      }
+    } catch {
+      /* keep seed labels */
+    }
+    await refreshLiveMail({
+      accountId: nextId,
+      folder: "inbox",
+      filter: "all",
+      q: "",
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const has = await bridgeHasRealAccounts();
+      if (cancelled) return;
+      if (has) {
+        // Returning user with accounts — skip first-run even if the flag was cleared.
+        if (!isOnboardingComplete()) completeOnboarding();
+        setOnboardingOpen(false);
+        await loadLiveWorkspace();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    return bridgeOnSyncProgress((status) => {
+      setSyncStatus(status);
+      setSyncing(status.state === "syncing");
+      if (status.state === "idle" && live) {
+        void refreshLiveMail();
+        void bridgeAccounts().then((real) => {
+          setAccounts((prev) => {
+            const unified = prev.find((a) => a.id === UNIFIED_ID);
+            const mapped = real.map(accountDtoToUi);
+            return [
+              {
+                id: UNIFIED_ID,
+                label: "All",
+                name: "Unified Inbox",
+                email: "All accounts",
+                color: "#ededed",
+                unread: mapped.reduce((n, a) => n + a.unread, 0),
+                ...(unified ? {} : {}),
+              },
+              ...mapped,
+            ];
+          });
+        });
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, accountId, folderId, filter, searchQuery]);
+
+  useEffect(() => {
+    const offFlush = bridgeOnSendFlushed(({ message }) => {
+      const ui = messageDtoToUi(message);
+      setMail((prev) => {
+        const idx = prev.findIndex((m) => m.id === ui.id);
+        if (idx === -1) return [ui, ...prev];
+        const next = [...prev];
+        next[idx] = ui;
+        return next;
+      });
+      showToast("Sent");
+    });
+    const offSnooze = bridgeOnUnsnoozed(() => {
+      if (live) void refreshLiveMail();
+      showToast("Snoozed mail returned to inbox");
+    });
+    return () => {
+      offFlush();
+      offSnooze();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+
+  useEffect(() => {
+    if (!live) return;
+    void refreshLiveMail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, accountId, folderId, filter]);
+
+  const account = accountFor(accountId, accounts);
+  const showAi = prefs.aiBridge !== "none";
+
+  const updatePrefs = (next: Preferences) => {
+    setPrefs(next);
+    savePreferences(next);
+    setTheme(resolvedTheme(next.theme));
+    if (next.aiBridge === "none") setAskOpen(false);
+  };
+
+  useEffect(() => {
+    if (!showAi) setAskOpen(false);
+  }, [showAi]);
+
+  useEffect(() => {
+    if (prefs.layout !== "stack") setStackView("list");
+  }, [prefs.layout]);
+
+  useEffect(() => {
+    setTheme(resolvedTheme(prefs.theme));
+    if (prefs.theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => setTheme(resolvedTheme("system"));
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [prefs.theme]);
+
+  useEffect(() => {
+    void bridgeSetChromeTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!prefs.unifiedInbox && accountId === UNIFIED_ID) {
+      setAccountId("work");
+    }
+  }, [prefs.unifiedInbox, accountId]);
+
+  const showToast = (text: string) => {
+    setToast(text);
+    window.setTimeout(() => setToast(null), 2200);
+  };
+
+  const mutateLocalMessage = (
+    m: Message,
+    action: MailAction,
+    detail: string | undefined,
+    picked: Label | null,
+    aiLabel: Label | null,
+    forceRead?: boolean | null,
+    forceStar?: boolean | null,
+  ): Message => {
+    switch (action) {
+      case "toggle-read": {
+        const unread =
+          forceRead == null ? !m.unread : !forceRead;
+        return { ...m, unread };
+      }
+      case "star": {
+        const next = forceStar == null ? !(m.starred ?? false) : forceStar;
+        return { ...m, starred: next, important: next || m.important };
+      }
+      case "snooze":
+        return {
+          ...m,
+          folder: "snoozed",
+          unread: false,
+          time: detail ?? "Snoozed",
+        };
+      case "archive":
+        return { ...m, folder: "archive", unread: false };
+      case "trash":
+        return { ...m, folder: "trash", unread: false };
+      case "spam":
+        return { ...m, folder: "junk", unread: false };
+      case "not-spam":
+        return { ...m, folder: "inbox", unread: true };
+      case "delete-forever":
+        return m;
+      case "move":
+        if (!detail) return m;
+        return { ...m, folder: detail };
+      case "label":
+        if (!picked) return m;
+        return {
+          ...m,
+          tag: { label: picked.name, color: picked.color },
+        };
+      case "clear-label":
+        return { ...m, tag: undefined };
+      case "auto-label":
+        if (!aiLabel) return m;
+        return {
+          ...m,
+          tag: { label: aiLabel.name, color: aiLabel.color },
+        };
+      default:
+        return m;
+    }
+  };
+
+  const selectNeighborAfterLeave = (messageId: string) => {
+    const idx = filtered.findIndex((m) => m.id === messageId);
+    if (idx < 0) return;
+    const next = filtered[idx + 1] ?? filtered[idx - 1] ?? null;
+    setSelectedId(next?.id ?? "");
+  };
+
+  const applyAction = (
+    messageId: string,
+    action: MailAction,
+    detail?: string,
+  ) => {
+    const target = mail.find((m) => m.id === messageId);
+    if (!target) return;
+
+    // Reply / forward are real compose flows — not toast-only stubs.
+    if (action === "reply") {
+      setAskOpen(false);
+      setAskFocusThread(false);
+      setSelectedId(messageId);
+      if (prefs.layout === "stack") setStackView("reader");
+      setFocusReplySignal((n) => n + 1);
+      return;
+    }
+    if (action === "forward") {
+      setAskOpen(false);
+      setAskFocusThread(false);
+      setSelectedId(messageId);
+      if (prefs.layout === "stack") setStackView("reader");
+      const draft = forwardDraft(target);
+      openCompose({
+        subject: draft.subject,
+        body: draft.body,
+        title: "Forward",
+      });
+      return;
+    }
+
+    lastActionRef.current = [{ id: messageId, snapshot: { ...target } }];
+
+    const picked =
+      action === "label" && detail
+        ? labels.find((l) => l.id === detail) ?? null
+        : null;
+    const aiLabel =
+      action === "auto-label" ? suggestLabel(target) : null;
+
+    if (live) {
+      const remote =
+        action === "archive"
+          ? "archive"
+          : action === "trash"
+            ? "trash"
+            : action === "spam"
+              ? "spam"
+              : action === "not-spam"
+                ? "not-spam"
+                : action === "delete-forever"
+                  ? "delete-forever"
+                  : action === "toggle-read"
+                    ? target.unread
+                      ? "read"
+                      : "unread"
+                    : action === "star"
+                      ? target.starred
+                        ? "unstar"
+                        : "star"
+                      : action === "snooze"
+                        ? "snooze"
+                        : action === "label"
+                          ? "label"
+                          : action === "clear-label"
+                            ? "clear-label"
+                            : action === "move"
+                              ? "move"
+                              : action === "auto-label" && aiLabel
+                                ? "label"
+                                : null;
+      if (remote) {
+        void bridgeMutateMail(messageId, remote, {
+          detail:
+            action === "auto-label"
+              ? aiLabel?.id
+              : action === "snooze" ||
+                  action === "label" ||
+                  action === "move"
+                ? detail
+                : undefined,
+        }).then((dto) => {
+          if (action === "delete-forever") {
+            setMail((prev) => prev.filter((m) => m.id !== messageId));
+            return;
+          }
+          if (!dto) return;
+          const updated = messageDtoToUi(dto);
+          setMail((prev) =>
+            prev.map((m) => (m.id === messageId ? updated : m)),
+          );
+        });
+      }
+    }
+
+    if (leavesCurrentFolder(action)) {
+      selectNeighborAfterLeave(messageId);
+    }
+
+    if (action === "delete-forever") {
+      setMail((prev) => prev.filter((m) => m.id !== messageId));
+    } else {
+      setMail((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? mutateLocalMessage(m, action, detail, picked, aiLabel)
+            : m,
+        ),
+      );
+    }
+
+    const toastFor = (): string => {
+      switch (action) {
+        case "toggle-read":
+          return target.unread ? "Marked as read" : "Marked as unread";
+        case "star":
+          return target.starred
+            ? `Unstarred “${target.subject}”`
+            : `Starred “${target.subject}”`;
+        case "snooze":
+          return `Snoozed until ${detail ?? "later"}`;
+        case "archive":
+          return "Archived";
+        case "trash":
+          return "Moved to Trash";
+        case "spam":
+          return "Marked as spam · moved to Junk";
+        case "not-spam":
+          return "Marked as not spam · moved to Inbox";
+        case "delete-forever":
+          return "Deleted forever";
+        case "move": {
+          if (!detail) return "Pick a folder";
+          const system = folders.find((f) => f.id === detail);
+          return `Moved to ${system?.name ?? detail}`;
+        }
+        case "label":
+          return picked
+            ? `Labeled “${picked.name}”`
+            : "Pick a label";
+        case "clear-label":
+          return "Label removed";
+        case "auto-label":
+          return aiLabel
+            ? `AI labeled “${aiLabel.name}”`
+            : "AI couldn’t suggest a label";
+        default:
+          return "";
+      }
+    };
+    const toast = toastFor();
+    if (toast) showToast(toast);
+  };
+
+  const applyBulkAction = (action: MailAction, detail?: string) => {
+    const ids = Array.from(checkedIds);
+    if (ids.length === 0) return;
+
+    const targets = mail.filter((m) => checkedIds.has(m.id));
+    if (targets.length === 0) return;
+
+    lastActionRef.current = targets.map((m) => ({
+      id: m.id,
+      snapshot: { ...m },
+    }));
+
+    const picked =
+      action === "label" && detail
+        ? labels.find((l) => l.id === detail) ?? null
+        : null;
+
+    // Align toggles across the set: any unread → mark all read; any unstarred → star all.
+    const forceRead =
+      action === "toggle-read"
+        ? targets.some((m) => m.unread)
+          ? true
+          : false
+        : null;
+    const forceStar =
+      action === "star"
+        ? targets.some((m) => !m.starred)
+          ? true
+          : false
+        : null;
+
+    if (live) {
+      for (const target of targets) {
+        const remote =
+          action === "archive"
+            ? "archive"
+            : action === "trash"
+              ? "trash"
+              : action === "spam"
+                ? "spam"
+                : action === "not-spam"
+                  ? "not-spam"
+                  : action === "delete-forever"
+                    ? "delete-forever"
+                    : action === "toggle-read"
+                      ? forceRead
+                        ? "read"
+                        : "unread"
+                      : action === "star"
+                        ? forceStar
+                          ? "star"
+                          : "unstar"
+                        : action === "move"
+                          ? "move"
+                          : action === "label"
+                            ? "label"
+                            : action === "clear-label"
+                              ? "clear-label"
+                              : action === "snooze"
+                                ? "snooze"
+                                : null;
+        if (!remote) continue;
+        void bridgeMutateMail(target.id, remote, {
+          detail:
+            action === "snooze" || action === "label" || action === "move"
+              ? detail
+              : undefined,
+        }).then((dto) => {
+          if (action === "delete-forever") {
+            setMail((prev) => prev.filter((m) => m.id !== target.id));
+            return;
+          }
+          if (!dto) return;
+          const updated = messageDtoToUi(dto);
+          setMail((prev) =>
+            prev.map((m) => (m.id === target.id ? updated : m)),
+          );
+        });
+      }
+    }
+
+    const idSet = new Set(ids);
+    if (action === "delete-forever") {
+      setMail((prev) => prev.filter((m) => !idSet.has(m.id)));
+      if (idSet.has(selectedId)) setSelectedId("");
+    } else {
+      setMail((prev) =>
+        prev.map((m) =>
+          idSet.has(m.id)
+            ? mutateLocalMessage(
+                m,
+                action,
+                detail,
+                picked,
+                null,
+                forceRead,
+                forceStar,
+              )
+            : m,
+        ),
+      );
+    }
+
+    const n = targets.length;
+    const plural = n === 1 ? "" : "s";
+    const toastFor = (): string => {
+      switch (action) {
+        case "toggle-read":
+          return forceRead
+            ? `Marked ${n} as read`
+            : `Marked ${n} as unread`;
+        case "star":
+          return forceStar ? `Starred ${n}` : `Unstarred ${n}`;
+        case "snooze":
+          return `Snoozed ${n} until ${detail ?? "later"}`;
+        case "archive":
+          return `Archived ${n} message${plural}`;
+        case "trash":
+          return `Moved ${n} to Trash`;
+        case "spam":
+          return `Marked ${n} as spam · Junk`;
+        case "not-spam":
+          return `Moved ${n} out of Junk`;
+        case "delete-forever":
+          return `Deleted ${n} forever`;
+        case "move": {
+          if (!detail) return "Pick a folder";
+          const system = folders.find((f) => f.id === detail);
+          return `Moved ${n} to ${system?.name ?? detail}`;
+        }
+        case "label":
+          return picked
+            ? `Labeled ${n} “${picked.name}”`
+            : "Pick a label";
+        case "clear-label":
+          return `Removed labels from ${n}`;
+        default:
+          return `Updated ${n} message${plural}`;
+      }
+    };
+    showToast(toastFor());
+    clearChecks();
+  };
+
+  const confirmDeleteForever = async (count: number, subjects: string[]) => {
+    const preview =
+      count === 1
+        ? `“${subjects[0] || "this message"}”`
+        : `${count} messages`;
+    return askConfirm({
+      title: count === 1 ? "Delete forever?" : `Delete ${count} forever?`,
+      tone: "danger",
+      confirmLabel: "Delete forever",
+      body: (
+        <>
+          <p>
+            Permanently remove {preview}. This cannot be undone.
+          </p>
+          <ul>
+            <li>It will not stay in Junk or Trash</li>
+            <li>Connected accounts delete it on the provider too</li>
+          </ul>
+        </>
+      ),
+    });
+  };
+
+  const requestMailAction = async (
+    messageId: string,
+    action: MailAction,
+    detail?: string,
+  ) => {
+    if (action === "delete-forever") {
+      const target = mail.find((m) => m.id === messageId);
+      const ok = await confirmDeleteForever(1, [target?.subject ?? ""]);
+      if (!ok) return;
+    }
+    applyAction(messageId, action, detail);
+  };
+
+  const requestBulkAction = async (action: MailAction, detail?: string) => {
+    if (action === "delete-forever") {
+      const targets = mail.filter((m) => checkedIds.has(m.id));
+      if (targets.length === 0) return;
+      const ok = await confirmDeleteForever(
+        targets.length,
+        targets.map((m) => m.subject),
+      );
+      if (!ok) return;
+    }
+    applyBulkAction(action, detail);
+  };
+
+  const emptyFolder = async (folder: "junk" | "trash") => {
+    const targets = mail.filter((m) => {
+      if (m.folder !== folder) return false;
+      if (accountId !== UNIFIED_ID && m.accountId !== accountId) return false;
+      return true;
+    });
+    if (targets.length === 0) return;
+    const label = folder === "junk" ? "Junk" : "Trash";
+    const ok = await askConfirm({
+      title: `Empty ${label}?`,
+      tone: "danger",
+      confirmLabel: `Empty ${label}`,
+      body: (
+        <>
+          <p>
+            Permanently delete {targets.length} message
+            {targets.length === 1 ? "" : "s"} in {label}.
+          </p>
+          <ul>
+            <li>This cannot be undone</li>
+            <li>Provider copies are removed when an account is connected</li>
+          </ul>
+        </>
+      ),
+    });
+    if (!ok) return;
+    const ids = new Set(targets.map((t) => t.id));
+    lastActionRef.current = targets.map((m) => ({
+      id: m.id,
+      snapshot: { ...m },
+    }));
+    if (live) {
+      for (const t of targets) {
+        void bridgeMutateMail(t.id, "delete-forever");
+      }
+    }
+    setMail((prev) => prev.filter((m) => !ids.has(m.id)));
+    if (ids.has(selectedId)) setSelectedId("");
+    clearChecks();
+    showToast(`Emptied ${label}`);
+  };
+
+  const createLabelForMessage = (
+    messageId: string,
+    name: string,
+    color: string,
+  ) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    const existing = labels.find(
+      (l) => l.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+
+    const apply = (label: Label) => {
+      if (!existing) {
+        setLabels((prev) =>
+          prev.some((l) => l.id === label.id) ? prev : [...prev, label],
+        );
+      }
+      const target = mail.find((m) => m.id === messageId);
+      if (target) {
+        lastActionRef.current = [{ id: messageId, snapshot: { ...target } }];
+      }
+      setMail((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? { ...m, tag: { label: label.name, color: label.color } }
+            : m,
+        ),
+      );
+      if (live) {
+        void bridgeMutateMail(messageId, "label", { detail: label.id });
+      }
+      showToast(
+        existing
+          ? `Labeled “${label.name}”`
+          : `Created label “${label.name}”`,
+      );
+    };
+
+    if (existing) {
+      apply(existing);
+      return;
+    }
+
+    if (live) {
+      void bridgeCreateLabel({ name: trimmed, color })
+        .then((dto) => apply({ id: dto.id, name: dto.name, color: dto.color }))
+        .catch(() => {
+          apply({
+            id: slugLabelId(trimmed),
+            name: trimmed,
+            color,
+          });
+        });
+      return;
+    }
+
+    apply({
+      id: (() => {
+        let id = slugLabelId(trimmed);
+        let n = 2;
+        while (labels.some((l) => l.id === id)) {
+          id = `${slugLabelId(trimmed)}-${n++}`;
+        }
+        return id;
+      })(),
+      name: trimmed,
+      color,
+    });
+  };
+
+  const autoLabelPassRef = useRef(false);
+  useEffect(() => {
+    if (!prefs.aiAutoLabel || prefs.aiBridge === "none") {
+      autoLabelPassRef.current = false;
+      return;
+    }
+    if (autoLabelPassRef.current) return;
+
+    const suggestions = new Map<string, Label>();
+    for (const m of mail) {
+      if (m.tag || m.folder !== "inbox") continue;
+      const suggested = suggestLabel(m);
+      if (suggested) suggestions.set(m.id, suggested);
+    }
+    autoLabelPassRef.current = true;
+    if (suggestions.size === 0) return;
+
+    setMail((prev) =>
+      prev.map((m) => {
+        const lab = suggestions.get(m.id);
+        if (!lab || m.tag) return m;
+        return { ...m, tag: { label: lab.name, color: lab.color } };
+      }),
+    );
+    showToast(
+      `AI labeled ${suggestions.size} email${suggestions.size === 1 ? "" : "s"}`,
+    );
+  }, [prefs.aiAutoLabel, prefs.aiBridge, mail]);
+
+  const undoLast = () => {
+    const cancelSend = (
+      window as unknown as { __intrayCancelSend?: () => void }
+    ).__intrayCancelSend;
+    if (cancelSend) {
+      cancelSend();
+      delete (window as unknown as { __intrayCancelSend?: () => void })
+        .__intrayCancelSend;
+      return;
+    }
+    const last = lastActionRef.current;
+    if (!last?.length) {
+      showToast("Nothing to undo");
+      return;
+    }
+    const byId = new Map(last.map((entry) => [entry.id, entry.snapshot]));
+    setMail((prev) =>
+      prev.map((m) => byId.get(m.id) ?? m),
+    );
+    lastActionRef.current = null;
+    showToast(last.length > 1 ? `Undone ${last.length} changes` : "Undone");
+  };
+
+  const scoped = useMemo(() => {
+    return mail.filter((m) => {
+      if (accountId !== UNIFIED_ID && m.accountId !== accountId) return false;
+      if (folderId === "inbox") return m.folder === "inbox";
+      return m.folder === folderId;
+    });
+  }, [mail, accountId, folderId]);
+
+  const folderCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const m of mail) {
+      if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
+      counts[m.folder] = (counts[m.folder] ?? 0) + 1;
+    }
+    return counts;
+  }, [mail, accountId]);
+
+  useEffect(() => {
+    void syncTaskbarBadge(prefs, mail);
+  }, [prefs, mail]);
+
+  useEffect(() => {
+    return bridgeOnNotifyOpen(({ messageId }) => {
+      setSelectedId(messageId);
+      setFolderId("inbox");
+      setStackView("reader");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (notifiedMeetingRef.current) return;
+    if (!prefs.notifyDesktop || !prefs.notifyMeetings) return;
+    notifiedMeetingRef.current = true;
+    const timer = window.setTimeout(() => {
+      void notifyMeeting(
+        prefs,
+        meeting.title,
+        "Starting now — join from the tray or calendar",
+      );
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [prefs]);
+
+  const filtered = useMemo(() => {
+    let list = scoped;
+    if (prefs.importantSplit) {
+      if (filter === "important") list = list.filter((m) => m.important);
+      else if (filter === "other") list = list.filter((m) => !m.important);
+    }
+    if (searchTokens.length) {
+      list = list.filter((m) => messageMatchesSearch(m, searchTokens));
+    }
+    return list;
+  }, [scoped, filter, prefs.importantSplit, searchTokens]);
+
+  const selected =
+    filtered.find((m) => m.id === selectedId) ?? filtered[0] ?? null;
+
+  useEffect(() => {
+    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
+    if (!selected && selectedId) setSelectedId("");
+  }, [filtered, selected, selectedId]);
+
+  useEffect(() => {
+    setCheckedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const visible = new Set(filtered.map((m) => m.id));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of Array.from(prev)) {
+        if (visible.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [filtered]);
+
+  useEffect(() => {
+    clearChecks();
+  }, [accountId, folderId, filter]);
+
+  const toggleCheck = (
+    id: string,
+    opts: { shiftKey: boolean; additive: boolean },
+  ) => {
+    const idx = filtered.findIndex((m) => m.id === id);
+    if (idx < 0) return;
+
+    if (opts.shiftKey && checkAnchorRef.current != null) {
+      const a = Math.min(checkAnchorRef.current, idx);
+      const b = Math.max(checkAnchorRef.current, idx);
+      setCheckedIds((prev) => {
+        const next = new Set(prev);
+        for (let i = a; i <= b; i++) next.add(filtered[i].id);
+        return next;
+      });
+      return;
+    }
+
+    setCheckedIds((prev) => {
+      const next = new Set(opts.additive ? prev : []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    checkAnchorRef.current = idx;
+  };
+
+  const selectAllVisible = () => {
+    setCheckedIds(new Set(filtered.map((m) => m.id)));
+    checkAnchorRef.current = filtered.length ? 0 : null;
+  };
+
+  const runShortcut = (action: ShortcutAction) => {
+    const idx = filtered.findIndex((m) => m.id === selected?.id);
+    const hasChecks = checkedIds.size > 0;
+    switch (action) {
+      case "compose":
+        openCompose();
+        break;
+      case "search":
+        searchRef.current?.focus();
+        break;
+      case "askAi":
+        if (!showAi) break;
+        if (askOpen && !askFocusThread) {
+          setAskOpen(false);
+        } else {
+          setAskFocusThread(false);
+          setAskOpen(true);
+          if (prefs.layout === "stack") setStackView("reader");
+        }
+        break;
+      case "help":
+        setCheatOpen(true);
+        break;
+      case "next":
+        if (idx >= 0 && idx < filtered.length - 1) {
+          setSelectedId(filtered[idx + 1].id);
+          if (prefs.layout === "stack") setStackView("reader");
+        }
+        break;
+      case "prev":
+        if (idx > 0) {
+          setSelectedId(filtered[idx - 1].id);
+          if (prefs.layout === "stack") setStackView("reader");
+        }
+        break;
+      case "open":
+        if (selected) {
+          if (prefs.layout === "stack") setStackView("reader");
+        }
+        break;
+      case "archive":
+        if (hasChecks) applyBulkAction("archive");
+        else if (selected) applyAction(selected.id, "archive");
+        break;
+      case "snooze":
+        if (hasChecks) applyBulkAction("snooze", "Tomorrow");
+        else if (selected) applyAction(selected.id, "snooze", "Tomorrow");
+        break;
+      case "trash":
+        if (folderId === "junk" || folderId === "trash") {
+          if (hasChecks) void requestBulkAction("delete-forever");
+          else if (selected) void requestMailAction(selected.id, "delete-forever");
+        } else if (hasChecks) applyBulkAction("trash");
+        else if (selected) applyAction(selected.id, "trash");
+        break;
+      case "star":
+        if (hasChecks) applyBulkAction("star");
+        else if (selected) applyAction(selected.id, "star");
+        break;
+      case "toggleRead":
+        if (hasChecks) applyBulkAction("toggle-read");
+        else if (selected) applyAction(selected.id, "toggle-read");
+        break;
+      case "reply":
+      case "replyAll":
+        if (selected) applyAction(selected.id, "reply");
+        break;
+      case "forward":
+        if (selected) applyAction(selected.id, "forward");
+        break;
+      case "undo":
+        undoLast();
+        break;
+      case "goInbox":
+        setFolderId("inbox");
+        break;
+      case "goSnoozed":
+        setFolderId("snoozed");
+        break;
+      case "goSent":
+        setFolderId("sent");
+        break;
+      case "goDrafts":
+        setFolderId("drafts");
+        break;
+      case "select":
+        if (selected) {
+          toggleCheck(selected.id, { shiftKey: false, additive: true });
+        }
+        break;
+      default:
+        break;
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (alert) {
+          closeAlert(false);
+          return;
+        }
+        if (onboardingOpen) {
+          // Allow closing the nested add-account modal; keep onboarding open.
+          if (addAccountOpen) setAddAccountOpen(false);
+          return;
+        }
+        if (checkedIds.size > 0) {
+          clearChecks();
+          return;
+        }
+        if (prefs.layout === "stack" && stackView === "reader") {
+          setStackView("list");
+          return;
+        }
+        setSettingsOpen(false);
+        closeCompose();
+        setAddAccountOpen(false);
+        setCheatOpen(false);
+        setChord(null);
+        setAskOpen(false);
+        return;
+      }
+
+      if (
+        alert ||
+        onboardingOpen ||
+        settingsOpen ||
+        composeOpen ||
+        addAccountOpen ||
+        cheatOpen ||
+        askOpen
+      )
+        return;
+
+      const result = resolveShortcut(prefs.shortcutPack, e, chord);
+      if (result.type === "none") {
+        if (chord) setChord(null);
+        return;
+      }
+      e.preventDefault();
+      if (result.type === "chord") {
+        setChord(result.chord);
+        window.setTimeout(() => setChord(null), 1200);
+        return;
+      }
+      setChord(null);
+      runShortcut(result.action);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const listTitle =
+    folderId === "inbox"
+      ? accountId === UNIFIED_ID
+        ? "Unified Inbox"
+        : "Inbox"
+      : (folders.find((f) => f.id === folderId)?.name ??
+        (customFolders.includes(folderId) ? folderId : "Mail"));
+
+  const showUnifiedChrome = accountId === UNIFIED_ID;
+
+  const accent = accentColors[prefs.accent];
+  const readingMax =
+    prefs.readingWidth === "narrow"
+      ? "560px"
+      : prefs.readingWidth === "wide"
+        ? "920px"
+        : "720px";
+
+  return (
+    <div
+      className={`app density-${prefs.density} layout-${prefs.layout}${prefs.layout === "stack" ? ` stack-${stackView}` : ""}${prefs.reduceMotion ? " reduce-motion" : ""}`}
+      data-theme={theme}
+      style={
+        {
+          "--blue": accent,
+          "--blue-soft": `${accent}33`,
+          "--font-scale": `${prefs.fontScale / 100}`,
+          "--reader-max": readingMax,
+          fontSize: `calc(13px * ${prefs.fontScale / 100})`,
+        } as CSSProperties
+      }
+    >
+      <TitleBar
+        showAi={showAi}
+        askOpen={showAi && askOpen && !askFocusThread}
+        onAsk={() => {
+          if (askOpen && !askFocusThread) {
+            setAskOpen(false);
+            return;
+          }
+          setAskFocusThread(false);
+          setAskOpen(true);
+          if (prefs.layout === "stack") setStackView("reader");
+        }}
+        searchRef={searchRef}
+        searchTokens={searchTokens}
+        labels={labels}
+        onSearchTokens={(tokens) => {
+          setSearchTokens(tokens);
+          if (!live) return;
+          if (searchTimer.current) window.clearTimeout(searchTimer.current);
+          // Bridge gets free-text only; structured chips filter client-side.
+          const q = serializeSearch(tokens.filter((t) => t.field === "text"));
+          searchTimer.current = window.setTimeout(() => {
+            void refreshLiveMail({ q });
+          }, 280);
+        }}
+        notifications={notifications}
+        onMarkNotificationsRead={() =>
+          setNotifications((prev) =>
+            prev.map((n) => ({ ...n, unread: false })),
+          )
+        }
+        onOpenNotification={(n) => {
+          if (n.messageId) {
+            setSelectedId(n.messageId);
+            setFolderId("inbox");
+          } else if (n.kind === "ai") {
+            setAskFocusThread(false);
+            setAskOpen(true);
+          }
+          setNotifications((prev) =>
+            prev.map((item) =>
+              item.id === n.id ? { ...item, unread: false } : item,
+            ),
+          );
+        }}
+      />
+      <div className="shell">
+        <AccountRail
+          accounts={accounts}
+          activeId={accountId}
+          onSelect={(id) => {
+            if (!prefs.unifiedInbox && id === UNIFIED_ID) {
+              showToast("Enable Unified Inbox in Settings → Inbox");
+              return;
+            }
+            setAccountId(id);
+            setFolderId("inbox");
+            setFilter("all");
+            setStackView("list");
+            clearChecks();
+          }}
+          onAdd={() => setAddAccountOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+        />
+        <Sidebar
+          account={account}
+          activeFolder={folderId}
+          labels={labels}
+          syncLabel={
+            syncing
+              ? syncStatus?.progress || "Syncing…"
+              : syncStatus?.error
+                ? "Sync error"
+                : live
+                  ? syncStatus?.lastSyncAt
+                    ? "Synced"
+                    : "Live inbox"
+                  : "Demo data"
+          }
+          inboxCount={
+            mail.filter(
+              (m) =>
+                m.folder === "inbox" &&
+                (accountId === UNIFIED_ID || m.accountId === accountId),
+            ).length
+          }
+          folderCounts={folderCounts}
+          onFolder={setFolderId}
+          onCompose={() => openCompose()}
+          onEmptyFolder={(folder) => {
+            void emptyFolder(folder);
+          }}
+        />
+        <MessageList
+          items={filtered}
+          selectedId={selected?.id ?? ""}
+          checkedIds={checkedIds}
+          filter={filter}
+          unified={showUnifiedChrome}
+          title={listTitle}
+          showSplit={prefs.importantSplit}
+          showAvatars={prefs.showAvatars}
+          showPreviewLines={prefs.showPreviewLines}
+          showUnreadBadge={prefs.showUnreadBadgeInList}
+          hoverActions={prefs.hoverActions}
+          reduceMotion={prefs.reduceMotion}
+          labels={labels}
+          showAi={showAi}
+          syncing={syncing}
+          fullScreen={prefs.layout === "stack"}
+          onCompose={() => openCompose()}
+          onFilter={(f) => setFilter(f)}
+          onRefresh={() => {
+            if (!live) {
+              showToast("Connect Gmail to sync real mail");
+              return;
+            }
+            setSyncing(true);
+            void bridgeSync(
+              accountId === UNIFIED_ID ? undefined : accountId,
+            )
+              .then(() => refreshLiveMail())
+              .finally(() => setSyncing(false));
+          }}
+          onSelect={(id) => {
+            clearChecks();
+            setSelectedId(id);
+            setAskOpen(false);
+            if (prefs.layout === "stack") setStackView("reader");
+            if (prefs.markReadOnOpen) {
+              setMail((prev) =>
+                prev.map((m) =>
+                  m.id === id && m.unread ? { ...m, unread: false } : m,
+                ),
+              );
+              if (live) void bridgeMutateMail(id, "read");
+            }
+            if (live) {
+              void bridgeGetMail(id).then((dto) => {
+                if (!dto) return;
+                const updated = messageDtoToUi(dto);
+                setMail((prev) =>
+                  prev.map((m) => (m.id === id ? updated : m)),
+                );
+              });
+            }
+          }}
+          onToggleCheck={toggleCheck}
+          onSelectAll={selectAllVisible}
+          onClearChecks={clearChecks}
+          onBulkAction={(action, detail) => {
+            void requestBulkAction(action, detail);
+          }}
+          onAction={(messageId, action, detail) => {
+            void requestMailAction(messageId, action, detail);
+          }}
+          onCreateLabel={createLabelForMessage}
+        />
+        {showAi && askOpen ? (
+          <FloatingAsk
+            open={askOpen}
+            onOpenChange={(open) => {
+              setAskOpen(open);
+              if (!open) setAskFocusThread(false);
+            }}
+            mail={mail}
+            labels={labels}
+            focusMessage={askFocusThread ? selected : null}
+            bridgeName={aiBridgeMeta[prefs.aiBridge]?.name ?? "Local"}
+            userName={account.name}
+            prefs={prefs}
+            onOpenMessage={(id) => {
+              setSelectedId(id);
+              setFolderId("inbox");
+              setAskOpen(false);
+              setAskFocusThread(false);
+              if (prefs.layout === "stack") setStackView("reader");
+            }}
+            onOpenSettings={() => {
+              setAskOpen(false);
+              setSettingsOpen(true);
+            }}
+          />
+        ) : (
+          <ReadingPane
+            message={selected}
+            stickySubject={prefs.stickySubject}
+            forceDarkHtml={prefs.forceDarkHtml && theme === "dark"}
+            conversationView={prefs.conversationView}
+            showAi={showAi}
+            prefs={prefs}
+            live={live}
+            account={account}
+            onBack={
+              prefs.layout === "stack" ? () => setStackView("list") : undefined
+            }
+            labels={labels}
+            onAsk={() => {
+              setAskFocusThread(true);
+              setAskOpen(true);
+              if (prefs.layout === "stack") setStackView("reader");
+            }}
+            onAction={(action, snoozeLabel) => {
+              if (!selected) return;
+              void requestMailAction(selected.id, action, snoozeLabel);
+            }}
+            onCreateLabel={(name, color) => {
+              if (!selected) return;
+              createLabelForMessage(selected.id, name, color);
+            }}
+            onComposeTo={(r) => openCompose({ to: [r] })}
+            onToast={showToast}
+            focusReplySignal={focusReplySignal}
+            onReplySent={(message) => {
+              setMail((prev) => {
+                const idx = prev.findIndex((m) => m.id === message.id);
+                if (idx === -1) return [message, ...prev];
+                const next = [...prev];
+                next[idx] = message;
+                return next;
+              });
+            }}
+          />
+        )}
+      </div>
+
+      {settingsOpen && (
+        <SettingsModal
+          prefs={prefs}
+          accounts={accounts}
+          onChange={updatePrefs}
+          onAddAccount={() => {
+            setSettingsOpen(false);
+            setAddAccountOpen(true);
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {composeOpen && (
+        <ComposeModal
+          account={account}
+          accounts={accounts}
+          prefs={prefs}
+          showAi={showAi}
+          live={live}
+          initialTo={composeDraft.to}
+          initialSubject={composeDraft.subject}
+          initialBody={composeDraft.body}
+          title={composeDraft.title}
+          onClose={closeCompose}
+          onQueued={(queueId, seconds) => {
+            showToast(`Sending in ${seconds}s — press Z to undo`);
+            const prevUndo = lastActionRef.current;
+            lastActionRef.current = [];
+            const handle = window.setTimeout(() => undefined, seconds * 1000);
+            // Stash cancel on a one-shot undo via toast action pattern
+            void handle;
+            const cancel = () => {
+              void bridgeCancelSend(queueId).then((ok) => {
+                showToast(ok ? "Send cancelled" : "Already sent");
+              });
+            };
+            // Reuse undo shortcut: store a synthetic restore that cancels the queue
+            lastActionRef.current = prevUndo;
+            (
+              window as unknown as { __intrayCancelSend?: () => void }
+            ).__intrayCancelSend = cancel;
+            window.setTimeout(() => {
+              const w = window as unknown as {
+                __intrayCancelSend?: () => void;
+              };
+              if (w.__intrayCancelSend === cancel) {
+                delete w.__intrayCancelSend;
+              }
+            }, seconds * 1000 + 500);
+          }}
+          onSent={(message) => {
+            setMail((prev) => {
+              const idx = prev.findIndex((m) => m.id === message.id);
+              if (idx === -1) return [message, ...prev];
+              const next = [...prev];
+              next[idx] = message;
+              return next;
+            });
+            setSelectedId(message.id);
+            showToast(
+              message.openTracking ? "Sent · tracking recorded locally" : "Sent",
+            );
+          }}
+        />
+      )}
+      {onboardingOpen && (
+        <Onboarding
+          prefs={prefs}
+          onUpdatePrefs={updatePrefs}
+          accountLinked={onboardingAccountLinked}
+          onRequestAddAccount={() => setAddAccountOpen(true)}
+          onComplete={() => setOnboardingOpen(false)}
+        />
+      )}
+      {addAccountOpen && (
+        <AddAccountModal
+          onClose={() => setAddAccountOpen(false)}
+          onAdded={(account, opts) => {
+            if (onboardingOpen) setOnboardingAccountLinked(true);
+            if (opts?.live) {
+              void loadLiveWorkspace(account.id).then(() =>
+                showToast(`Added ${account.email}`),
+              );
+              return;
+            }
+            setAccounts((prev) => [...prev, account]);
+            setAccountId(account.id);
+            setFolderId("inbox");
+            setFilter("all");
+            setStackView("list");
+            showToast(`Added ${account.email}`);
+          }}
+        />
+      )}
+      {cheatOpen && (
+        <ShortcutsCheatSheet
+          pack={prefs.shortcutPack}
+          onClose={() => setCheatOpen(false)}
+        />
+      )}
+
+      {chord && <div className="chord-hint">Chord: {chord.toUpperCase()}…</div>}
+      <AlertDialog
+        alert={alert}
+        onConfirm={() => closeAlert(true)}
+        onCancel={() => closeAlert(false)}
+      />
+      {toast && <div className="toast fade-up">{toast}</div>}
+    </div>
+  );
+}

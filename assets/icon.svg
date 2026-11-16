@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#c026d3"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#ffffff">WU</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="Intray">
+  <rect width="64" height="64" rx="14" fill="#760E0A"/>
+  <path d="M32.5 52.4 L32.5 47.2 Q32.5 44.4 36.0 44.4 L45.5 44.0 L51.5 39.4 L54.6 36.8 L49.0 30.4 L42.0 22.6 L34.8 16.2 L27.6 12.6 Q22.4 10.8 17.2 12.8 Q11.8 15.4 10.6 21.0 Q9.8 26.8 13.8 30.6 Q17.4 33.6 22.2 32.0 Q25.8 30.6 26.4 26.4 Q26.8 23.2 23.8 22.2 Q20.8 21.4 19.2 23.6" stroke="#FFFFFF" stroke-width="5.4" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="8" fill="none"/>
 </svg>

@@ -1,0 +1,53 @@
+{
+  "name": "@intray/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Intray — Windows unified mail",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "pack": "electron-vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.8",
+    "imapflow": "^2.12.1",
+    "lucide-react": "^0.525.0",
+    "mailparser": "^3.14.5",
+    "nodemailer": "^10.6.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "simple-icons": "^16.38.0",
+    "sql.js": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "app.intray.desktop",
+    "productName": "Intray",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "resources/icon.png"
+    }
+  }
+}
