@@ -94,7 +94,7 @@ async function callTool(
     case "read_thread": {
       const id = shortString(args.id, 200);
       if (!id) return { error: "id is required" };
-      const msg = await getMail(id);
+      const msg = await getMail(id, { waitForThread: true });
       if (!msg) return { error: "Message not found" };
       return {
         id: msg.id,

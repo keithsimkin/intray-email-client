@@ -148,6 +148,7 @@ import {
   bridgeOnNotifyOpen,
   bridgeOnSendFlushed,
   bridgeOnSyncProgress,
+  bridgeOnMailUpdated,
   bridgeOnUnsnoozed,
   bridgeSendLater,
   bridgeSendMail,
@@ -3135,6 +3136,26 @@ function ReadingPane({
     onAction("archive");
   };
 
+  const unsubscribeBtn = showUnsubscribe ? (
+    <button
+      type="button"
+      className="unsub-btn"
+      disabled={unsubState === "scanning"}
+      onClick={() => void runUnsubscribe()}
+    >
+      {unsubState === "scanning" ? (
+        <Loader2 size={13} strokeWidth={2} className="spin" />
+      ) : (
+        <UserMinus size={13} strokeWidth={1.75} />
+      )}
+      {unsubState === "scanning"
+        ? "Finding…"
+        : unsubState === "missing"
+          ? "Try again"
+          : "Unsubscribe"}
+    </button>
+  ) : null;
+
   const toolbar: Array<{
     Icon: typeof Archive;
     label: string;
@@ -3277,7 +3298,10 @@ function ReadingPane({
 
       {/* Pin outside the scrollport so HTML iframes cannot paint through sticky. */}
       {stickySubject && (
-        <h1 className="reader-subject pinned">{message.subject}</h1>
+        <div className="reader-subject-row pinned">
+          <h1 className="reader-subject">{message.subject}</h1>
+          {unsubscribeBtn}
+        </div>
       )}
 
       <div className="reader-scroll fade-up-delay" key={message.id}>
@@ -3288,7 +3312,10 @@ function ReadingPane({
           </span>
         </div>
         {!stickySubject && (
-          <h1 className="reader-subject">{message.subject}</h1>
+          <div className="reader-subject-row">
+            <h1 className="reader-subject">{message.subject}</h1>
+            {unsubscribeBtn}
+          </div>
         )}
 
         {openTrack && openSummary && (
@@ -3298,48 +3325,6 @@ function ReadingPane({
               <div>
                 <strong>{openSummary.title}</strong>
                 <span>{openSummary.detail}</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {showUnsubscribe && (
-          <div className="unsub-banner" role="status">
-            <div className="unsub-banner-copy">
-              <div>
-                <strong>Looks like a newsletter or promo</strong>
-                <span>
-                  Find the unsubscribe link and archive this thread.
-                </span>
-              </div>
-            </div>
-            <button
-              type="button"
-              className="unsub-btn"
-              disabled={unsubState === "scanning"}
-              onClick={() => void runUnsubscribe()}
-            >
-              {unsubState === "scanning" ? (
-                <Loader2 size={13} strokeWidth={2} className="spin" />
-              ) : (
-                <UserMinus size={13} strokeWidth={1.75} />
-              )}
-              {unsubState === "scanning"
-                ? "Finding…"
-                : unsubState === "missing"
-                  ? "Try again"
-                  : "Unsubscribe"}
-            </button>
-          </div>
-        )}
-
-        {unsubState === "done" && (
-          <div className="unsub-banner done" role="status">
-            <div className="unsub-banner-copy">
-              <Check size={14} strokeWidth={2} />
-              <div>
-                <strong>Unsubscribe opened</strong>
-                <span>This thread was archived. Undo from the toast if needed.</span>
               </div>
             </div>
           </div>
@@ -4630,7 +4615,32 @@ export default function App() {
       q: q.trim() || undefined,
     });
     const messages = result.messages.map(messageDtoToUi);
-    setMail(messages);
+    // listMail returns metadata only — keep any bodies already hydrated in UI.
+    setMail((prev) => {
+      const prevById = new Map(prev.map((m) => [m.id, m]));
+      return messages.map((m) => {
+        const old = prevById.get(m.id);
+        if (!old) return m;
+        const listHasBody = m.thread.some(
+          (t) =>
+            Boolean(t.bodyHtml) ||
+            Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
+        );
+        if (listHasBody) return m;
+        const oldHasBody = old.thread.some(
+          (t) =>
+            Boolean(t.bodyHtml) ||
+            Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
+        );
+        if (!oldHasBody) return m;
+        return {
+          ...m,
+          thread: old.thread,
+          linkCount: old.linkCount,
+          attachmentCount: old.attachmentCount,
+        };
+      });
+    });
     setSelectedId((prev) =>
       messages.some((m) => m.id === prev) ? prev : (messages[0]?.id ?? ""),
     );
@@ -4757,12 +4767,37 @@ export default function App() {
       if (live) void refreshLiveMail();
       showToast("Snoozed mail returned to inbox");
     });
+    const offUpdated = bridgeOnMailUpdated(({ message }) => {
+      const ui = messageDtoToUi(message);
+      setMail((prev) =>
+        prev.map((m) => (m.id === ui.id ? ui : m)),
+      );
+    });
     return () => {
       offFlush();
       offSnooze();
+      offUpdated();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live]);
+
+  // Hydrate bodies when selection changes (click or keyboard). getMail returns
+  // as soon as the newest message body is ready; older replies arrive via
+  // mail:updated.
+  useEffect(() => {
+    if (!live || !selectedId) return;
+    let cancelled = false;
+    void bridgeGetMail(selectedId).then((dto) => {
+      if (cancelled || !dto) return;
+      const updated = messageDtoToUi(dto);
+      setMail((prev) =>
+        prev.map((m) => (m.id === selectedId ? updated : m)),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [live, selectedId]);
 
   useEffect(() => {
     if (!live) return;
@@ -6035,15 +6070,6 @@ export default function App() {
               );
               if (live) void bridgeMutateMail(id, "read");
             }
-            if (live) {
-              void bridgeGetMail(id).then((dto) => {
-                if (!dto) return;
-                const updated = messageDtoToUi(dto);
-                setMail((prev) =>
-                  prev.map((m) => (m.id === id ? updated : m)),
-                );
-              });
-            }
           }}
           onToggleCheck={toggleCheck}
           onSelectAll={selectAllVisible}
@@ -6096,77 +6122,77 @@ export default function App() {
             }}
           />
         )}
-        {showAi && askOpen ? (
-          <FloatingAsk
-            open={askOpen}
-            onOpenChange={(open) => {
-              setAskOpen(open);
-              if (!open) setAskFocusThread(false);
-            }}
-            mail={mail}
-            labels={labels}
-            focusMessage={askFocusThread ? selected : null}
-            bridgeName={aiBridgeMeta[prefs.aiBridge]?.name ?? "Local"}
-            userName={account.name}
-            prefs={prefs}
-            onOpenMessage={(id) => {
-              setSelectedId(id);
-              setFolderId("inbox");
-              setAskOpen(false);
-              setAskFocusThread(false);
-              if (prefs.layout === "stack") setStackView("reader");
-            }}
-            onOpenSettings={() => {
-              setAskOpen(false);
-              setSettingsOpen(true);
-            }}
-          />
-        ) : (
-          <ReadingPane
-            message={selected}
-            stickySubject={prefs.stickySubject}
-            forceDarkHtml={prefs.forceDarkHtml && theme === "dark"}
-            conversationView={prefs.conversationView}
-            showAi={showAi}
-            prefs={prefs}
-            live={live}
-            account={account}
-            accounts={accounts}
-            onBack={
-              prefs.layout === "stack" ? () => setStackView("list") : undefined
-            }
-            labels={labels}
-            customFolders={customFolders}
-            onAsk={() => {
-              setAskFocusThread(true);
-              setAskOpen(true);
-              if (prefs.layout === "stack") setStackView("reader");
-            }}
-            onAction={(action, snoozeLabel) => {
-              if (!selected) return;
-              void requestMailAction(selected.id, action, snoozeLabel);
-            }}
-            onCreateLabel={(name, color) => {
-              if (!selected) return;
-              createLabelForMessage(selected.id, name, color);
-            }}
-            onCreateFolder={createFolder}
-            onComposeTo={(r) => openCompose({ to: [r] })}
-            onToast={showToast}
-            onUpdatePrefs={updatePrefs}
-            replyIntent={replyIntent}
-            onReplySent={(message) => {
-              setMail((prev) => {
-                const idx = prev.findIndex((m) => m.id === message.id);
-                if (idx === -1) return [message, ...prev];
-                const next = [...prev];
-                next[idx] = message;
-                return next;
-              });
-            }}
-          />
-        )}
+        <ReadingPane
+          message={selected}
+          stickySubject={prefs.stickySubject}
+          forceDarkHtml={prefs.forceDarkHtml && theme === "dark"}
+          conversationView={prefs.conversationView}
+          showAi={showAi}
+          prefs={prefs}
+          live={live}
+          account={account}
+          accounts={accounts}
+          onBack={
+            prefs.layout === "stack" ? () => setStackView("list") : undefined
+          }
+          labels={labels}
+          customFolders={customFolders}
+          onAsk={() => {
+            setAskFocusThread(true);
+            setAskOpen(true);
+            if (prefs.layout === "stack") setStackView("reader");
+          }}
+          onAction={(action, snoozeLabel) => {
+            if (!selected) return;
+            void requestMailAction(selected.id, action, snoozeLabel);
+          }}
+          onCreateLabel={(name, color) => {
+            if (!selected) return;
+            createLabelForMessage(selected.id, name, color);
+          }}
+          onCreateFolder={createFolder}
+          onComposeTo={(r) => openCompose({ to: [r] })}
+          onToast={showToast}
+          onUpdatePrefs={updatePrefs}
+          replyIntent={replyIntent}
+          onReplySent={(message) => {
+            setMail((prev) => {
+              const idx = prev.findIndex((m) => m.id === message.id);
+              if (idx === -1) return [message, ...prev];
+              const next = [...prev];
+              next[idx] = message;
+              return next;
+            });
+          }}
+        />
       </div>
+
+      {showAi && (
+        <FloatingAsk
+          open={askOpen}
+          onOpenChange={(open) => {
+            setAskOpen(open);
+            if (!open) setAskFocusThread(false);
+          }}
+          mail={mail}
+          labels={labels}
+          focusMessage={askFocusThread ? selected : null}
+          bridgeName={aiBridgeMeta[prefs.aiBridge]?.name ?? "Local"}
+          userName={account.name}
+          prefs={prefs}
+          onOpenMessage={(id) => {
+            setSelectedId(id);
+            setFolderId("inbox");
+            setAskOpen(false);
+            setAskFocusThread(false);
+            if (prefs.layout === "stack") setStackView("reader");
+          }}
+          onOpenSettings={() => {
+            setAskOpen(false);
+            setSettingsOpen(true);
+          }}
+        />
+      )}
 
       {settingsOpen && (
         <SettingsModal

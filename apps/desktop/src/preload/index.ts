@@ -130,6 +130,14 @@ const api = {
       ipcRenderer.on("mail:unsnoozed", listener);
       return () => ipcRenderer.removeListener("mail:unsnoozed", listener);
     },
+    onUpdated: (cb: (payload: { message: MessageDto }) => void) => {
+      const listener = (
+        _: Electron.IpcRendererEvent,
+        payload: { message: MessageDto },
+      ) => cb(payload);
+      ipcRenderer.on("mail:updated", listener);
+      return () => ipcRenderer.removeListener("mail:updated", listener);
+    },
   },
 
   labels: {
