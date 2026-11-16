@@ -784,6 +784,28 @@ button {
   outline-color: var(--blue);
 }
 
+.account.logged-out .account-face {
+  filter: grayscale(0.85) brightness(0.92);
+  opacity: 0.72;
+}
+
+.account-status {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--bg);
+  color: #0a0a0b;
+}
+
+.account-status.logged-out {
+  background: #f5a524;
+}
+
 .rail-btn {
   width: 42px;
   height: 42px;
@@ -797,6 +819,10 @@ button {
 .rail-btn:hover {
   background: var(--bg-hover);
   color: var(--fg);
+}
+
+.rail-add {
+  margin-top: 2px;
 }
 
 .badge {
@@ -2490,10 +2516,25 @@ button {
 .reply-dock {
   position: relative;
   z-index: 20;
-  padding: 12px 18px 16px;
+  padding: 0 14px 14px;
   border-top: 0;
-  background: var(--bg);
+  background: transparent;
   overflow: visible;
+}
+
+.reply-dock::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 36px;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--bg) 92%, transparent),
+    transparent
+  );
 }
 
 .reply-dock .recipient-predict {
@@ -2508,10 +2549,15 @@ button {
 }
 
 .reply-box {
-  border: 0;
+  border: 1px solid var(--line);
   background: var(--bg-elevated);
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 12px 14px 10px;
+  box-shadow:
+    0 1px 0 #ffffff0a inset,
+    0 10px 28px #00000055,
+    0 2px 8px #00000033;
+  transform: translateZ(0);
 }
 
 .reply-input-stack {
@@ -3219,6 +3265,29 @@ button {
   background: var(--fg);
   color: #0a0a0b;
   font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+}
+
+.send:disabled {
+  cursor: default;
+}
+
+.send.send-sending {
+  opacity: 0.88;
+}
+
+.send.send-sent {
+  background: #3dd68c;
+  color: #0a0a0b;
+}
+
+.send.send-failed,
+.send.send-logged-out {
+  background: var(--danger);
+  color: #fff;
 }
 
 
@@ -4251,7 +4320,7 @@ button.keycap,
 }
 
 .app.layout-stack .reply-dock {
-  padding: 14px 48px 20px;
+  padding: 0 48px 20px;
   width: min(100%, 980px);
   margin: 0 auto;
   box-sizing: border-box;
@@ -4362,6 +4431,13 @@ button.keycap,
 }
 
 /* —— Light theme —— */
+[data-theme="light"] .reply-box {
+  box-shadow:
+    0 1px 0 #ffffff inset,
+    0 14px 36px #14141614,
+    0 4px 12px #1414160a;
+}
+
 [data-theme="light"] {
   --bg: #f0f1f3;
   --bg-elevated: #ffffff;
@@ -4405,6 +4481,17 @@ button.keycap,
 [data-theme="light"] .send,
 [data-theme="light"] .meeting-pill .join {
   background: #141416;
+  color: #fff;
+}
+
+[data-theme="light"] .send.send-sent {
+  background: #3dd68c;
+  color: #0a0a0b;
+}
+
+[data-theme="light"] .send.send-failed,
+[data-theme="light"] .send.send-logged-out {
+  background: var(--danger);
   color: #fff;
 }
 
@@ -4536,6 +4623,18 @@ button.keycap,
   font-size: 11px;
   display: inline-flex;
   align-items: center;
+}
+
+.muted-pill.danger {
+  color: #ffb4b4;
+  border-color: #ff6b6b55;
+  background: #ff6b6b18;
+}
+
+[data-theme="light"] .muted-pill.danger {
+  color: #b42318;
+  border-color: #ff6b6b55;
+  background: #ff6b6b14;
 }
 
 .shortcut-list .settings-row {

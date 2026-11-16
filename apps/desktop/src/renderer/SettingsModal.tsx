@@ -1412,7 +1412,11 @@ export function SettingsModal({
                         <strong>{a.name}</strong>
                         <span>{a.email}</span>
                       </div>
-                      <span className="muted-pill">Connected</span>
+                      <span
+                        className={`muted-pill${a.loggedOut ? " danger" : ""}`}
+                      >
+                        {a.loggedOut ? "Logged out" : "Connected"}
+                      </span>
                     </div>
                   ))}
                 <button

@@ -1645,6 +1645,7 @@ function MessageActionMenu({
 
 function MessageList({
   items,
+  accounts,
   selectedId,
   checkedIds,
   filter,
@@ -1674,6 +1675,7 @@ function MessageList({
   onCreateFolder,
 }: {
   items: Message[];
+  accounts: Account[];
   selectedId: string;
   checkedIds: Set<string>;
   filter: Filter;
@@ -1713,6 +1715,7 @@ function MessageList({
   const checkedMessages = items.filter((m) => checkedIds.has(m.id));
   const anyUnread = checkedMessages.some((m) => m.unread);
   const anyUnstarred = checkedMessages.some((m) => !m.starred);
+  const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
 
   const menuMessage = menu
     ? items.find((m) => m.id === menu.messageId) ?? null
@@ -1890,7 +1893,7 @@ function MessageList({
           </div>
         ) : (
           items.map((m, i) => {
-            const acct = accountFor(m.accountId);
+            const acct = accountFor(m.accountId, accounts);
             const selected = m.id === selectedId;
             const checked = checkedIds.has(m.id);
             const badges = listBadgeCounts(m);
@@ -1969,7 +1972,9 @@ function MessageList({
                         {acct.label}
                       </span>
                     )}
-                    {isCcOnly(m) && <span className="cc-chip">Cc</span>}
+                    {isCcOnly(m, ownEmails) && (
+                      <span className="cc-chip">Cc</span>
+                    )}
                     {m.tag && (
                       <span className="tag" style={{ background: m.tag.color }}>
                         {m.tag.label}
@@ -2458,14 +2463,21 @@ function ReadingPane({
   );
   const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
   const defaultReplyFromId = useMemo(() => {
-    if (
-      message?.accountId &&
-      sendable.some((a) => a.id === message.accountId)
-    ) {
-      return message.accountId;
-    }
-    if (account.id !== UNIFIED_ID) return account.id;
-    return sendable[0]?.id ?? account.id;
+    const signedIn = sendable.filter((a) => !a.loggedOut);
+    const pick = (id: string | undefined) => {
+      if (!id) return undefined;
+      const hit = sendable.find((a) => a.id === id);
+      if (!hit) return undefined;
+      if (!hit.loggedOut) return hit.id;
+      return signedIn[0]?.id ?? hit.id;
+    };
+    return (
+      pick(message?.accountId) ??
+      pick(account.id !== UNIFIED_ID ? account.id : undefined) ??
+      signedIn[0]?.id ??
+      sendable[0]?.id ??
+      account.id
+    );
   }, [message?.accountId, account.id, sendable]);
 
   const [draft, setDraft] = useState("");
@@ -2638,7 +2650,10 @@ function ReadingPane({
     setMenu(null);
     setUnsubState("idle");
     setReplySendPhase("idle");
-  }, [message?.id, defaultReplyFromId, ownEmails]);
+    // Re-seed only when the open message / From account changes — not when the
+    // accounts list refreshes mid-draft.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message?.id, defaultReplyFromId]);
 
   useEffect(() => {
     if (ccMentions.length) setShowCc(true);
@@ -2656,15 +2671,21 @@ function ReadingPane({
       replyRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(id);
-  }, [replyIntent.key, replyIntent.mode, message?.id, ownEmails]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replyIntent.key, replyIntent.mode, message?.id]);
 
   const sendReply = async () => {
-    if (!message || !draft.trim() || sendingReply) return;
+    if (!message || !draft.trim() || replySendPhase === "sending") return;
     if (toMentions.length === 0) {
       onToast("Add at least one To recipient");
       return;
     }
-    setSendingReply(true);
+    if (replyFromLoggedOut) {
+      setReplySendPhase("failed");
+      onToast("This account is logged out — reconnect in Settings");
+      return;
+    }
+    setReplySendPhase("sending");
     try {
       if (live) {
         const dto = await bridgeSendMail({
@@ -2680,18 +2701,20 @@ function ReadingPane({
         });
         onReplySent?.(messageDtoToUi(dto));
       } else {
-        onToast("Reply saved locally (connect an account to send)");
+        // Demo mode: brief delay so the Sending → Sent transition is visible.
+        await new Promise((r) => setTimeout(r, 450));
       }
+      setReplySendPhase("sent");
       setDraft("");
       seedReplyRecipients("reply");
       setBccMentions([]);
       setShowBcc(false);
       replyHistory.clear();
       onToast("Reply sent");
+      window.setTimeout(() => setReplySendPhase("idle"), 1200);
     } catch (e) {
-      onToast(e instanceof Error ? e.message : "Send failed");
-    } finally {
-      setSendingReply(false);
+      setReplySendPhase("failed");
+      onToast(e instanceof Error ? e.message : "Failed to send");
     }
   };
 
@@ -3049,11 +3072,14 @@ function ReadingPane({
                   compact
                   ariaLabel="Send reply from account"
                   value={replyFrom.id}
-                  onChange={setFromId}
+                  onChange={(id) => {
+                    setFromId(id);
+                    setReplySendPhase("idle");
+                  }}
                   options={sendable.map((a) => ({
                     id: a.id,
                     label: a.name,
-                    detail: a.email,
+                    detail: a.loggedOut ? `${a.email} · Logged out` : a.email,
                     leading: (
                       <span
                         className="account-chip"
@@ -3061,6 +3087,7 @@ function ReadingPane({
                           background: "transparent",
                           color: a.color,
                           borderColor: a.color,
+                          opacity: a.loggedOut ? 0.55 : 1,
                         }}
                       >
                         {a.label}
@@ -3251,13 +3278,37 @@ function ReadingPane({
             </div>
             <button
               type="button"
-              className="send"
+              className={`send send-${replyFromLoggedOut && replySendPhase === "idle" ? "logged-out" : replySendPhase}`}
               disabled={
-                sendingReply || !draft.trim() || toMentions.length === 0
+                replySendPhase === "sending" ||
+                replySendPhase === "sent" ||
+                replyFromLoggedOut ||
+                (!draft.trim() && replySendPhase === "idle") ||
+                (toMentions.length === 0 && replySendPhase === "idle")
+              }
+              title={
+                replyFromLoggedOut
+                  ? "This account is logged out — reconnect in Settings"
+                  : undefined
               }
               onClick={() => void sendReply()}
             >
-              {sendingReply ? "Sending…" : "Send"}
+              {replySendPhase === "sending" ? (
+                <Loader2 size={14} strokeWidth={2.25} className="spin" />
+              ) : replySendPhase === "sent" ? (
+                <Check size={14} strokeWidth={2.25} />
+              ) : replySendPhase === "failed" || replyFromLoggedOut ? (
+                <AlertCircle size={14} strokeWidth={2.25} />
+              ) : null}
+              {replyFromLoggedOut && replySendPhase === "idle"
+                ? "Logged out"
+                : replySendPhase === "sending"
+                  ? "Sending…"
+                  : replySendPhase === "sent"
+                    ? "Sent"
+                    : replySendPhase === "failed"
+                      ? "Failed to Send"
+                      : "Send"}
             </button>
           </div>
         </div>
@@ -3421,18 +3472,26 @@ function ComposeModal({
   onQueued?: (queueId: string, seconds: number) => void;
 }) {
   const sendable = accounts.filter((a) => a.id !== UNIFIED_ID);
+  const signedIn = sendable.filter((a) => !a.loggedOut);
   const defaultFrom =
-    account.id === UNIFIED_ID
-      ? (sendable.find((a) => a.id === "work") ?? sendable[0] ?? account)
-      : account;
+    account.id !== UNIFIED_ID && !account.loggedOut
+      ? account
+      : (signedIn.find((a) => a.id === account.id) ??
+        signedIn.find((a) => a.id === "work") ??
+        signedIn[0] ??
+        sendable[0] ??
+        account);
   const [fromId, setFromId] = useState(defaultFrom.id);
   const from = sendable.find((a) => a.id === fromId) ?? defaultFrom;
+  const fromLoggedOut = Boolean(from.loggedOut);
   const [to, setTo] = useState<Recipient[]>(() => initialTo ?? []);
   const [subject, setSubject] = useState(initialSubject);
   const [body, setBody] = useState(initialBody);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [sendPhase, setSendPhase] = useState<
+    "idle" | "sending" | "sent" | "failed"
+  >("idle");
   const [sendError, setSendError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepth = useRef(0);
@@ -3536,11 +3595,18 @@ function ComposeModal({
   };
 
   const handleSend = async () => {
+    if (sendPhase === "sending" || sendPhase === "sent") return;
+    if (fromLoggedOut) {
+      setSendPhase("failed");
+      setSendError("This account is logged out — reconnect in Settings.");
+      return;
+    }
     if (!to.length) {
+      setSendPhase("failed");
       setSendError("Add at least one recipient.");
       return;
     }
-    setSending(true);
+    setSendPhase("sending");
     setSendError(null);
     try {
       const bodyText = signature.trim()
@@ -3572,13 +3638,16 @@ function ComposeModal({
         const delay = prefs.undoSendSeconds;
         if (delay > 0) {
           const queued = await bridgeSendLater(draftPayload, delay);
+          setSendPhase("sent");
           onQueued?.(queued.queueId, delay);
-          onClose();
+          window.setTimeout(() => onClose(), 700);
           return;
         }
         const dto = await bridgeSendMail(draftPayload);
         message = messageDtoToUi(dto);
       } else {
+        // Demo mode: brief delay so Sending → Sent is visible.
+        await new Promise((r) => setTimeout(r, 450));
         const id = `local-sent:${Date.now()}`;
         const preview = body.trim().slice(0, 120) || "(no subject)";
         message = {
@@ -3622,12 +3691,12 @@ function ComposeModal({
         };
       }
 
+      setSendPhase("sent");
       onSent?.(message);
-      onClose();
+      window.setTimeout(() => onClose(), 700);
     } catch (e) {
+      setSendPhase("failed");
       setSendError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSending(false);
     }
   };
 
@@ -3683,11 +3752,15 @@ function ComposeModal({
               <AppSelect
                 ariaLabel="Send from account"
                 value={from.id}
-                onChange={setFromId}
+                onChange={(id) => {
+                  setFromId(id);
+                  setSendPhase("idle");
+                  setSendError(null);
+                }}
                 options={sendable.map((a) => ({
                   id: a.id,
                   label: a.name,
-                  detail: a.email,
+                  detail: a.loggedOut ? `${a.email} · Logged out` : a.email,
                   leading: (
                     <span
                       className="account-chip"
@@ -3695,6 +3768,7 @@ function ComposeModal({
                         background: "transparent",
                         color: a.color,
                         borderColor: a.color,
+                        opacity: a.loggedOut ? 0.55 : 1,
                       }}
                     >
                       {a.label}
@@ -3870,16 +3944,37 @@ function ComposeModal({
             </button>
             <button
               type="button"
-              className="send"
+              className={`send send-${fromLoggedOut && sendPhase === "idle" ? "logged-out" : sendPhase}`}
               onClick={() => void handleSend()}
-              disabled={sending}
+              disabled={
+                sendPhase === "sending" ||
+                sendPhase === "sent" ||
+                fromLoggedOut
+              }
+              title={
+                fromLoggedOut
+                  ? "This account is logged out — reconnect in Settings"
+                  : undefined
+              }
             >
-              {sending ? (
+              {sendPhase === "sending" ? (
                 <Loader2 size={14} strokeWidth={2.25} className="spin" />
+              ) : sendPhase === "sent" ? (
+                <Check size={14} strokeWidth={2.25} />
+              ) : sendPhase === "failed" || fromLoggedOut ? (
+                <AlertCircle size={14} strokeWidth={2.25} />
               ) : (
                 <Check size={14} strokeWidth={2.25} />
               )}
-              {sending ? "Sending…" : "Send"}
+              {fromLoggedOut && sendPhase === "idle"
+                ? "Logged out"
+                : sendPhase === "sending"
+                  ? "Sending…"
+                  : sendPhase === "sent"
+                    ? "Sent"
+                    : sendPhase === "failed"
+                      ? "Failed to Send"
+                      : "Send"}
             </button>
           </div>
         </div>
@@ -4118,11 +4213,21 @@ export default function App() {
     return bridgeOnSyncProgress((status) => {
       setSyncStatus(status);
       setSyncing(status.state === "syncing");
+      if (
+        status.state === "error" &&
+        isAuthFailureMessage(status.error) &&
+        status.accountId
+      ) {
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.id === status.accountId ? { ...a, loggedOut: true } : a,
+          ),
+        );
+      }
       if (status.state === "idle" && live) {
         void refreshLiveMail();
         void bridgeAccounts().then((real) => {
           setAccounts((prev) => {
-            const unified = prev.find((a) => a.id === UNIFIED_ID);
             const mapped = real.map(accountDtoToUi);
             return [
               {
@@ -4132,7 +4237,6 @@ export default function App() {
                 email: "All accounts",
                 color: "#ededed",
                 unread: mapped.reduce((n, a) => n + a.unread, 0),
-                ...(unified ? {} : {}),
               },
               ...mapped,
             ];
@@ -5256,6 +5360,7 @@ export default function App() {
         />
         <MessageList
           items={filtered}
+          accounts={accounts}
           selectedId={selected?.id ?? ""}
           checkedIds={checkedIds}
           filter={filter}
