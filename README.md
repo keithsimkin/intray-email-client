@@ -390,7 +390,7 @@ See [SECURITY.md](SECURITY.md) for the threat model and how to report issues.
 - App passwords and OAuth tokens are encrypted with **Windows DPAPI** (`Electron safeStorage`).
 - SMTP uses STARTTLS on submission ports (465 is implicit TLS) with TLS 1.2+; IMAP requires TLS.
 - Outbound mail is built by an RFC 5322 builder in the main process — the renderer never supplies raw headers.
-- Inbound HTML is sanitized in the main process. Remote images and third-party frames are blocked until you opt in per message; links open through a validated allowlist (`http`, `https`, `mailto`).
+- Inbound HTML is sanitized in the main process. Remote images follow **Settings → Privacy → Remote images** (never / always / trusted senders); the default is never, with per-message Load images. Links open through a validated allowlist (`http`, `https`, `mailto`).
 - MCP listens on **127.0.0.1** only, requires a per-install bearer token, and rejects browser requests.
 - The app window blocks in-page navigation and denies permission requests it does not need.
 - Crash/analytics are off by default (product plan); do not add phone-home without an explicit, documented opt-in.
@@ -411,7 +411,7 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and how to report issues.
 | App opens with only demo mail | Expected until an account is added — use **Add account** |
 | MCP tools unreachable | Check Settings → AI & agents that MCP is enabled; use the URL and bearer token shown there |
 | MCP returns `401 Unauthorized` | The client is missing or has an old token — copy the current snippet from Settings, or rotate the token |
-| Remote images blocked | Expected default — choose **Load images** on that message |
+| Remote images blocked | Expected default (**Never download**) — choose **Load images**, or set Always / Trusted sources in Settings → Privacy |
 | `bun install` fails | Use Bun 1.3+; delete `node_modules` and retry from repo root |
 | Native addon missing / `Cannot find module @intray/native` | Install Rust (MSVC), then `bun run build:native` |
 | DPAPI / encryption errors | Run on a normal Windows user session (encryption needs OS secure storage) |

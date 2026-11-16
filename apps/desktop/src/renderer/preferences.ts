@@ -7,6 +7,8 @@ export type LayoutId = "panels" | "wide" | "stack";
 export type ReadingWidth = "narrow" | "medium" | "wide";
 export type BadgeMode = "count" | "dot" | "important" | "off";
 export type NotifyMode = "all" | "important" | "off";
+/** When remote http(s) images in HTML mail may load. */
+export type RemoteImagePolicy = "always" | "never" | "trusted";
 export type AiBridgeId =
   | "openai"
   | "grok"
@@ -102,7 +104,10 @@ export type Preferences = {
   mcpAutoLaunch: boolean;
 
   // Privacy
-  blockRemoteImages: boolean;
+  /** Always / never / only senders listed in trustedImageSenders */
+  remoteImagePolicy: RemoteImagePolicy;
+  /** Full addresses or domains (e.g. ava@northwind.io, @northwind.io, northwind.io) */
+  trustedImageSenders: string[];
   analytics: boolean;
   crashReports: boolean;
   lockWithWindowsHello: boolean;
@@ -214,7 +219,8 @@ export const defaultPreferences: Preferences = {
   mcpEnabled: true,
   mcpAutoLaunch: true,
 
-  blockRemoteImages: true,
+  remoteImagePolicy: "never",
+  trustedImageSenders: [],
   analytics: false,
   crashReports: false,
   lockWithWindowsHello: false,
@@ -289,6 +295,34 @@ export const aiBridgeMeta: Record<
   },
 };
 
+/** True when sender email matches a trusted entry (address or domain). */
+export function isTrustedImageSender(
+  email: string,
+  trusted: readonly string[],
+): boolean {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized || !trusted.length) return false;
+  const at = normalized.lastIndexOf("@");
+  const domain = at >= 0 ? normalized.slice(at + 1) : "";
+  return trusted.some((entry) => {
+    const t = entry.trim().toLowerCase();
+    if (!t) return false;
+    if (t.startsWith("@")) return Boolean(domain) && domain === t.slice(1);
+    if (t.includes("@")) return normalized === t;
+    return Boolean(domain) && domain === t;
+  });
+}
+
+export function allowRemoteImagesForSender(
+  policy: RemoteImagePolicy,
+  senderEmail: string,
+  trusted: readonly string[],
+): boolean {
+  if (policy === "always") return true;
+  if (policy === "never") return false;
+  return isTrustedImageSender(senderEmail, trusted);
+}
+
 export function loadPreferences(): Preferences {
   try {
     const raw =
@@ -296,6 +330,7 @@ export function loadPreferences(): Preferences {
     if (!raw) return { ...defaultPreferences };
     const saved = JSON.parse(raw) as Partial<Preferences> & {
       aiBridge?: string;
+      blockRemoteImages?: boolean;
     };
     const parsed = {
       ...defaultPreferences,
@@ -308,7 +343,17 @@ export function loadPreferences(): Preferences {
         ...defaultPreferences.shortcutOverrides,
         ...(saved.shortcutOverrides ?? {}),
       },
-    } as Preferences & { aiBridge?: string; layout?: string };
+      trustedImageSenders: Array.isArray(saved.trustedImageSenders)
+        ? saved.trustedImageSenders
+            .map((s) => String(s).trim())
+            .filter(Boolean)
+        : defaultPreferences.trustedImageSenders,
+    } as Preferences & {
+      aiBridge?: string;
+      layout?: string;
+      blockRemoteImages?: boolean;
+      remoteImagePolicy?: string;
+    };
     // CASA was removed — migrate saved preference to Cursor.
     if ((parsed.aiBridge as string) === "casa") {
       parsed.aiBridge = "cursor";
@@ -321,6 +366,16 @@ export function loadPreferences(): Preferences {
     if (!packs.has(parsed.shortcutPack as string)) {
       parsed.shortcutPack = defaultPreferences.shortcutPack;
     }
+    // Migrate legacy boolean → three-way policy.
+    const policies = new Set(["always", "never", "trusted"]);
+    if (!policies.has(parsed.remoteImagePolicy as string)) {
+      if (typeof saved.blockRemoteImages === "boolean") {
+        parsed.remoteImagePolicy = saved.blockRemoteImages ? "never" : "always";
+      } else {
+        parsed.remoteImagePolicy = defaultPreferences.remoteImagePolicy;
+      }
+    }
+    delete parsed.blockRemoteImages;
     return parsed;
   } catch {
     return { ...defaultPreferences };

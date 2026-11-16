@@ -46,6 +46,7 @@ import {
   type AccentId,
   type AiBridgeId,
   type Preferences,
+  type RemoteImagePolicy,
 } from "./preferences";
 import {
   designedSignatureHtml,
@@ -249,6 +250,7 @@ export function SettingsModal({
   );
   const [accountBusy, setAccountBusy] = useState<string | null>(null);
   const [accountNote, setAccountNote] = useState<string | null>(null);
+  const [trustedDraft, setTrustedDraft] = useState("");
   const navSearchRef = useRef<HTMLInputElement>(null);
   const [secretStatus, setSecretStatus] = useState<Record<AiSecretId, boolean>>({
     openai: false,
@@ -1838,18 +1840,126 @@ export function SettingsModal({
                   Mail never routes through Intray servers. Device ↔ provider
                   only. License checks send a key — never message content.
                 </div>
-                <Block title="Privacy">
+                <Block
+                  title="Remote images"
+                  hint="Remote http(s) images can reveal that you opened a message. Per-message Load images still works when blocked."
+                >
                   <Row
-                    title="Block remote images"
-                    hint="Stop trackers until you choose to load"
+                    title="Download policy"
+                    hint="Always, never, or only from trusted senders"
                   >
-                    <Toggle
-                      on={prefs.blockRemoteImages}
-                      onChange={(blockRemoteImages) =>
-                        patch({ blockRemoteImages })
+                    <Select
+                      value={prefs.remoteImagePolicy}
+                      onChange={(remoteImagePolicy: RemoteImagePolicy) =>
+                        patch({ remoteImagePolicy })
                       }
+                      options={[
+                        { id: "always", label: "Always download" },
+                        { id: "never", label: "Never download" },
+                        {
+                          id: "trusted",
+                          label: "Trusted sources only",
+                        },
+                      ]}
                     />
                   </Row>
+                  {prefs.remoteImagePolicy === "trusted" && (
+                    <div className="trusted-image-editor">
+                      <p className="settings-inline-note">
+                        Add full addresses or domains — e.g.{" "}
+                        <code>ava@northwind.io</code>,{" "}
+                        <code>@northwind.io</code>, or{" "}
+                        <code>northwind.io</code>.
+                      </p>
+                      <div className="trusted-image-add">
+                        <input
+                          className="settings-input settings-input-wide"
+                          type="text"
+                          spellCheck={false}
+                          placeholder="email@domain.com or @domain.com"
+                          value={trustedDraft}
+                          onChange={(e) => setTrustedDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter") return;
+                            e.preventDefault();
+                            const next = trustedDraft.trim();
+                            if (!next) return;
+                            const existing = prefs.trustedImageSenders.map(
+                              (s) => s.toLowerCase(),
+                            );
+                            if (existing.includes(next.toLowerCase())) {
+                              setTrustedDraft("");
+                              return;
+                            }
+                            patch({
+                              trustedImageSenders: [
+                                ...prefs.trustedImageSenders,
+                                next,
+                              ],
+                            });
+                            setTrustedDraft("");
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="compose settings-add"
+                          disabled={!trustedDraft.trim()}
+                          onClick={() => {
+                            const next = trustedDraft.trim();
+                            if (!next) return;
+                            const existing = prefs.trustedImageSenders.map(
+                              (s) => s.toLowerCase(),
+                            );
+                            if (existing.includes(next.toLowerCase())) {
+                              setTrustedDraft("");
+                              return;
+                            }
+                            patch({
+                              trustedImageSenders: [
+                                ...prefs.trustedImageSenders,
+                                next,
+                              ],
+                            });
+                            setTrustedDraft("");
+                          }}
+                        >
+                          <Plus size={15} strokeWidth={2} />
+                          Add
+                        </button>
+                      </div>
+                      {prefs.trustedImageSenders.length > 0 ? (
+                        <ul className="trusted-image-list">
+                          {prefs.trustedImageSenders.map((entry) => (
+                            <li key={entry} className="trusted-image-chip">
+                              <span>{entry}</span>
+                              <button
+                                type="button"
+                                className="trusted-image-chip-x"
+                                aria-label={`Remove ${entry}`}
+                                onClick={() =>
+                                  patch({
+                                    trustedImageSenders:
+                                      prefs.trustedImageSenders.filter(
+                                        (s) => s !== entry,
+                                      ),
+                                  })
+                                }
+                              >
+                                <X size={12} strokeWidth={2} />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="settings-inline-note">
+                          No trusted sources yet — remote images stay blocked
+                          until you add one or load them on a message.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </Block>
+                <Block title="Privacy">
                   <Row title="Analytics" hint="Off by default — nothing phones home">
                     <Toggle
                       on={prefs.analytics}
