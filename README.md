@@ -37,7 +37,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 | --- | --- |
 | **Unified inbox** | Gmail (app password or OAuth) + IMAP/SMTP accounts in one UI |
 | **Privacy by architecture** | Device ↔ provider only; credentials encrypted with Windows DPAPI |
-| **Local / BYO AI** | OpenAI, Anthropic, Gemini, Grok, Ollama, Claude Code, Codex, Cursor — keys stay on this PC |
+| **Local / BYO AI** | OpenAI, Anthropic, Gemini, Grok CLI (`grok login`), Ollama, Claude Code, Codex, Cursor — secrets stay on this PC |
 | **MCP** | Localhost tools so Cursor / Claude / Codex can search and read mail |
 | **Tray-first** | System tray triage, notifications, optional start with Windows |
 
@@ -245,11 +245,12 @@ Credentials are encrypted with Windows DPAPI on this machine. Mail syncs provide
 
 **Settings → AI & agents** supports:
 
-- OpenAI, Grok (xAI), Anthropic, Gemini
+- OpenAI, Anthropic, Gemini (API keys)
+- Grok via the local `grok` CLI (`grok login`) — same sign-in style as Cursor/T3; xAI API key remains a fallback
 - Ollama (local)
 - Claude Code, Codex, Cursor-oriented setups
 
-API keys are encrypted with DPAPI. Mail content is sent only to the AI provider **you** configure — never through an Intray backend.
+API keys (when used) are encrypted with DPAPI. Mail content is sent only to the AI provider **you** configure — never through an Intray backend.
 
 ### MCP server
 
