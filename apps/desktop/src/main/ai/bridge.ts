@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { accessSync, constants } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { parseCursorModelList } from "./cursorModels";
+import { parseGrokModelList } from "./grokModels";
 import { loadAiSecret, type AiSecretId } from "./secretAccess";
 
 export type AiProviderId =
@@ -103,6 +104,14 @@ function wellKnownBins(cmd: string): string[] {
     return win
       ? [join(local, "opencode", "opencode.exe"), join(home, ".opencode", "bin", "opencode.exe")]
       : [join(home, ".opencode", "bin", "opencode"), "/usr/local/bin/opencode"];
+  }
+  if (cmd === "grok") {
+    return win
+      ? [
+          join(home, ".grok", "bin", "grok.exe"),
+          join(local, "grok", "grok.exe"),
+        ]
+      : [join(home, ".grok", "bin", "grok"), "/usr/local/bin/grok"];
   }
   return [];
 }
@@ -529,6 +538,41 @@ async function listCursorModels(bin: string): Promise<ListedModels> {
   }
 }
 
+async function listGrokCliModels(bin: string): Promise<ListedModels> {
+  try {
+    const { stdout, stderr } = await runProcess(bin, ["models"], {
+      timeoutMs: 8000,
+      env: { NO_OPEN_BROWSER: "1" },
+    });
+    const blob = `${stdout}\n${stderr}`;
+    const models = parseGrokModelList(blob);
+    if (models.length) return { models };
+    const lower = blob.toLowerCase();
+    if (
+      lower.includes("not logged") ||
+      lower.includes("authentication") ||
+      lower.includes("run grok login") ||
+      lower.includes("please log in") ||
+      lower.includes("login required")
+    ) {
+      return {
+        models: [],
+        detail:
+          "Grok CLI is installed but not signed in. Run grok login, then check the connection.",
+      };
+    }
+    return {
+      models: [],
+      detail: "Grok CLI is installed, but it didn’t return a model list.",
+    };
+  } catch {
+    return {
+      models: [],
+      detail: "Grok CLI is installed, but the model list didn’t come back.",
+    };
+  }
+}
+
 function ollamaHost(): string {
   const raw = loadAiSecret("ollama") || "http://127.0.0.1:11434";
   return /^https?:\/\//i.test(raw)
@@ -633,12 +677,26 @@ export async function listProviderModels(
         "Connect OpenAI by adding an API key above, then check the connection.",
         (key) => listOpenAiModels("https://api.openai.com/v1", key),
       );
-    case "grok":
+    case "grok": {
+      const bin = which("grok", bridgePath);
+      if (bin) {
+        const listed = await listGrokCliModels(bin);
+        if (!listed.models.length) {
+          return {
+            connected: true,
+            models: [],
+            detail: listed.detail,
+          };
+        }
+        return { connected: true, models: listed.models };
+      }
+      // Saved xAI API key remains a fallback when the CLI isn’t installed.
       return listKeyedModels(
         "grok",
-        "Connect Grok by adding an API key above, then check the connection.",
+        "Connect Grok on this PC — install the grok CLI and run grok login, or paste its path — then check the connection.",
         (key) => listOpenAiModels("https://api.x.ai/v1", key),
       );
+    }
     case "anthropic":
       return listKeyedModels(
         "anthropic",
@@ -686,12 +744,18 @@ async function cliPrompt(
   args: string[],
   prompt: string,
   system?: string,
-  opts?: { passPromptAsArg?: boolean },
+  opts?: {
+    /** Append the prompt as a trailing argv (Cursor-style). */
+    passPromptAsArg?: boolean;
+    /** Prompt is already inside `args` (Grok `-p <prompt>`). */
+    argsIncludePrompt?: boolean;
+  },
 ): Promise<AiCompleteResult> {
   const full = system ? `${system}\n\n${prompt}` : prompt;
   const argv = opts?.passPromptAsArg ? [...args, full] : args;
   const { stdout, stderr, code } = await runProcess(bin, argv, {
-    input: opts?.passPromptAsArg ? undefined : full,
+    input:
+      opts?.passPromptAsArg || opts?.argsIncludePrompt ? undefined : full,
     timeoutMs: 180_000,
     // A mail action must not open a login browser. Auth errors come back as text.
     env: { NO_OPEN_BROWSER: "1" },
@@ -744,6 +808,8 @@ export async function detectProviders(
   const codexPath = which("codex", bridgePath);
   const cursorPath = resolveCursorAgent(bridgePath);
   const opencodePath = which("opencode", bridgePath);
+  const grokPath = which("grok", bridgePath);
+  const grokKey = secret("grok");
 
   return [
     {
@@ -753,8 +819,13 @@ export async function detectProviders(
     },
     {
       id: "grok",
-      available: secret("grok"),
-      reason: secret("grok") ? undefined : "Add an xAI / Grok API key in Settings",
+      available: Boolean(grokPath) || grokKey,
+      path: grokPath ?? undefined,
+      reason: grokPath
+        ? undefined
+        : grokKey
+          ? undefined
+          : "grok CLI not found (install grok, run grok login, or set its path)",
     },
     {
       id: "anthropic",
@@ -823,6 +894,7 @@ export function pickLiveModel(
 }
 
 const CLI_PROVIDERS = new Set<AiProviderId>([
+  "grok",
   "claude-code",
   "codex",
   "cursor",
@@ -866,12 +938,48 @@ export async function completeAi(
       }).then((r) => ({ ...r, provider: "openai" }));
     }
     case "grok": {
+      const bin = which("grok", input.bridgePath);
+      if (bin) {
+        // Single-turn: grok wants `-p <prompt>` (value flag), not a trailing argv.
+        const full = system
+          ? `${system}\n\n${input.prompt}`
+          : input.prompt;
+        const args = [
+          "-p",
+          full,
+          "--output-format",
+          "plain",
+          "--disable-web-search",
+          "--no-plan",
+          "--no-subagents",
+          "--permission-mode",
+          "dontAsk",
+        ];
+        if (model) args.push("-m", model);
+        return cliPrompt("grok", bin, args, input.prompt, system, {
+          argsIncludePrompt: true,
+        });
+      }
       const key = loadAiSecret("grok");
-      if (!key) throw new Error("Grok / xAI API key missing");
+      if (!key) {
+        throw new Error(
+          "Grok CLI not found. Install grok, run grok login, or set its path in Settings.",
+        );
+      }
+      if (!model) {
+        const listed = await listProviderModels("grok", input.bridgePath);
+        model = pickLiveModel(undefined, listed.models);
+        if (!model) {
+          throw new Error(
+            listed.detail ||
+              "No model was reported. Check the connection, then pick a model in Settings.",
+          );
+        }
+      }
       return openAiCompatible({
         baseUrl: "https://api.x.ai/v1",
         apiKey: key,
-        model: model!,
+        model,
         system,
         prompt: input.prompt,
         maxTokens: input.maxTokens,

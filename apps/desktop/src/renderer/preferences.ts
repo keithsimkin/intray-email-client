@@ -257,10 +257,12 @@ export const aiBridgeMeta: Record<AiBridgeId, AiBridgeMeta> = {
   },
   grok: {
     name: "Grok",
-    blurb: "xAI Grok via your API key. Device ↔ xAI only.",
+    blurb:
+      "Uses the Grok CLI on this PC (grok login). Same sign-in path as T3 — no API key required.",
     status: "optional",
-    needsKey: true,
-    kind: "api",
+    kind: "cli",
+    binary: "grok",
+    pathPlaceholder: String.raw`e.g. C:\Users\…\.grok\bin\grok.exe`,
   },
   anthropic: {
     name: "Anthropic",

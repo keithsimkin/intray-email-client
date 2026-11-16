@@ -437,8 +437,8 @@ export function SettingsModal({
   }, [recordingAction, chordPending, onChange, prefs]);
 
   const secretIdForBridge = (id: AiBridgeId): AiSecretId | null => {
-    if (id === "openai" || id === "grok" || id === "anthropic" || id === "gemini")
-      return id;
+    // Grok is CLI-first (grok login); do not gate it on an API key field.
+    if (id === "openai" || id === "anthropic" || id === "gemini") return id;
     if (id === "ollama") return "ollama";
     return null;
   };
