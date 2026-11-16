@@ -29,9 +29,13 @@ export type ShortcutDef = {
   action: ShortcutAction;
   label: string;
   group: "Navigate" | "Actions" | "Compose" | "Jump" | "Help";
-  /** Display keys for the active pack */
+  /** Display keys for the active pack (or override) */
   keys: string;
+  /** True when keys come from a user override */
+  customized?: boolean;
 };
+
+export type ShortcutOverrides = Partial<Record<ShortcutAction, string>>;
 
 type PackBinding = {
   action: ShortcutAction;
@@ -462,7 +466,22 @@ const labels: Record<ShortcutAction, { label: string; group: ShortcutDef["group"
   help: { label: "Show shortcut cheat sheet", group: "Help" },
 };
 
-export function listShortcuts(pack: ShortcutPackId): ShortcutDef[] {
+function defaultKeysFor(pack: ShortcutPackId, action: ShortcutAction): string | null {
+  if (action === "askAi") return pack === "superhuman" ? "Ctrl+K" : "Ctrl+/";
+  if (action === "compose") return "Ctrl+N";
+  if (action === "replyAll" && pack === "superhuman") return "Enter";
+  for (const b of packs[pack]) {
+    if (b.action !== action) continue;
+    if (b.keys === "Ctrl+E" && b.action === "search") continue;
+    return b.keys;
+  }
+  return null;
+}
+
+export function listShortcuts(
+  pack: ShortcutPackId,
+  overrides: ShortcutOverrides = {},
+): ShortcutDef[] {
   const seen = new Set<ShortcutAction>();
   const out: ShortcutDef[] = [];
   for (const b of packs[pack]) {
@@ -470,33 +489,155 @@ export function listShortcuts(pack: ShortcutPackId): ShortcutDef[] {
     // skip dead outlook search binding
     if (b.keys === "Ctrl+E" && b.action === "search") continue;
     if (b.action === "replyAll" && pack === "superhuman") {
+      const custom = overrides.replyAll;
       out.push({
         action: "replyAll",
         label: "Reply all (when reading)",
         group: "Compose",
-        keys: "Enter",
+        keys: custom ?? "Enter",
+        customized: Boolean(custom),
       });
       seen.add(b.action);
       continue;
     }
     const meta = labels[b.action];
-    out.push({ action: b.action, label: meta.label, group: meta.group, keys: b.keys });
+    const custom = overrides[b.action];
+    out.push({
+      action: b.action,
+      label: meta.label,
+      group: meta.group,
+      keys: custom ?? b.keys,
+      customized: Boolean(custom),
+    });
     seen.add(b.action);
   }
   // Always document global Intray chords
-  out.push({
-    action: "askAi",
-    label: "Ask AI",
-    group: "Compose",
-    keys: pack === "superhuman" ? "Ctrl+K" : "Ctrl+/",
-  });
-  out.push({
-    action: "compose",
-    label: "Compose (global)",
-    group: "Compose",
-    keys: "Ctrl+N",
-  });
+  for (const action of ["askAi", "compose"] as const) {
+    if (seen.has(action)) continue;
+    const meta = labels[action];
+    const packDefault = defaultKeysFor(pack, action)!;
+    const custom = overrides[action];
+    out.push({
+      action,
+      label: action === "compose" ? "Compose (global)" : "Ask AI",
+      group: meta.group,
+      keys: custom ?? packDefault,
+      customized: Boolean(custom),
+    });
+    seen.add(action);
+  }
   return out;
+}
+
+/** Build a display binding from a key event (e.g. "Ctrl+E", "J"). */
+export function bindingFromEvent(e: KeyboardEvent): string | null {
+  if (["Control", "Meta", "Alt", "Shift"].includes(e.key)) return null;
+  const parts: string[] = [];
+  if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
+  if (e.altKey) parts.push("Alt");
+  if (e.shiftKey) parts.push("Shift");
+
+  let keyLabel: string;
+  if (e.key === " ") keyLabel = "Space";
+  else if (e.key === "Enter") keyLabel = "Enter";
+  else if (e.key === "Escape") keyLabel = "Esc";
+  else if (e.key === "Backspace") keyLabel = "Backspace";
+  else if (e.key === "Delete") keyLabel = "Delete";
+  else if (e.key === "ArrowUp") keyLabel = "↑";
+  else if (e.key === "ArrowDown") keyLabel = "↓";
+  else if (e.key === "ArrowLeft") keyLabel = "←";
+  else if (e.key === "ArrowRight") keyLabel = "→";
+  else if (e.key.length === 1) keyLabel = e.key.toUpperCase();
+  else keyLabel = e.key;
+
+  // Avoid double-counting shift for symbols already shifted (#, !, etc.)
+  if (
+    e.shiftKey &&
+    e.key.length === 1 &&
+    !/[a-zA-Z0-9]/.test(e.key) &&
+    parts[parts.length - 1] === "Shift"
+  ) {
+    parts.pop();
+  }
+
+  parts.push(keyLabel);
+  return parts.join("+");
+}
+
+function matchModKey(spec: string, e: KeyboardEvent): boolean {
+  const bits = spec
+    .trim()
+    .toLowerCase()
+    .split("+")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!bits.length) return false;
+  const key = bits[bits.length - 1]!;
+  const mods = new Set(bits.slice(0, -1));
+  const wantCtrl =
+    mods.has("ctrl") ||
+    mods.has("control") ||
+    mods.has("cmd") ||
+    mods.has("meta") ||
+    mods.has("⌘");
+  const wantShift = mods.has("shift");
+  const wantAlt = mods.has("alt") || mods.has("option") || mods.has("⌥");
+  const hasCtrl = e.ctrlKey || e.metaKey;
+  if (wantCtrl !== hasCtrl) return false;
+  if (wantShift !== e.shiftKey) return false;
+  if (wantAlt !== e.altKey) return false;
+
+  if (key === "enter" && e.key === "Enter") return true;
+  if ((key === "esc" || key === "escape") && e.key === "Escape") return true;
+  if (key === "space" && e.key === " ") return true;
+  if (key === "backspace" && e.key === "Backspace") return true;
+  if (key === "delete" && e.key === "Delete") return true;
+  if ((key === "↑" || key === "up" || key === "arrowup") && e.key === "ArrowUp")
+    return true;
+  if (
+    (key === "↓" || key === "down" || key === "arrowdown") &&
+    e.key === "ArrowDown"
+  )
+    return true;
+  if (
+    (key === "←" || key === "left" || key === "arrowleft") &&
+    e.key === "ArrowLeft"
+  )
+    return true;
+  if (
+    (key === "→" || key === "right" || key === "arrowright") &&
+    e.key === "ArrowRight"
+  )
+    return true;
+  if ((key === "#" || key === "hash") && (e.key === "#" || e.code === "Digit3"))
+    return true;
+  return keyOf(e) === key;
+}
+
+/** Match a stored binding ("Ctrl+E", "J", "G I") against the current event. */
+export function matchBinding(
+  binding: string,
+  e: KeyboardEvent,
+  chord: string | null,
+): true | { chord: string } | false {
+  const normalized = binding.replace(/\s+then\s+/gi, " ").trim();
+  if (!normalized) return false;
+  const parts = normalized.split(/\s+/);
+
+  if (
+    parts.length === 2 &&
+    !parts[0]!.includes("+") &&
+    !parts[1]!.includes("+")
+  ) {
+    const a = parts[0]!.toLowerCase();
+    const b = parts[1]!.toLowerCase();
+    if (!chord && noMod(e) && keyOf(e) === a) return { chord: a };
+    if (chord === a && noMod(e) && keyOf(e) === b) return true;
+    return false;
+  }
+
+  if (chord) return false;
+  return matchModKey(normalized.replace(/\s+/g, ""), e) ? true : false;
 }
 
 export type ResolveResult =
@@ -508,20 +649,45 @@ export function resolveShortcut(
   pack: ShortcutPackId,
   e: KeyboardEvent,
   chord: string | null,
+  overrides: ShortcutOverrides = {},
 ): ResolveResult {
-  if (isTypingTarget(e.target) && !(e.ctrlKey || e.metaKey)) {
-    return { type: "none" };
+  // Let inputs own their own editing chords (Ctrl/Cmd+Z etc.).
+  if (isTypingTarget(e.target)) {
+    if (!(e.ctrlKey || e.metaKey)) return { type: "none" };
+    const k = keyOf(e);
+    if (k === "z" || k === "y" || k === "a" || k === "c" || k === "v" || k === "x") {
+      return { type: "none" };
+    }
   }
 
-  // Global always-on
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+  // User overrides win over pack defaults.
+  for (const [action, binding] of Object.entries(overrides) as [
+    ShortcutAction,
+    string,
+  ][]) {
+    if (!binding) continue;
+    const hit = matchBinding(binding, e, chord);
+    if (hit === true) return { type: "action", action };
+    if (hit && typeof hit === "object" && "chord" in hit) {
+      return { type: "chord", chord: hit.chord };
+    }
+  }
+
+  // Global always-on (unless overridden above)
+  if (!overrides.compose && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
     return { type: "action", action: "compose" };
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+  if (
+    !overrides.askAi &&
+    (e.ctrlKey || e.metaKey) &&
+    (e.key === "/" || (pack === "superhuman" && e.key.toLowerCase() === "k"))
+  ) {
     return { type: "action", action: "askAi" };
   }
 
   for (const b of packs[pack]) {
+    // Skip pack binding when this action is customized
+    if (overrides[b.action]) continue;
     const r = b.match(e, chord);
     if (r === false || r === null) continue;
     if (typeof r === "string" && r.startsWith("chord:")) {
