@@ -101,6 +101,8 @@ const BODY_FETCH_CONCURRENCY = 4;
 
 const bodyFetches = new Map<string, Promise<void>>();
 const threadBackfills = new Map<string, Promise<void>>();
+/** headIds waiting on a shared thread backfill so each gets a final broadcast. */
+const threadBackfillHeads = new Map<string, Set<string>>();
 
 function broadcastMailUpdated(message: MessageDto): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -205,19 +207,32 @@ function backfillThreadBodies(
   const threadKey = head
     ? `${head.account_id}:${head.thread_id}`
     : headId;
+  let heads = threadBackfillHeads.get(threadKey);
+  if (!heads) {
+    heads = new Set();
+    threadBackfillHeads.set(threadKey, heads);
+  }
+  heads.add(headId);
+
   const existing = threadBackfills.get(threadKey);
   if (existing) return existing;
 
   const task = (async () => {
     const missing = rows.filter((r) => !getBody(r.id));
-    if (!missing.length) return;
-    await mapLimit(missing, BODY_FETCH_CONCURRENCY, async (r) => {
-      await ensureBodyForRow(r, account);
-    });
-    const dto = buildMessageDto(headId);
-    if (dto) broadcastMailUpdated(dto);
+    if (missing.length) {
+      await mapLimit(missing, BODY_FETCH_CONCURRENCY, async (r) => {
+        await ensureBodyForRow(r, account);
+      });
+    }
+    const waiting = threadBackfillHeads.get(threadKey);
+    if (!waiting) return;
+    for (const id of waiting) {
+      const dto = buildMessageDto(id);
+      if (dto) broadcastMailUpdated(dto);
+    }
   })().finally(() => {
     threadBackfills.delete(threadKey);
+    threadBackfillHeads.delete(threadKey);
   });
 
   threadBackfills.set(threadKey, task);

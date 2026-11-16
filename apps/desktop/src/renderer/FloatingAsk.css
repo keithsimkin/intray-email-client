@@ -38,7 +38,8 @@
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
-  overflow: hidden;
+  /* Visible so the mention/thread picker can rise above the composer. */
+  overflow: visible;
 }
 
 .float-ask-pane.idle {
@@ -138,6 +139,7 @@
   min-height: 0;
   padding: 4px 12px 8px;
   overflow: auto;
+  border-radius: 0;
 }
 
 .float-ask-turn.user {
@@ -378,6 +380,7 @@ span.float-ask-trace-chip {
   box-shadow: none;
   cursor: text;
   flex-shrink: 0;
+  overflow: visible;
 }
 
 .float-ask-pane.idle .float-ask-box {

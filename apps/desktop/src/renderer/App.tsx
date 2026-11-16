@@ -708,6 +708,7 @@ function TitleBar({
           <button
             type="button"
             className={`icon-btn${askOpen ? " active" : ""}`}
+            data-ask-trigger="true"
             aria-label="Ask AI across inbox"
             title="Ask AI · all mail"
             onClick={() => {
@@ -3264,6 +3265,7 @@ function ReadingPane({
             <button
               type="button"
               className="pill-btn"
+              data-ask-trigger="true"
               onClick={onAsk}
               title="Ask AI about this mail"
             >
@@ -4770,7 +4772,11 @@ export default function App() {
     const offUpdated = bridgeOnMailUpdated(({ message }) => {
       const ui = messageDtoToUi(message);
       setMail((prev) =>
-        prev.map((m) => (m.id === ui.id ? ui : m)),
+        prev.map((m) => {
+          if (m.id !== ui.id) return m;
+          // Keep renderer-assigned tags when the DTO has none yet.
+          return { ...ui, tag: ui.tag ?? m.tag };
+        }),
       );
     });
     return () => {
@@ -4791,7 +4797,10 @@ export default function App() {
       if (cancelled || !dto) return;
       const updated = messageDtoToUi(dto);
       setMail((prev) =>
-        prev.map((m) => (m.id === selectedId ? updated : m)),
+        prev.map((m) => {
+          if (m.id !== selectedId) return m;
+          return { ...updated, tag: updated.tag ?? m.tag };
+        }),
       );
     });
     return () => {
@@ -5466,7 +5475,8 @@ export default function App() {
       )
       .slice(0, 8);
     if (!pending.length) return;
-    for (const message of pending) autoLabeledRef.current.add(message.id);
+    const inFlight = pending.map((message) => message.id);
+    for (const id of inFlight) autoLabeledRef.current.add(id);
     let cancelled = false;
     void aiLabelMessages(prefs, pending, labels)
       .then((assigned) => {
@@ -5485,12 +5495,16 @@ export default function App() {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        // Allow a later effect pass to retry failed IDs.
+        for (const id of inFlight) autoLabeledRef.current.delete(id);
         showToast(
           error instanceof Error ? error.message : "Auto-label failed",
         );
       });
     return () => {
       cancelled = true;
+      // Body hydration can re-run this effect; release so labels can retry.
+      for (const id of inFlight) autoLabeledRef.current.delete(id);
     };
   }, [
     prefs.aiAutoLabel,
@@ -5675,6 +5689,12 @@ export default function App() {
         if (!showAi) break;
         if (askOpen && !askFocusThread) {
           setAskOpen(false);
+          setAskFocusThread(false);
+          window.setTimeout(() => {
+            document
+              .querySelector<HTMLElement>("[data-ask-trigger]")
+              ?.focus();
+          }, 0);
         } else {
           setAskFocusThread(false);
           setAskOpen(true);
@@ -6170,9 +6190,19 @@ export default function App() {
       {showAi && (
         <FloatingAsk
           open={askOpen}
-          onOpenChange={(open) => {
+          onOpenChange={(open, meta) => {
             setAskOpen(open);
-            if (!open) setAskFocusThread(false);
+            if (!open) {
+              setAskFocusThread(false);
+              if (meta?.restoreFocus) {
+                window.setTimeout(() => {
+                  const trigger = document.querySelector<HTMLElement>(
+                    "[data-ask-trigger]",
+                  );
+                  trigger?.focus();
+                }, 0);
+              }
+            }
           }}
           mail={mail}
           labels={labels}

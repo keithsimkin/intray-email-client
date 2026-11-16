@@ -392,7 +392,10 @@ export function FloatingAsk({
   onOpenSettings,
 }: {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  onOpenChange: (
+    open: boolean,
+    meta?: { restoreFocus?: boolean },
+  ) => void;
   mail: Message[];
   labels: Label[];
   focusMessage: Message | null;
@@ -524,7 +527,7 @@ export function FloatingAsk({
         setPickerQuery("");
         return;
       }
-      onOpenChange(false);
+      onOpenChange(false, { restoreFocus: true });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -565,10 +568,23 @@ export function FloatingAsk({
     if (open) window.setTimeout(() => inputRef.current?.focus(), 0);
   }, [open]);
 
-  function collapse() {
-    onOpenChange(false);
+  function collapse(opts?: { restoreFocus?: boolean }) {
+    onOpenChange(false, { restoreFocus: opts?.restoreFocus ?? true });
     setPickerOpen(false);
     setPickerQuery("");
+  }
+
+  function focusAskInputIfStillOurs() {
+    window.setTimeout(() => {
+      const active = document.activeElement;
+      if (
+        !active ||
+        active === document.body ||
+        boxRef.current?.contains(active)
+      ) {
+        inputRef.current?.focus();
+      }
+    }, 0);
   }
 
   function readCaret(node: HTMLTextAreaElement) {
@@ -687,7 +703,7 @@ export function FloatingAsk({
     });
 
     setBusy(false);
-    window.setTimeout(() => inputRef.current?.focus(), 0);
+    focusAskInputIfStillOurs();
   }
 
   function onComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -744,7 +760,7 @@ export function FloatingAsk({
                   onClick={(event) => {
                     event.stopPropagation();
                     onOpenMessage(chip.message!.id);
-                    collapse();
+                    collapse({ restoreFocus: false });
                   }}
                 >
                   <span className="float-ask-face" aria-hidden>
@@ -836,6 +852,7 @@ export function FloatingAsk({
             className="float-ask-writer"
             onClick={(event) => {
               event.stopPropagation();
+              collapse({ restoreFocus: false });
               onOpenSettings();
             }}
             title="AI provider"
@@ -1053,7 +1070,7 @@ export function FloatingAsk({
                           className="float-ask-pull"
                           onClick={() => {
                             onOpenMessage(pull.messageId);
-                            collapse();
+                            collapse({ restoreFocus: false });
                           }}
                         >
                           <time>{pull.at ?? "Mail"}</time>
