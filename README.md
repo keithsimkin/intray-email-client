@@ -35,7 +35,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 
 | Pillar | What it means |
 | --- | --- |
-| **Unified inbox** | Gmail OAuth + IMAP/SMTP accounts in one UI |
+| **Unified inbox** | Gmail (app password or OAuth) + IMAP/SMTP accounts in one UI |
 | **Privacy by architecture** | Device ↔ provider only; credentials encrypted with Windows DPAPI |
 | **Local / BYO AI** | OpenAI, Anthropic, Gemini, Grok, Ollama, Claude Code, Codex, Cursor — keys stay on this PC |
 | **MCP** | Localhost tools so Cursor / Claude / Codex can search and read mail |
@@ -52,7 +52,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 - [Quick start](#quick-start)
 - [Desktop app](#desktop-app)
   - [Run in development](#run-in-development)
-  - [Connect Gmail (OAuth)](#connect-gmail-oauth)
+  - [Connect Gmail](#connect-gmail)
   - [Connect IMAP accounts](#connect-imap-accounts)
   - [AI providers](#ai-providers)
   - [MCP server](#mcp-server)
@@ -77,7 +77,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 | **[Bun](https://bun.sh)** | 1.3+ | Package manager and script runner for this monorepo |
 | **[Rust](https://rustup.rs)** | stable (MSVC) | Builds `@intray/native` (mail SQLite store) |
 | **Git** | recent | Clone and contribute |
-| **Google Cloud project** | optional | Only needed for live Gmail OAuth |
+| **Google Cloud project** | optional | Only for the Gmail “Sign in with Google” tester flow. App passwords do not need it |
 
 Install Bun on Windows (PowerShell):
 
@@ -106,7 +106,7 @@ windows-unified-mail/          # repo root (package name: intray)
 │   │   ├── src/renderer/      # React UI
 │   │   ├── src/shared/        # shared types
 │   │   ├── resources/         # app / tray icons
-│   │   └── .env.example       # Gmail OAuth template
+│   │   └── .env.example       # Optional Gmail OAuth template
 │   └── web/                   # @intray/web — Next.js marketing site (Netlify)
 ├── crates/
 │   └── intray-native/         # @intray/native — Rust SQLite + FTS5 (napi-rs)
@@ -173,13 +173,37 @@ bun run preview
 bun run build
 ```
 
-### Connect Gmail (OAuth)
+### Connect Gmail
 
-Gmail uses a **Google Desktop OAuth client**. Tokens are stored on this PC via Electron `safeStorage` (Windows DPAPI).
+Gmail has two sign-in paths. **App password over IMAP/SMTP is the default** and works for any account that can create app passwords — no Google Cloud project and no restricted-scope verification. **Sign in with Google** stays available for testers when `GMAIL_CLIENT_ID` is set. Both store secrets on this PC with Electron `safeStorage` (Windows DPAPI). Mail goes device ↔ Google. There is no Intray relay.
+
+#### App password (recommended)
+
+1. Turn on [2-Step Verification](https://myaccount.google.com/signinoptions/two-step-verification) for the Google account.
+2. Create an app password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). Google shows 16 letters in four groups (`abcd efgh ijkl mnop`). Paste them with or without spaces — Intray strips the spaces.
+3. In Gmail on the web: **Settings → See all settings → Forwarding and POP/IMAP → Enable IMAP**.
+4. In Intray: **Add account → Gmail**. Enter the full Gmail address and the app password.
+
+Servers (filled in for you; 587 STARTTLS works if you change the SMTP port):
+
+| | Host | Port | Security |
+| --- | --- | --- | --- |
+| IMAP | `imap.gmail.com` | 993 | TLS |
+| SMTP | `smtp.gmail.com` | 465 | TLS |
+
+The username is the full email address. Do not use your normal Google password.
+
+Some **Workspace, school, and Advanced Protection** accounts cannot create app passwords. If the button is missing, or Gmail returns an auth error after you paste a normal password, that account needs the OAuth tester flow below — or an admin has to allow app passwords / IMAP.
+
+Intray reads Gmail’s special-use mailboxes (`All Mail`, `Sent`, `Drafts`, `Spam`, `Trash`, `Starred`, `Important`) and Gmail’s `X-GM-MSGID` / `X-GM-LABELS` / `X-GM-THRID` extensions. Sync follows **All Mail** plus Spam and Trash so the same message is not listed once per label.
+
+#### Google sign-in (beta / testers)
+
+OAuth uses restricted Gmail scopes, so Google only allows users you list as test users until the app passes verification. The button is hidden until a client id is configured, and it is labeled **Sign in with Google (beta / testers)**.
 
 1. Open [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services**.
-2. Create or select a project.
-3. Enable the **Gmail API**.
+2. Create or select a project and enable the **Gmail API**.
+3. **OAuth consent screen** → add yourself under **Test users**.
 4. **Credentials** → **Create credentials** → **OAuth client ID** → type **Desktop app**.
 5. Copy the client ID into `apps/desktop/.env`:
 
@@ -193,24 +217,25 @@ copy .env.example .env
 Template ([`apps/desktop/.env.example`](apps/desktop/.env.example)):
 
 ```env
-# Google Cloud Console → APIs & Services → Credentials
-# Create an OAuth client ID of type "Desktop app"
-# Enable Gmail API on the project.
+# Optional. App-password Gmail does not need this.
+# Desktop OAuth client for "Sign in with Google (beta / testers)".
+# Restricted Gmail scopes: only consent-screen test users can sign in
+# until Google verifies the app. Enable the Gmail API on the project.
 GMAIL_CLIENT_ID=
 # Optional — only if your client is a Web application type
 # GMAIL_CLIENT_SECRET=
 ```
 
 6. Restart the desktop app (`bun run dev:desktop`).
-7. In the app: **Add account** → **Gmail** and finish the browser OAuth loopback flow.
+7. **Add account → Gmail → Sign in with Google (beta / testers)** and finish the browser loopback flow.
 
 > Never commit `.env`. It is gitignored. Only `.env.example` belongs in the repo.
 
 ### Connect IMAP accounts
 
-For **iCloud, Outlook.com, Yahoo, Fastmail, Zoho, AOL**, or any generic IMAP provider:
+For **Gmail, iCloud, Outlook.com, Yahoo, Fastmail, Zoho, AOL**, or any generic IMAP provider:
 
-1. Create an **app password** (or IMAP password) in that provider’s security settings.
+1. Create an **app password** (or IMAP password) in that provider’s security settings. Gmail’s steps are in [Connect Gmail](#connect-gmail).
 2. In Intray: **Add account** → pick the provider (or custom IMAP).
 3. Enter email + app password.
 
@@ -379,8 +404,10 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and how to report issues.
 
 | Symptom | What to try |
 | --- | --- |
-| `GMAIL_CLIENT_ID is not set` | Create `apps/desktop/.env` from `.env.example`, set the Desktop OAuth client ID, restart the app |
-| OAuth browser flow fails | Confirm Gmail API is enabled; client type is **Desktop app**; no conflicting `GMAIL_CLIENT_SECRET` unless you intentionally use a Web client |
+| Gmail says the password is not an app password | Turn on 2-Step Verification and paste the 16-letter app password from [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), not your normal Google password |
+| Gmail rejects the app password, or asks you to sign in with a browser | Enable IMAP in Gmail → Settings → Forwarding and POP/IMAP. Workspace, school, and Advanced Protection accounts often block app passwords |
+| `GMAIL_CLIENT_ID is not set` | Expected for app-password Gmail. Set it only if you want **Sign in with Google (beta / testers)** |
+| OAuth browser flow fails | Confirm the Gmail API is enabled, the client type is **Desktop app**, your account is a consent-screen test user, and you are not setting `GMAIL_CLIENT_SECRET` unless the client is a Web application |
 | App opens with only demo mail | Expected until an account is added — use **Add account** |
 | MCP tools unreachable | Check Settings → AI & agents that MCP is enabled; use the URL and bearer token shown there |
 | MCP returns `401 Unauthorized` | The client is missing or has an old token — copy the current snippet from Settings, or rotate the token |
@@ -440,7 +467,7 @@ Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screens
 | [docs/ui-ref/](docs/ui-ref/) | UI reference frames and screenshots |
 | [SECURITY.md](SECURITY.md) | Threat model and vulnerability reporting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to develop and submit changes |
-| [apps/desktop/.env.example](apps/desktop/.env.example) | Gmail OAuth env template |
+| [apps/desktop/.env.example](apps/desktop/.env.example) | Optional Gmail OAuth env template |
 
 ---
 

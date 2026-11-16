@@ -10,6 +10,10 @@ import {
   Shield,
   X,
 } from "lucide-react";
+import {
+  GMAIL_APP_PASSWORD_URL,
+  gmailAppPasswordFormatError,
+} from "../shared/gmailImap";
 import type { Account } from "./data/mock";
 import {
   accountDtoToUi,
@@ -44,8 +48,8 @@ const emptyDraft = (provider: MailProvider): Draft => ({
   displayName: "",
   imapHost: provider.imapHost ?? "",
   imapPort: String(provider.imapPort ?? 993),
-  smtpHost: "",
-  smtpPort: "587",
+  smtpHost: provider.smtpHost ?? "",
+  smtpPort: String(provider.smtpPort ?? 587),
   showAdvanced: provider.id === "imap",
 });
 
@@ -72,6 +76,7 @@ export function AddAccountModal({
   const [created, setCreated] = useState<Account | null>(null);
   const [live, setLive] = useState(false);
   const [gmailReady, setGmailReady] = useState<boolean | null>(null);
+  const [connectMode, setConnectMode] = useState<"imap" | "oauth">("imap");
 
   const provider = providerId ? providerById(providerId) : null;
 
@@ -93,7 +98,10 @@ export function AddAccountModal({
 
     const run = async () => {
       try {
-        if (provider.auth === "oauth" && provider.id === "gmail") {
+        if (
+          (connectMode === "oauth" || provider.auth === "oauth") &&
+          provider.id === "gmail"
+        ) {
           const account = accountDtoToUi(await bridgeAddGmail());
           if (cancelled) return;
           setCreated(account);
@@ -130,23 +138,29 @@ export function AddAccountModal({
       cancelled = true;
       timers.forEach((t) => window.clearTimeout(t));
     };
-  }, [step, provider, draft]);
+  }, [step, provider, draft, connectMode]);
 
   const pickProvider = (id: ProviderId) => {
     const p = providerById(id);
     setProviderId(id);
     setDraft(emptyDraft(p));
+    setConnectMode("imap");
     setError(null);
     setStep("auth");
   };
 
-  const startConnect = () => {
+  const startConnect = (mode: "imap" | "oauth" = "imap") => {
     if (!provider) return;
     setError(null);
-    if (provider.id === "gmail" && gmailReady === false) {
-      setError(
-        "Set GMAIL_CLIENT_ID in your environment (Google Desktop OAuth client), then restart Intray.",
-      );
+    if (mode === "oauth") {
+      if (gmailReady !== true) {
+        setError(
+          "Google sign-in needs GMAIL_CLIENT_ID and is limited to test users. Use a Gmail app password instead.",
+        );
+        return;
+      }
+      setConnectMode("oauth");
+      setStep("connecting");
       return;
     }
     if (provider.auth === "imap") {
@@ -155,14 +169,26 @@ export function AddAccountModal({
         return;
       }
       if (!draft.password.trim()) {
-        setError("Enter your password or app password.");
+        setError(
+          provider.id === "gmail"
+            ? "Enter your 16-character Gmail app password."
+            : "Enter your password or app password.",
+        );
         return;
+      }
+      if (provider.id === "gmail") {
+        const formatError = gmailAppPasswordFormatError(draft.password);
+        if (formatError) {
+          setError(formatError);
+          return;
+        }
       }
       if (provider.id === "imap" && !draft.imapHost.trim()) {
         setError("Enter the IMAP server host.");
         return;
       }
     }
+    setConnectMode("imap");
     setStep("connecting");
   };
 
@@ -226,7 +252,9 @@ export function AddAccountModal({
                   <ProviderLogo id={p.id} size={22} />
                   <span className="provider-card-text">
                     <strong>{p.name}</strong>
-                    <span>{p.auth === "oauth" ? "OAuth" : "IMAP"}</span>
+                    <span>
+                      {p.badge ?? (p.auth === "oauth" ? "OAuth" : "IMAP")}
+                    </span>
                   </span>
                   <ChevronRight
                     size={14}
@@ -237,9 +265,9 @@ export function AddAccountModal({
               ))}
             </div>
             <p className="modal-note">
-              Gmail uses Google sign-in. Apple, Outlook, Yahoo, Fastmail, and
-              other IMAP accounts use an app password — secrets stay on this PC
-              (DPAPI).
+              Gmail, iCloud, Outlook, Yahoo, and Fastmail use an app password.
+              It stays encrypted on this PC with Windows DPAPI. Google sign-in
+              stays available for Gmail testers when OAuth is configured.
             </p>
           </>
         )}
@@ -275,7 +303,7 @@ export function AddAccountModal({
                 <button
                   type="button"
                   className="send add-account-primary"
-                  onClick={startConnect}
+                  onClick={() => startConnect("oauth")}
                 >
                   <ProviderLogo id={provider.id} size={16} />
                   {provider.oauthLabel}
@@ -283,8 +311,48 @@ export function AddAccountModal({
               </>
             ) : (
               <>
-                {provider.guide && (
-                  <p className="add-account-copy">{provider.guide}</p>
+                {provider.id === "gmail" ? (
+                  <div className="add-account-copy add-account-guide">
+                    <p>
+                      Use a 16-character app password, not your normal Google
+                      password. Spaces from Google’s dialog are removed
+                      automatically.
+                    </p>
+                    <ol>
+                      <li>Turn on 2-Step Verification for this account.</li>
+                      <li>
+                        Create a password at{" "}
+                        <a
+                          href={GMAIL_APP_PASSWORD_URL}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => {
+                            if (window.intray?.openExternal) {
+                              e.preventDefault();
+                              void window.intray.openExternal(
+                                GMAIL_APP_PASSWORD_URL,
+                              );
+                            }
+                          }}
+                        >
+                          myaccount.google.com/apppasswords
+                        </a>
+                        .
+                      </li>
+                      <li>
+                        Some Workspace, school, and Advanced Protection accounts
+                        cannot create app passwords.
+                      </li>
+                      <li>
+                        If Gmail rejects the login, enable IMAP under Settings →
+                        See all settings → Forwarding and POP/IMAP.
+                      </li>
+                    </ol>
+                  </div>
+                ) : (
+                  provider.guide && (
+                    <p className="add-account-copy">{provider.guide}</p>
+                  )
                 )}
                 <label className="add-field">
                   <span>Email</span>
@@ -308,7 +376,11 @@ export function AddAccountModal({
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, password: e.target.value }))
                       }
-                      placeholder="App-specific password"
+                      placeholder={
+                        provider.id === "gmail"
+                          ? "abcd efgh ijkl mnop"
+                          : "App-specific password"
+                      }
                       autoComplete="current-password"
                     />
                     <button
@@ -415,10 +487,32 @@ export function AddAccountModal({
                 <button
                   type="button"
                   className="send add-account-primary"
-                  onClick={startConnect}
+                  onClick={() => startConnect("imap")}
                 >
                   Connect account
                 </button>
+
+                {provider.id === "gmail" && (
+                  <>
+                    <div className="add-account-or">or</div>
+                    <button
+                      type="button"
+                      className="add-account-secondary"
+                      disabled={gmailReady !== true}
+                      onClick={() => startConnect("oauth")}
+                    >
+                      <ProviderLogo id="gmail" size={16} />
+                      Sign in with Google (beta / testers)
+                    </button>
+                    {gmailReady === false && (
+                      <p className="add-account-hint">
+                        Google sign-in is off until GMAIL_CLIENT_ID is set. An
+                        app password works without it, and OAuth stays limited
+                        to test users until Google verifies the app.
+                      </p>
+                    )}
+                  </>
+                )}
               </>
             )}
           </div>
