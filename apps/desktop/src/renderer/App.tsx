@@ -5799,13 +5799,14 @@ export default function App() {
           setStackView("list");
           return;
         }
+        // FloatingAsk owns Escape while open (picker dismiss → close + focus).
+        if (askOpen) return;
         setSettingsOpen(false);
         setPluginInviteOpen(false);
         closeCompose();
         setAddAccountOpen(false);
         setCheatOpen(false);
         setChord(null);
-        setAskOpen(false);
         return;
       }
 
@@ -5816,8 +5817,7 @@ export default function App() {
         pluginInviteOpen ||
         composeOpen ||
         addAccountOpen ||
-        cheatOpen ||
-        askOpen
+        cheatOpen
       )
         return;
 
@@ -5829,6 +5829,10 @@ export default function App() {
       );
       if (result.type === "none") {
         if (chord) setChord(null);
+        return;
+      }
+      // While Ask is open, only allow toggling it closed (with focus restore).
+      if (askOpen && !(result.type === "action" && result.action === "askAi")) {
         return;
       }
       e.preventDefault();
