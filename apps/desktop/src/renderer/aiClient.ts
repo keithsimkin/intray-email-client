@@ -94,6 +94,98 @@ export async function aiSuggestReplies(
     .slice(0, 3);
 }
 
+export async function aiLabelMessages(
+  prefs: Preferences,
+  messages: Message[],
+  labels: { id: string; name: string; color: string }[],
+): Promise<{ messageId: string; id: string; name: string; color: string }[]> {
+  if (!messages.length || !labels.length) return [];
+  const catalog = labels.map((label) => label.name).join(", ");
+  const lines = messages
+    .map(
+      (message) =>
+        `${message.id}\t${message.from}\t${message.subject}\t${message.preview}`,
+    )
+    .join("\n");
+  const result = await bridgeAiComplete({
+    provider: providerFromPrefs(prefs),
+    model: prefs.aiModelHint || undefined,
+    bridgePath: prefs.aiBridgePath || undefined,
+    maxTokens: 500,
+    prompt: `Label each email with exactly one name from this list: ${catalog}.
+If none fit, use NONE.
+Reply with one line per email in the form: <id> <label>
+No other text.
+
+${lines}`,
+  });
+  const assigned: { messageId: string; id: string; name: string; color: string }[] = [];
+  for (const line of result.text.split(/\n+/)) {
+    const match = /^(\S+)\s+(.+)$/.exec(line.trim());
+    if (!match) continue;
+    const name = match[2]!.replace(/^["']|["']$/g, "").trim();
+    if (!name || /^none$/i.test(name)) continue;
+    const label = labels.find(
+      (item) => item.name.toLowerCase() === name.toLowerCase(),
+    );
+    const message = messages.find((item) => item.id === match[1]);
+    if (!label || !message) continue;
+    assigned.push({
+      messageId: message.id,
+      id: label.id,
+      name: label.name,
+      color: label.color,
+    });
+  }
+  return assigned;
+}
+
+export async function aiCatchMeUp(
+  prefs: Preferences,
+  messages: Message[],
+): Promise<string> {
+  const priority = messages.filter((message) => message.unread || message.important);
+  const source = (priority.length ? priority : messages).slice(0, 12);
+  if (!source.length) return "Nothing in this view to catch up on.";
+  const context = source
+    .map(
+      (message, index) =>
+        `${index + 1}. [${message.id}] ${message.unread ? "UNREAD" : "read"} ${message.from}: ${message.subject} — ${message.preview}`,
+    )
+    .join("\n");
+  const result = await bridgeAiComplete({
+    provider: providerFromPrefs(prefs),
+    model: prefs.aiModelHint || undefined,
+    bridgePath: prefs.aiBridgePath || undefined,
+    system:
+      "You are Intray's mail assistant. Summarize only the mail provided. Put anything that needs a reply first. Do not invent senders, dates, or tasks.",
+    prompt: `Catch me up on this inbox in at most 6 short bullets:\n\n${context}`,
+  });
+  return result.text.trim();
+}
+
+export async function aiFindUnsubscribeUrl(
+  prefs: Preferences,
+  message: Message,
+): Promise<string | null> {
+  const result = await bridgeAiComplete({
+    provider: providerFromPrefs(prefs),
+    model: prefs.aiModelHint || undefined,
+    bridgePath: prefs.aiBridgePath || undefined,
+    maxTokens: 80,
+    prompt: `If the email contains an unsubscribe or manage-preferences URL, reply with that URL only. If it does not, reply NONE.\n\n${threadText(message, 4000)}`,
+  });
+  const raw = result.text.trim();
+  if (!raw || /^none$/i.test(raw)) return null;
+  const url = raw.match(/mailto:\S+|https?:\/\/\S+/i)?.[0]?.replace(/[),.;]+$/, "");
+  if (!url) return null;
+  const hay = [
+    threadText(message, 8000),
+    ...message.thread.map((turn) => turn.bodyHtml ?? ""),
+  ].join("\n");
+  return hay.includes(url) ? url : null;
+}
+
 export async function aiSuggestLabel(
   prefs: Preferences,
   message: Message,

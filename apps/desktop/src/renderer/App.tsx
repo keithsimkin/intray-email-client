@@ -36,8 +36,8 @@ import {
   MinusSquare,
   MoreHorizontal,
   Paperclip,
+  Plug,
   Plus,
-  Puzzle,
   RefreshCw,
   Reply,
   ReplyAll,
@@ -48,7 +48,6 @@ import {
   Square,
   Star,
   Tag,
-  Blocks,
   Trash2,
   AlertCircle,
   ShieldAlert,
@@ -61,6 +60,8 @@ import {
   nextAlertId,
   type AlertRequest,
 } from "./AlertDialog";
+import { PluginInviteModal } from "./PluginInviteModal";
+import { ReauthModal } from "./ReauthModal";
 import { FloatingAsk } from "./FloatingAsk";
 import { IntrayBrandLockup } from "./IntrayBrand";
 import { Onboarding } from "./Onboarding";
@@ -84,12 +85,10 @@ import {
   UNIFIED_ID,
   accounts as seedAccounts,
   customFolders as seedCustomFolders,
-  defaultSmartReplies,
   folders,
   labels as seedLabels,
   meeting,
   messages as seedMessages,
-  smartRepliesById,
   type Account,
   type Label,
   type Message,
@@ -108,7 +107,8 @@ import {
   sanitizeSignatureHtml,
 } from "./signatures";
 import {
-  aiSuggestLabel,
+  aiCatchMeUp,
+  aiLabelMessages,
   aiSuggestReplies,
   aiSummarizeMessage,
   aiTranslateMessage,
@@ -530,59 +530,6 @@ function formatRecipients(
   ));
 }
 
-/** Local heuristic stand-in for the AI bridge auto-labeler. */
-function suggestLabel(message: Message): Label | null {
-  const hay = [
-    message.from,
-    message.email,
-    message.subject,
-    message.preview,
-    ...message.thread.flatMap((t) => [
-      t.from,
-      t.email,
-      ...(t.body ?? []),
-      t.bodyHtml ?? "",
-    ]),
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  const rules: { id: string; test: RegExp }[] = [
-    { id: "receipts", test: /receipt|invoice|stripe|paid|\$[\d,]/ },
-    {
-      id: "security",
-      test: /security|dependabot|vulnerabilit|otp|verify|2fa|login alert/,
-    },
-    {
-      id: "social",
-      test: /linkedin|twitter|instagram|facebook|appeared in \d+ searches/,
-    },
-    {
-      id: "news",
-      test: /newsletter|digest|weekly summary|unsubscribe/,
-    },
-    {
-      id: "updates",
-      test: /\blinear\b|shipped|release|changelog|roadmap/,
-    },
-    { id: "promo", test: /% off|sale|deal|promo|discount/ },
-    {
-      id: "waiting",
-      test: /waiting|follow up|circling back|any update/,
-    },
-  ];
-
-  for (const rule of rules) {
-    if (rule.test.test(hay)) {
-      return seedLabels.find((l) => l.id === rule.id) ?? null;
-    }
-  }
-  if (/intro|meeting|connect|client|ledgerly|northwind|acme/.test(hay)) {
-    return seedLabels.find((l) => l.id === "updates") ?? null;
-  }
-  return null;
-}
-
 const LABEL_COLORS = [
   "#ff5c5c",
   "#f5a524",
@@ -809,14 +756,14 @@ function AccountRail({
   onSelect,
   onAdd,
   onSettings,
-  onComingSoon,
+  onPlugins,
 }: {
   accounts: Account[];
   activeId: string;
   onSelect: (id: string) => void;
   onAdd: () => void;
   onSettings: () => void;
-  onComingSoon: (feature: string) => void;
+  onPlugins: () => void;
 }) {
   return (
     <aside className="rail">
@@ -888,27 +835,17 @@ function AccountRail({
       </div>
       <div className="rail-spacer" />
       <div className="rail-section">
-        <span className="rail-label">App</span>
         <button
           type="button"
           className="rail-btn rail-soon"
-          aria-label="Apps — coming soon"
-          title="Apps — coming soon"
-          onClick={() => onComingSoon("Apps")}
+          aria-label="Plugins — tester invite"
+          title="Plugins"
+          onClick={onPlugins}
         >
-          <Blocks size={16} strokeWidth={1.75} />
+          <Plug size={16} strokeWidth={1.75} />
           <span className="rail-soon-badge">Soon</span>
         </button>
-        <button
-          type="button"
-          className="rail-btn rail-soon"
-          aria-label="Add-ons — coming soon"
-          title="Add-ons — coming soon"
-          onClick={() => onComingSoon("Add-ons")}
-        >
-          <Puzzle size={16} strokeWidth={1.75} />
-          <span className="rail-soon-badge">Soon</span>
-        </button>
+        <span className="rail-label">Apps</span>
         <button
           type="button"
           className="rail-btn"
@@ -1741,6 +1678,7 @@ function MessageList({
   labels,
   customFolders,
   showAi,
+  catchMeUp,
   syncing,
   fullScreen,
   onFilter,
@@ -1771,6 +1709,13 @@ function MessageList({
   labels: Label[];
   customFolders: string[];
   showAi: boolean;
+  catchMeUp?: {
+    enabled: boolean;
+    busy: boolean;
+    text: string | null;
+    error: string | null;
+    onRun: () => void;
+  };
   syncing?: boolean;
   fullScreen?: boolean;
   onFilter: (f: Filter) => void;
@@ -1923,6 +1868,22 @@ function MessageList({
                   Compose
                 </button>
               )}
+              {catchMeUp?.enabled && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Catch me up"
+                  title="Catch me up"
+                  onClick={catchMeUp.onRun}
+                  disabled={catchMeUp.busy}
+                >
+                  <Sparkles
+                    size={14}
+                    strokeWidth={1.75}
+                    className={catchMeUp.busy ? "spin" : undefined}
+                  />
+                </button>
+              )}
               <button
                 type="button"
                 className="icon-btn"
@@ -1962,6 +1923,16 @@ function MessageList({
               {label}
             </button>
           ))}
+        </div>
+      )}
+
+      {catchMeUp?.enabled && (catchMeUp.busy || catchMeUp.text || catchMeUp.error) && (
+        <div className="catchup" role="status">
+          <p className={catchMeUp.error ? "catchup-error" : undefined}>
+            {catchMeUp.busy
+              ? "Catching you up from this inbox…"
+              : catchMeUp.error || catchMeUp.text}
+          </p>
         </div>
       )}
 
@@ -2842,6 +2813,7 @@ function ReadingPane({
     account;
   const replyFromLoggedOut = Boolean(replyFrom.loggedOut);
   const [aiReplies, setAiReplies] = useState<string[]>([]);
+  const [replyNote, setReplyNote] = useState<string | null>(null);
   const [unsubState, setUnsubState] = useState<
     "idle" | "scanning" | "done" | "missing"
   >("idle");
@@ -2855,10 +2827,7 @@ function ReadingPane({
   replyStateRef.current = { draft, toMentions, ccMentions, bccMentions };
   const replyHistory = useUndoStack(() => replyStateRef.current);
 
-  const seedReplies = message
-    ? (smartRepliesById[message.id] ?? defaultSmartReplies)
-    : [];
-  const replies = aiReplies.length ? aiReplies : seedReplies;
+  const replies = aiReplies;
 
   const predictions = useMemo(() => {
     if (!showAi || !prefs.aiWriteEnabled || !replies.length) return [];
@@ -2936,18 +2905,37 @@ function ReadingPane({
 
   useEffect(() => {
     setAiReplies([]);
-    if (!message || !showAi || !prefs.aiWriteEnabled || prefs.aiBridge === "none")
+    setReplyNote(null);
+    if (!message || !showAi || !prefs.aiWriteEnabled) return;
+    if (prefs.aiBridge === "none") {
+      setReplyNote("Pick a provider in Settings to suggest replies.");
       return;
+    }
     let cancelled = false;
+    setReplyNote("Asking your provider for replies…");
     void aiSuggestReplies(prefs, message)
       .then((list) => {
-        if (!cancelled && list.length) setAiReplies(list);
+        if (cancelled) return;
+        setAiReplies(list);
+        setReplyNote(list.length ? null : "The provider returned no replies.");
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setReplyNote(
+          error instanceof Error ? error.message : "Couldn’t load replies.",
+        );
+      });
     return () => {
       cancelled = true;
     };
-  }, [message?.id, showAi, prefs.aiWriteEnabled, prefs.aiBridge, prefs.aiModelHint]);
+  }, [
+    message?.id,
+    showAi,
+    prefs.aiWriteEnabled,
+    prefs.aiBridge,
+    prefs.aiBridgePath,
+    prefs.aiModelHint,
+  ]);
 
   const replyExcludeEmails = [
     replyFrom.email,
@@ -3131,7 +3119,7 @@ function ReadingPane({
     if (unsubState === "scanning") return;
     setUnsubState("scanning");
     onToast(`AI is finding an unsubscribe path for ${message.from}…`);
-    const target = await aiFindUnsubscribe(message);
+    const target = await aiFindUnsubscribe(message, prefs);
     if (!target) {
       setUnsubState("missing");
       onToast("AI couldn’t find an unsubscribe link in this mail");
@@ -3625,6 +3613,9 @@ function ReadingPane({
               }}
             />
           </div>
+          {replyNote && predictions.length === 0 && (
+            <p className="reply-ai-note">{replyNote}</p>
+          )}
           {predictions.length > 0 && (
             <div className="reply-suggests" role="listbox" aria-label="Reply suggestions">
               {predictions.map((text, i) => (
@@ -4513,6 +4504,11 @@ export default function App() {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
   const checkAnchorRef = useRef<number | null>(null);
   const [askOpen, setAskOpen] = useState(false);
+  const [catchUp, setCatchUp] = useState<{
+    busy: boolean;
+    text: string | null;
+    error: string | null;
+  }>({ busy: false, text: null, error: null });
   const [askFocusThread, setAskFocusThread] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     const unreadMail = seedMessages
@@ -4537,17 +4533,10 @@ export default function App() {
         unread: true,
       },
       ...unreadMail,
-      {
-        id: "ai-1",
-        kind: "ai",
-        title: "AI labeled 3 emails",
-        body: "Security, Receipts, and Updates applied automatically",
-        time: "Earlier",
-        unread: true,
-      },
     ];
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pluginInviteOpen, setPluginInviteOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeDraft, setComposeDraft] = useState<{
     to?: Recipient[];
@@ -4587,6 +4576,7 @@ export default function App() {
     setComposeDraft({});
   };
   const [addAccountOpen, setAddAccountOpen] = useState(false);
+  const [reauthAccount, setReauthAccount] = useState<Account | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(
     () => !isOnboardingComplete(),
   );
@@ -4932,14 +4922,44 @@ export default function App() {
       return;
     }
 
+    if (action === "auto-label") {
+      if (prefs.aiBridge === "none") {
+        showToast("Pick an AI provider in Settings");
+        return;
+      }
+      showToast("Asking your provider for a label…");
+      void aiLabelMessages(prefs, [target], labels)
+        .then((assigned) => {
+          const lab = assigned[0];
+          if (!lab) {
+            showToast("No matching label for this email");
+            return;
+          }
+          lastActionRef.current = [{ id: messageId, snapshot: { ...target } }];
+          setMail((prev) =>
+            prev.map((m) =>
+              m.id === messageId
+                ? { ...m, tag: { label: lab.name, color: lab.color } }
+                : m,
+            ),
+          );
+          if (live) {
+            void bridgeMutateMail(messageId, "label", { detail: lab.id });
+          }
+          showToast(`Labeled “${lab.name}”`);
+        })
+        .catch((error: unknown) => {
+          showToast(error instanceof Error ? error.message : "Auto-label failed");
+        });
+      return;
+    }
+
     lastActionRef.current = [{ id: messageId, snapshot: { ...target } }];
 
     const picked =
       action === "label" && detail
         ? labels.find((l) => l.id === detail) ?? null
         : null;
-    const aiLabel =
-      action === "auto-label" ? suggestLabel(target) : null;
 
     if (live) {
       const remote =
@@ -4969,19 +4989,13 @@ export default function App() {
                             ? "clear-label"
                             : action === "move"
                               ? "move"
-                              : action === "auto-label" && aiLabel
-                                ? "label"
-                                : null;
+                              : null;
       if (remote) {
         void bridgeMutateMail(messageId, remote, {
           detail:
-            action === "auto-label"
-              ? aiLabel?.id
-              : action === "snooze" ||
-                  action === "label" ||
-                  action === "move"
-                ? detail
-                : undefined,
+            action === "snooze" || action === "label" || action === "move"
+              ? detail
+              : undefined,
         }).then((dto) => {
           if (action === "delete-forever") {
             setMail((prev) => prev.filter((m) => m.id !== messageId));
@@ -5006,7 +5020,7 @@ export default function App() {
       setMail((prev) =>
         prev.map((m) =>
           m.id === messageId
-            ? mutateLocalMessage(m, action, detail, picked, aiLabel)
+            ? mutateLocalMessage(m, action, detail, picked, null)
             : m,
         ),
       );
@@ -5043,10 +5057,6 @@ export default function App() {
             : "Pick a label";
         case "clear-label":
           return "Label removed";
-        case "auto-label":
-          return aiLabel
-            ? `AI labeled “${aiLabel.name}”`
-            : "AI couldn’t suggest a label";
         default:
           return "";
       }
@@ -5408,34 +5418,53 @@ export default function App() {
     });
   };
 
-  const autoLabelPassRef = useRef(false);
+  const autoLabeledRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!prefs.aiAutoLabel || prefs.aiBridge === "none") {
-      autoLabelPassRef.current = false;
+      autoLabeledRef.current = new Set();
       return;
     }
-    if (autoLabelPassRef.current) return;
-
-    const suggestions = new Map<string, Label>();
-    for (const m of mail) {
-      if (m.tag || m.folder !== "inbox") continue;
-      const suggested = suggestLabel(m);
-      if (suggested) suggestions.set(m.id, suggested);
-    }
-    autoLabelPassRef.current = true;
-    if (suggestions.size === 0) return;
-
-    setMail((prev) =>
-      prev.map((m) => {
-        const lab = suggestions.get(m.id);
-        if (!lab || m.tag) return m;
-        return { ...m, tag: { label: lab.name, color: lab.color } };
-      }),
-    );
-    showToast(
-      `AI labeled ${suggestions.size} email${suggestions.size === 1 ? "" : "s"}`,
-    );
-  }, [prefs.aiAutoLabel, prefs.aiBridge, mail]);
+    const pending = mail
+      .filter(
+        (m) =>
+          m.folder === "inbox" && !m.tag && !autoLabeledRef.current.has(m.id),
+      )
+      .slice(0, 8);
+    if (!pending.length) return;
+    for (const message of pending) autoLabeledRef.current.add(message.id);
+    let cancelled = false;
+    void aiLabelMessages(prefs, pending, labels)
+      .then((assigned) => {
+        if (cancelled || !assigned.length) return;
+        const byId = new Map(assigned.map((item) => [item.messageId, item]));
+        setMail((prev) =>
+          prev.map((m) => {
+            const lab = byId.get(m.id);
+            if (!lab || m.tag) return m;
+            return { ...m, tag: { label: lab.name, color: lab.color } };
+          }),
+        );
+        showToast(
+          `AI labeled ${assigned.length} email${assigned.length === 1 ? "" : "s"}`,
+        );
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        showToast(
+          error instanceof Error ? error.message : "Auto-label failed",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    prefs.aiAutoLabel,
+    prefs.aiBridge,
+    prefs.aiBridgePath,
+    prefs.aiModelHint,
+    mail,
+    labels,
+  ]);
 
   const undoLast = () => {
     const cancelSend = (
@@ -5520,6 +5549,24 @@ export default function App() {
     }
     return list;
   }, [scoped, filter, prefs.importantSplit, searchTokens]);
+
+  const runCatchMeUp = () => {
+    if (prefs.aiBridge === "none") {
+      showToast("Pick an AI provider in Settings");
+      return;
+    }
+    setCatchUp({ busy: true, text: null, error: null });
+    const source = filtered.filter((message) => message.folder === "inbox");
+    void aiCatchMeUp(prefs, source.length ? source : filtered)
+      .then((text) => setCatchUp({ busy: false, text, error: null }))
+      .catch((error: unknown) => {
+        setCatchUp({
+          busy: false,
+          text: null,
+          error: error instanceof Error ? error.message : "Catch me up failed",
+        });
+      });
+  };
 
   const selected =
     filtered.find((m) => m.id === selectedId) ?? filtered[0] ?? null;
@@ -5697,6 +5744,7 @@ export default function App() {
           return;
         }
         setSettingsOpen(false);
+        setPluginInviteOpen(false);
         closeCompose();
         setAddAccountOpen(false);
         setCheatOpen(false);
@@ -5709,6 +5757,7 @@ export default function App() {
         alert ||
         onboardingOpen ||
         settingsOpen ||
+        pluginInviteOpen ||
         composeOpen ||
         addAccountOpen ||
         cheatOpen ||
@@ -5840,6 +5889,11 @@ export default function App() {
               showToast("Enable Unified Inbox in Settings → Inbox");
               return;
             }
+            const target = accounts.find((a) => a.id === id);
+            if (target?.loggedOut) {
+              setReauthAccount(target);
+              return;
+            }
             setAccountId(id);
             setFolderId("inbox");
             setFilter("all");
@@ -5848,9 +5902,7 @@ export default function App() {
           }}
           onAdd={() => setAddAccountOpen(true)}
           onSettings={() => setSettingsOpen(true)}
-          onComingSoon={(feature) =>
-            showToast(`${feature} are coming soon — on the roadmap`)
-          }
+          onPlugins={() => setPluginInviteOpen(true)}
         />
         <Sidebar
           account={account}
@@ -5947,6 +5999,13 @@ export default function App() {
           labels={labels}
           customFolders={customFolders}
           showAi={showAi}
+          catchMeUp={{
+            enabled: showAi && prefs.aiCatchMeUp,
+            busy: catchUp.busy,
+            text: catchUp.text,
+            error: catchUp.error,
+            onRun: runCatchMeUp,
+          }}
           syncing={syncing}
           fullScreen={prefs.layout === "stack"}
           onCompose={() => openCompose()}
@@ -6118,6 +6177,10 @@ export default function App() {
             setSettingsOpen(false);
             setAddAccountOpen(true);
           }}
+          onReconnectAccount={(account) => {
+            setSettingsOpen(false);
+            setReauthAccount(account);
+          }}
           onRemoveAccount={(id) => {
             setAccounts((prev) => prev.filter((a) => a.id !== id));
             setAccountId((cur) => (cur === id ? UNIFIED_ID : cur));
@@ -6126,6 +6189,14 @@ export default function App() {
             }
           }}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {pluginInviteOpen && (
+        <PluginInviteModal
+          onClose={() => setPluginInviteOpen(false)}
+          onAccepted={() =>
+            showToast("Invite noted — email hello@intray.app if you need access")
+          }
         />
       )}
       {composeOpen && (
@@ -6207,6 +6278,42 @@ export default function App() {
             setFilter("all");
             setStackView("list");
             showToast(`Added ${account.email}`);
+          }}
+        />
+      )}
+      {reauthAccount && (
+        <ReauthModal
+          account={reauthAccount}
+          onClose={() => {
+            const id = reauthAccount.id;
+            setReauthAccount(null);
+            setAccountId(id);
+            setFolderId("inbox");
+            setFilter("all");
+            setStackView("list");
+            clearChecks();
+          }}
+          onReconnected={(account) => {
+            setReauthAccount(null);
+            setAccounts((prev) =>
+              prev.map((a) =>
+                a.id === account.id
+                  ? { ...a, ...account, loggedOut: false }
+                  : a,
+              ),
+            );
+            setAccountId(account.id);
+            setFolderId("inbox");
+            setFilter("all");
+            setStackView("list");
+            clearChecks();
+            if (live) {
+              void loadLiveWorkspace(account.id).then(() =>
+                showToast(`Reconnected ${account.email}`),
+              );
+            } else {
+              showToast(`Reconnected ${account.email}`);
+            }
           }}
         />
       )}

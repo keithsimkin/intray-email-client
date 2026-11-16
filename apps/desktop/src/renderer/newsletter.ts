@@ -1,4 +1,6 @@
+import { aiFindUnsubscribeUrl } from "./aiClient";
 import type { Message } from "./data/mock";
+import type { Preferences } from "./preferences";
 
 const MARKETING_RE =
   /\b(newsletter|unsubscribe|promotions?|marketing|digest|weekly summary|% off|sale|deal|discount|noreply|no-reply|donotreply|do-not-reply)\b/i;
@@ -102,32 +104,27 @@ export function looksLikeNewsletter(message: Message): boolean {
 }
 
 /**
- * Local stand-in for the AI bridge: prefer the strongest unsubscribe
- * candidate, then fall back to a synthetic manage-preferences URL.
+ * Prefer a real unsubscribe link in the message. If the markup hid it, ask
+ * the connected provider to quote a URL and accept it only when that exact
+ * URL is already in the mail.
  */
 export async function aiFindUnsubscribe(
   message: Message,
+  prefs?: Preferences,
 ): Promise<UnsubscribeTarget | null> {
-  await new Promise((r) => window.setTimeout(r, 420));
-
   const targets = extractUnsubscribeTargets(message);
   if (targets.length) {
-    const mailto = targets.find((t) => t.kind === "mailto");
     const http = targets.find((t) => t.kind === "http");
-    return http ?? mailto ?? targets[0];
+    const mailto = targets.find((t) => t.kind === "mailto");
+    return http ?? mailto ?? targets[0]!;
   }
-
-  // AI fallback when the mail looks promotional but has no explicit link:
-  // open a manage-preferences style URL on the sender domain (demo/heuristic).
-  if (!looksLikeNewsletter(message)) return null;
-  const domain = message.email.split("@")[1]?.toLowerCase();
-  if (!domain || domain.includes("gmail.") || domain.includes("outlook.")) {
-    return null;
-  }
+  if (!prefs || prefs.aiBridge === "none") return null;
+  const href = await aiFindUnsubscribeUrl(prefs, message);
+  if (!href) return null;
   return {
-    href: `https://${domain}/unsubscribe`,
-    kind: "http",
-    label: `Manage preferences on ${domain}`,
+    href,
+    kind: href.toLowerCase().startsWith("mailto:") ? "mailto" : "http",
+    label: "Unsubscribe link from this email",
   };
 }
 

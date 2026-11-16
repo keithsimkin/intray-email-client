@@ -10,8 +10,9 @@ import type {
   MailListQuery,
   MailMutateAction,
   MailMutateOptions,
+  ReconnectAccountInput,
 } from "../../shared/types";
-import { completeAi, detectProviders } from "../ai/bridge";
+import { completeAi, detectProviders, listProviderModels } from "../ai/bridge";
 import {
   aiSecretStatus,
   saveAiSecret,
@@ -26,6 +27,7 @@ import {
   addGmailAccount,
   addImapAccount,
   createLabelDto,
+  getAccountReconnectInfo,
   getMail,
   hasRealAccounts,
   listAccounts,
@@ -34,6 +36,7 @@ import {
   listMail,
   mutateMail,
   oauthStatus,
+  reconnectAccount,
   removeAccount,
   sendMail,
   triggerSync,
@@ -130,6 +133,17 @@ export function registerIpc(): void {
   ipcMain.handle("accounts:addImap", (_e, input: AddImapAccountInput) =>
     addImapAccount(input),
   );
+  ipcMain.handle("accounts:reconnectInfo", (_e, accountId: string) =>
+    getAccountReconnectInfo(assertCanonicalId(accountId)),
+  );
+  ipcMain.handle(
+    "accounts:reconnect",
+    (_e, input: ReconnectAccountInput) =>
+      reconnectAccount({
+        ...input,
+        accountId: assertCanonicalId(input.accountId),
+      }),
+  );
   ipcMain.handle("accounts:remove", (_e, accountId: string) => {
     removeAccount(assertCanonicalId(accountId));
     return true;
@@ -170,6 +184,11 @@ export function registerIpc(): void {
 
   ipcMain.handle("ai:detect", (_e, bridgePath?: string) =>
     detectProviders(bridgePath),
+  );
+  ipcMain.handle(
+    "ai:models",
+    (_e, provider: AiProviderId, bridgePath?: string) =>
+      listProviderModels(provider, bridgePath),
   );
   ipcMain.handle("ai:complete", (_e, req: AiCompleteRequest) =>
     completeAi({

@@ -13,7 +13,6 @@ import "./FloatingAsk.css";
 import { aiAskAboutMail } from "./aiClient";
 import { buildContacts, type Contact } from "./contacts";
 import type { Label, Message } from "./data/mock";
-import { askAiSeed } from "./data/mock";
 import type { Preferences } from "./preferences";
 
 export type AskPull = {
@@ -359,83 +358,33 @@ function threadSeed(message: Message) {
   };
 }
 
-function answerForQuestion(
+function relatedPulls(
   question: string,
   mail: Message[],
   tags: AskTags,
   focus: Message | null,
-): { text: string; pulls: AskPull[] } {
+): AskPull[] {
   const pinned =
     tags.threadIds
       .map((id) => mail.find((m) => m.id === id))
       .filter((m): m is Message => Boolean(m))[0] ?? focus;
+  if (pinned) return threadSeed(pinned).pulls;
 
-  if (pinned) {
-    const seed = threadSeed(pinned);
-    if (/draft|reply/i.test(question) || tags.skillIds.includes("draft")) {
-      return {
-        text: `Here’s a draft reply for **${pinned.from}** on “${pinned.subject}”:\n\n- Thanks for the update — I’ll review and follow up today.\n- Happy to jump on a quick call if helpful.\n\nTweak the tone before you send.`,
-        pulls: seed.pulls,
-      };
-    }
-    if (/deadline|when|date/i.test(question) || tags.skillIds.includes("deadlines")) {
-      return {
-        text: `From “${pinned.subject}”, the clearest timing cue is in the latest note from **${pinned.from}** (${pinned.time}).\n\n- Check the body for a firm date\n- If none, ask them to confirm before you commit`,
-        pulls: seed.pulls,
-      };
-    }
-    return seed;
-  }
-
-  const dinner = mail.find((m) => m.id === askAiSeed.citationId);
-  if (/dinner|sam|saturday/i.test(question) && dinner) {
-    return {
-      text: askAiSeed.answer,
-      pulls: [
-        {
-          id: "seed-dinner",
-          messageId: dinner.id,
-          at: dinner.time,
-          from: dinner.from,
-          subject: dinner.subject,
-          text: dinner.preview,
-        },
-      ],
-    };
-  }
-
-  if (/unanswered|waiting|owe/i.test(question) || tags.skillIds.includes("unanswered")) {
-    const waiting = mail.filter((m) => m.unread || m.important).slice(0, 3);
-    return {
-      text:
-        waiting.length === 0
-          ? "Nothing obvious is waiting on you in this inbox slice."
-          : `Here’s what looks unanswered right now:\n\n${waiting
-              .map((m) => `- **${m.from}** — “${m.subject}” (${m.time})`)
-              .join("\n")}`,
-      pulls: waiting.map((m) => ({
-        id: `wait-${m.id}`,
-        messageId: m.id,
-        at: m.time,
-        from: m.from,
-        subject: m.subject,
-        text: m.preview,
-      })),
-    };
-  }
-
-  const hits = mail.slice(0, 3);
-  return {
-    text: `I searched your mail on this PC.\n\n- Closest threads are listed below\n- Tag a **$thread** or **@person** to narrow the answer`,
-    pulls: hits.map((m) => ({
-      id: `hit-${m.id}`,
-      messageId: m.id,
-      at: m.time,
-      from: m.from,
-      subject: m.subject,
-      text: m.preview,
-    })),
-  };
+  const waiting =
+    /unanswered|waiting|owe/i.test(question) ||
+    tags.skillIds.includes("unanswered");
+  const hits = (waiting
+    ? mail.filter((m) => m.unread || m.important)
+    : mail
+  ).slice(0, 3);
+  return hits.map((m) => ({
+    id: `hit-${m.id}`,
+    messageId: m.id,
+    at: m.time,
+    from: m.from,
+    subject: m.subject,
+    text: m.preview,
+  }));
 }
 
 export function FloatingAsk({
@@ -728,8 +677,7 @@ export function FloatingAsk({
           mail: scoped,
           focus: focusMessage,
         });
-        const fallback = answerForQuestion(text, mail, tags, focusMessage);
-        pulls = fallback.pulls;
+        pulls = relatedPulls(text, mail, tags, focusMessage);
       }
     } catch (e) {
       replyText =

@@ -1,0 +1,55 @@
+appId: app.intray.desktop
+productName: Intray
+# This environment looks like CI to electron-builder. Never upload a release.
+publish: null
+copyright: Copyright © 2026 Intray contributors
+artifactName: Intray-Setup-${version}.${ext}
+compression: normal
+npmRebuild: false
+asar: true
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - resources/**/*
+  - from: ../../crates/intray-native
+    to: node_modules/@intray/native
+    filter:
+      - index.js
+      - index.d.ts
+      - "*.node"
+asarUnpack:
+  - "**/*.node"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+  executableName: Intray
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  selectPerMachineByDefault: false
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Intray
+  uninstallDisplayName: Intray
+  displayLanguageSelector: false
+  installerLanguages:
+    - en_US
+  unicode: true
+  packElevateHelper: true
+  runAfterFinish: true
+  menuCategory: false
+  license: ../../LICENSE
+  include: build/installer.nsh
+  installerHeader: installer-header.bmp
+  installerSidebar: installer-sidebar.bmp
+  uninstallerSidebar: uninstaller-sidebar.bmp
+  differentialPackage: false

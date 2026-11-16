@@ -148,11 +148,27 @@ export type AiCompleteResponse = {
   model?: string;
 };
 
+export type AiModelChoice = {
+  id: string;
+  label: string;
+};
+
+/** Live model list for the selected provider. Empty means nothing was returned. */
+export type AiModelList = {
+  connected: boolean;
+  models: AiModelChoice[];
+  detail?: string;
+};
+
 export type AiProviderStatus = {
   id: AiProviderId;
   available: boolean;
   reason?: string;
   defaultModel?: string;
+  /** Resolved CLI binary, when this provider is a local CLI. */
+  path?: string;
+  /** Models discovered on this PC (Ollama tags). Cursor loads these separately. */
+  models?: AiModelChoice[];
 };
 
 export type AiSecretId =
@@ -221,4 +237,22 @@ export type AddImapAccountInput = {
   imapPort?: number;
   smtpHost?: string;
   smtpPort?: number;
+};
+
+/** How an existing account should re-authenticate. */
+export type AccountReconnectInfo = {
+  accountId: string;
+  email: string;
+  name: string;
+  provider: ProviderId;
+  authMode: "imap" | "oauth";
+};
+
+/** Re-auth an existing mailbox; IMAP only needs a fresh password. */
+export type ReconnectAccountInput = {
+  accountId: string;
+  /** Required for IMAP / app-password accounts. */
+  password?: string;
+  /** Force Google browser sign-in even when IMAP settings exist. */
+  mode?: "imap" | "oauth";
 };

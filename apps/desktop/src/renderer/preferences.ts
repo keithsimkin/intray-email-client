@@ -234,64 +234,92 @@ export const accentColors: Record<AccentId, string> = {
   amber: "#f5a524",
 };
 
-export const aiBridgeMeta: Record<
-  AiBridgeId,
-  { name: string; blurb: string; status: "detected" | "optional" | "off"; needsKey?: boolean }
-> = {
+export type AiBridgeKind = "api" | "cli" | "ollama" | "off";
+
+export type AiBridgeMeta = {
+  name: string;
+  blurb: string;
+  status: "detected" | "optional" | "off";
+  needsKey?: boolean;
+  kind: AiBridgeKind;
+  /** CLI binary the path field is about. */
+  binary?: string;
+  pathPlaceholder?: string;
+};
+
+export const aiBridgeMeta: Record<AiBridgeId, AiBridgeMeta> = {
   openai: {
     name: "OpenAI",
     blurb: "GPT models via your OpenAI API key. Keys stay on this PC (DPAPI).",
     status: "optional",
     needsKey: true,
+    kind: "api",
   },
   grok: {
     name: "Grok",
     blurb: "xAI Grok via your API key. Device ↔ xAI only.",
     status: "optional",
     needsKey: true,
+    kind: "api",
   },
   anthropic: {
     name: "Anthropic",
     blurb: "Claude models via your Anthropic API key.",
     status: "optional",
     needsKey: true,
+    kind: "api",
   },
   gemini: {
     name: "Gemini",
     blurb: "Google Gemini via an AI Studio key.",
     status: "optional",
     needsKey: true,
+    kind: "api",
   },
   ollama: {
     name: "Ollama",
     blurb: "Fully local models via Ollama on localhost.",
     status: "detected",
+    kind: "ollama",
   },
   "claude-code": {
     name: "Claude Code",
     blurb: "Use the Claude Code CLI already on this PC.",
     status: "optional",
+    kind: "cli",
+    binary: "claude",
+    pathPlaceholder: String.raw`e.g. C:\Users\…\.local\bin\claude.exe`,
   },
   codex: {
     name: "Codex",
     blurb: "OpenAI Codex CLI — keys never leave your machine.",
     status: "optional",
+    kind: "cli",
+    binary: "codex",
+    pathPlaceholder: String.raw`e.g. C:\Users\…\codex.exe`,
   },
   cursor: {
     name: "Cursor",
     blurb:
       "Uses the Cursor agent CLI (cursor-agent). Detects PATH and %LOCALAPPDATA%\\cursor-agent.",
     status: "optional",
+    kind: "cli",
+    binary: "cursor-agent",
+    pathPlaceholder: String.raw`e.g. C:\Users\…\cursor-agent\cursor-agent.cmd`,
   },
   opencode: {
     name: "OpenCode",
     blurb: "Route AI actions through a local OpenCode install.",
     status: "optional",
+    kind: "cli",
+    binary: "opencode",
+    pathPlaceholder: String.raw`e.g. C:\Users\…\opencode.exe`,
   },
   none: {
     name: "Off",
     blurb: "Turn off in-app AI until you pick a provider.",
     status: "off",
+    kind: "off",
   },
 };
 

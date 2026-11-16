@@ -1,4 +1,5 @@
 import { safeStorage } from "electron";
+import { configureAiSecrets } from "./secretAccess";
 import {
   deleteSecret,
   getSecretPayload,
@@ -63,3 +64,9 @@ export function aiSecretStatus(): Record<AiSecretId, boolean> {
     ollama: Boolean(loadAiSecret("ollama")),
   };
 }
+
+configureAiSecrets({
+  load: loadAiSecret,
+  save: saveAiSecret,
+  status: aiSecretStatus,
+});
