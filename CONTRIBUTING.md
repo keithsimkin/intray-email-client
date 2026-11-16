@@ -6,6 +6,10 @@ If you only need to run the apps, start with the [README](README.md#quick-start)
 
 ---
 
+## License
+
+By contributing, you agree that your contributions are licensed under the same terms as the project: **GPL-3.0-or-later** with the Intray attribution requirements in [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
 ## Code of conduct
 
 Be respectful in issues, PRs, and review comments. Assume good intent; disagree with ideas, not people. Harassment or hostile behavior is not welcome.

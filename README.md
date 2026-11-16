@@ -393,7 +393,16 @@ Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screens
 
 ## License
 
-License is **not finalized yet**. Until a `LICENSE` file is added, treat the code as source-available for evaluation and contribution discussion — do not assume redistribution rights. If you need clarity for a downstream use, open an issue.
+Intray is licensed under the **[GNU General Public License v3.0 or later](LICENSE)**, with additional attribution terms.
+
+In plain terms:
+
+- You are free to use, study, modify, and share Intray.
+- If you **redistribute** it (original or modified), you must keep it **open source** under GPL-3.0-or-later and provide corresponding source as the GPL requires.
+- You must **give credit to Intray** — name it as “Intray” or “based on Intray” in your README (or equivalent) and about/credits UI, and keep copyright notices intact.
+- Modified versions must be marked as modified and must not claim to be the official Intray release.
+
+See [`LICENSE`](LICENSE) for the full legal text and [`NOTICE`](NOTICE) for the short attribution summary.
 
 ---
 
