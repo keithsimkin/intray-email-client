@@ -22,6 +22,23 @@ export type ImapEnvelope = {
   mailboxPath: string;
 };
 
+export type ImapMailboxSlice = {
+  envelopes: ImapEnvelope[];
+  uidValidity: number;
+  uidNext: number;
+  highestUid: number;
+};
+
+/** Never fetch an unbounded backlog in one connection. */
+const MAX_INCREMENTAL_MESSAGES = 500;
+const SENT_MAILBOXES = [
+  "Sent",
+  "Sent Messages",
+  "Sent Items",
+  "INBOX.Sent",
+  "[Gmail]/Sent Mail",
+];
+
 function addrs(
   value: AddressObject | AddressObject[] | undefined,
 ): { name: string; email: string }[] {
@@ -40,6 +57,24 @@ function addrs(
   return out;
 }
 
+function connectionOptions(creds: ImapCredentials) {
+  return {
+    host: creds.imapHost,
+    port: creds.imapPort,
+    // Implicit TLS on 993; otherwise require a successful STARTTLS upgrade.
+    secure: creds.imapPort === 993,
+    tls: { minVersion: "TLSv1.2" as const, rejectUnauthorized: true },
+    auth: {
+      user: creds.username || creds.email,
+      pass: creds.password,
+    },
+    connectionTimeout: 30_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 90_000,
+    logger: false as const,
+  };
+}
+
 export async function withImap<T>(
   accountId: string,
   fn: (client: ImapFlow, creds: ImapCredentials) => Promise<T>,
@@ -48,16 +83,7 @@ export async function withImap<T>(
   if (!creds || creds.provider !== "imap") {
     throw new Error("IMAP credentials missing");
   }
-  const client = new ImapFlow({
-    host: creds.imapHost,
-    port: creds.imapPort,
-    secure: creds.imapPort === 993,
-    auth: {
-      user: creds.username || creds.email,
-      pass: creds.password,
-    },
-    logger: false,
-  });
+  const client = new ImapFlow(connectionOptions(creds));
   await client.connect();
   try {
     return await fn(client, creds);
@@ -72,16 +98,7 @@ export async function withImap<T>(
 
 /** Verify credentials by connecting and selecting INBOX. */
 export async function verifyImapLogin(creds: ImapCredentials): Promise<void> {
-  const client = new ImapFlow({
-    host: creds.imapHost,
-    port: creds.imapPort,
-    secure: creds.imapPort === 993,
-    auth: {
-      user: creds.username || creds.email,
-      pass: creds.password,
-    },
-    logger: false,
-  });
+  const client = new ImapFlow(connectionOptions(creds));
   await client.connect();
   try {
     const lock = await client.getMailboxLock("INBOX");
@@ -95,35 +112,83 @@ export async function verifyImapLogin(creds: ImapCredentials): Promise<void> {
   }
 }
 
+function mailboxMeta(client: ImapFlow): {
+  exists: number;
+  uidValidity: number;
+  uidNext: number;
+} {
+  const box = client.mailbox;
+  if (!box || typeof box === "boolean") {
+    return { exists: 0, uidValidity: 0, uidNext: 0 };
+  }
+  return {
+    exists: Number(box.exists ?? 0),
+    uidValidity: Number(box.uidValidity ?? 0),
+    uidNext: Number(box.uidNext ?? 0),
+  };
+}
+
+/**
+ * Fetch envelopes from a mailbox.
+ *
+ * When `sinceUid` is supplied *and* the mailbox's UIDVALIDITY still matches, we
+ * fetch only the new UID window instead of re-scanning the last N messages.
+ * That is what makes incremental sync cheap enough to run every 30 seconds.
+ */
 export async function listRecentEnvelopes(
   accountId: string,
-  opts?: { mailbox?: string; limit?: number },
-): Promise<ImapEnvelope[]> {
+  opts?: {
+    mailbox?: string;
+    limit?: number;
+    sinceUid?: number;
+    sinceUidValidity?: number;
+  },
+): Promise<ImapMailboxSlice> {
   const mailbox = opts?.mailbox ?? "INBOX";
   const limit = opts?.limit ?? 100;
 
   return withImap(accountId, async (client) => {
     const lock = await client.getMailboxLock(mailbox);
     try {
-      const exists = client.mailbox && typeof client.mailbox !== "boolean"
-        ? client.mailbox.exists
-        : 0;
-      if (!exists) return [];
+      const meta = mailboxMeta(client);
+      if (!meta.exists) {
+        return {
+          envelopes: [],
+          uidValidity: meta.uidValidity,
+          uidNext: meta.uidNext,
+          highestUid: opts?.sinceUid ?? 0,
+        };
+      }
 
-      const from = Math.max(1, exists - limit + 1);
+      const incremental =
+        opts?.sinceUid != null &&
+        opts.sinceUidValidity === meta.uidValidity &&
+        meta.uidNext > opts.sinceUid + 1;
+
+      let range: string;
+      if (incremental) {
+        const start = Math.max(
+          opts!.sinceUid! + 1,
+          meta.uidNext - MAX_INCREMENTAL_MESSAGES,
+        );
+        range = `${start}:*`;
+      } else {
+        const from = Math.max(1, meta.exists - limit + 1);
+        range = `${from}:${meta.exists}`;
+      }
+
       const out: ImapEnvelope[] = [];
-      const uidValidity =
-        client.mailbox && typeof client.mailbox !== "boolean"
-          ? Number(client.mailbox.uidValidity)
-          : 0;
-
-      for await (const msg of client.fetch(`${from}:${exists}`, {
-        uid: true,
-        flags: true,
-        envelope: true,
-        bodyStructure: true,
-        source: { start: 0, maxLength: 4096 },
-      })) {
+      for await (const msg of client.fetch(
+        range,
+        {
+          uid: true,
+          flags: true,
+          envelope: true,
+          bodyStructure: true,
+          source: { start: 0, maxLength: 4096 },
+        },
+        { uid: incremental },
+      )) {
         const env = msg.envelope;
         const fromAddr = env?.from?.[0];
         const fromEmail = (fromAddr?.address ?? "unknown").toLowerCase();
@@ -134,11 +199,12 @@ export async function listRecentEnvelopes(
           ? msg.source.toString("utf8").replace(/\s+/g, " ").slice(0, 180)
           : "";
         const messageId = env?.messageId || undefined;
-        const refs = env?.references ?? [];
+        const refs =
+          (env as { references?: string | string[] } | undefined)?.references ??
+          [];
+        const refList = Array.isArray(refs) ? refs : [refs];
         const threadKey =
-          (Array.isArray(refs) && refs[0]) ||
-          messageId ||
-          `uid-${uidValidity}-${msg.uid}`;
+          refList[0] || messageId || `uid-${meta.uidValidity}-${msg.uid}`;
 
         const to =
           env?.to?.map((a) => ({
@@ -156,13 +222,19 @@ export async function listRecentEnvelopes(
             JSON.stringify(msg.bodyStructure).includes('"disposition":"attachment"'),
         );
 
+        const date = env?.date
+          ? env.date instanceof Date
+            ? env.date
+            : new Date(env.date)
+          : null;
+
         out.push({
           uid: msg.uid,
-          uidValidity,
+          uidValidity: meta.uidValidity,
           messageId,
           threadId: String(threadKey),
           flags,
-          date: env?.date ?? null,
+          date: date && !Number.isNaN(date.getTime()) ? date : null,
           subject,
           fromName,
           fromEmail,
@@ -174,7 +246,18 @@ export async function listRecentEnvelopes(
           mailboxPath: mailbox,
         });
       }
-      return out.reverse();
+
+      out.sort((a, b) => a.uid - b.uid);
+      const highestUid = out.length
+        ? out[out.length - 1].uid
+        : (opts?.sinceUid ?? 0);
+
+      return {
+        envelopes: out,
+        uidValidity: meta.uidValidity,
+        uidNext: meta.uidNext,
+        highestUid,
+      };
     } finally {
       lock.release();
     }
@@ -194,7 +277,9 @@ export async function fetchMessageSource(
         { source: true, uid: true },
         { uid: true },
       );
-      if (!msg?.source) throw new Error("Message source missing");
+      if (!msg || typeof msg === "boolean" || !msg.source) {
+        throw new Error("Message source missing");
+      }
       return simpleParser(msg.source);
     } finally {
       lock.release();
@@ -256,6 +341,43 @@ export async function deleteImapMessageForever(
   });
 }
 
+/**
+ * Idempotency check for SMTP retries: was a message with this Message-ID
+ * already copied to a Sent folder? Best-effort — providers disagree on mailbox
+ * names, so failures are treated as "not found".
+ */
+export async function findSentMessage(
+  accountId: string,
+  messageId: string,
+): Promise<boolean> {
+  try {
+    return await withImap(accountId, async (client) => {
+      for (const box of SENT_MAILBOXES) {
+        let lock;
+        try {
+          lock = await client.getMailboxLock(box);
+        } catch {
+          continue;
+        }
+        try {
+          const found = await client.search(
+            { header: { "message-id": messageId } },
+            { uid: true },
+          );
+          if (found && found.length > 0) return true;
+        } catch {
+          /* unsupported search — try the next mailbox */
+        } finally {
+          lock.release();
+        }
+      }
+      return false;
+    });
+  } catch {
+    return false;
+  }
+}
+
 export async function sendSmtp(
   accountId: string,
   draft: {
@@ -266,6 +388,7 @@ export async function sendSmtp(
     bcc?: string[];
     subject: string;
     bodyText: string;
+    messageId?: string;
     attachments?: {
       filename: string;
       contentType: string;
@@ -277,28 +400,45 @@ export async function sendSmtp(
   if (!creds || creds.provider !== "imap") {
     throw new Error("IMAP/SMTP credentials missing");
   }
+  const implicitTls = creds.smtpPort === 465;
   const transport = nodemailer.createTransport({
     host: creds.smtpHost,
     port: creds.smtpPort,
-    secure: creds.smtpPort === 465,
+    secure: implicitTls,
+    // On 587/25 a failed STARTTLS must abort rather than silently send in the
+    // clear with the account password attached.
+    requireTLS: !implicitTls,
+    tls: { minVersion: "TLSv1.2", rejectUnauthorized: true },
     auth: {
       user: creds.username || creds.email,
       pass: creds.password,
     },
+    connectionTimeout: 30_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 90_000,
+    // Attachments are inlined buffers; never let a path/URL be resolved.
+    disableFileAccess: true,
+    disableUrlAccess: true,
+    pool: false,
   });
-  await transport.sendMail({
-    from: `"${draft.fromName}" <${draft.fromEmail}>`,
-    to: draft.to.join(", "),
-    cc: draft.cc?.join(", "),
-    bcc: draft.bcc?.join(", "),
-    subject: draft.subject || "(no subject)",
-    text: draft.bodyText,
-    attachments: draft.attachments?.map((a) => ({
-      filename: a.filename,
-      contentType: a.contentType || "application/octet-stream",
-      content: Buffer.from(a.contentBase64, "base64"),
-    })),
-  });
+  try {
+    await transport.sendMail({
+      from: `"${draft.fromName.replace(/["\\\r\n]/g, "")}" <${draft.fromEmail}>`,
+      to: draft.to.join(", "),
+      cc: draft.cc?.join(", "),
+      bcc: draft.bcc?.join(", "),
+      subject: draft.subject || "(no subject)",
+      text: draft.bodyText,
+      messageId: draft.messageId?.replace(/^<|>$/g, ""),
+      attachments: draft.attachments?.map((a) => ({
+        filename: a.filename.replace(/[\r\n"]/g, ""),
+        contentType: a.contentType || "application/octet-stream",
+        content: Buffer.from(a.contentBase64, "base64"),
+      })),
+    });
+  } finally {
+    transport.close();
+  }
 }
 
 export function parsedToBodies(parsed: ParsedMail): {

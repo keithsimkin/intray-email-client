@@ -1,82 +1,25 @@
 import { app } from "electron";
-import { createRequire } from "node:module";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import initSqlJs, { type Database as SqlDatabase } from "sql.js";
-import { MIGRATIONS_SQL, SCHEMA_SQL } from "./schema";
+import { MailDb } from "@intray/native";
 
-const require = createRequire(import.meta.url);
+/**
+ * Typed mail-store façade over the Rust SQLite backend (`@intray/native`).
+ * Call sites stay TypeScript; persistence / FTS / WAL live in Rust — same
+ * incremental pattern Discord used before leaving Electron entirely.
+ */
 
-let db: SqlDatabase | null = null;
-let dbPath = "";
-let persistTimer: NodeJS.Timeout | null = null;
+let db: MailDb | null = null;
 
-function schedulePersist(): void {
-  if (!db || !dbPath) return;
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    try {
-      const data = db!.export();
-      writeFileSync(dbPath, Buffer.from(data));
-    } catch (e) {
-      console.error("Failed to persist SQLite", e);
-    }
-  }, 250);
-}
-
-export async function initDb(): Promise<SqlDatabase> {
+export async function initDb(): Promise<MailDb> {
   if (db) return db;
-  dbPath = join(app.getPath("userData"), "intray.sqlite");
+  const dbPath = join(app.getPath("userData"), "intray.sqlite");
   mkdirSync(dirname(dbPath), { recursive: true });
-
-  const wasmPath = require.resolve("sql.js/dist/sql-wasm.wasm");
-  const SQL = await initSqlJs({
-    locateFile: () => wasmPath,
-  });
-
-  if (existsSync(dbPath)) {
-    db = new SQL.Database(readFileSync(dbPath));
-  } else {
-    db = new SQL.Database();
-  }
-  db.run("PRAGMA foreign_keys = ON;");
-  db.exec(SCHEMA_SQL);
-  for (const sql of MIGRATIONS_SQL) {
-    try {
-      db.run(sql);
-    } catch {
-      /* column already exists */
-    }
-  }
-  seedDefaultLabels();
-  schedulePersist();
+  db = MailDb.open(dbPath);
   return db;
 }
 
-function seedDefaultLabels(): void {
-  if (!db) return;
-  const count =
-    get<{ c: number }>("SELECT COUNT(*) AS c FROM labels")?.c ?? 0;
-  if (count > 0) return;
-  const now = new Date().toISOString();
-  const defaults: { id: string; name: string; color: string }[] = [
-    { id: "receipts", name: "Receipts", color: "#f5a524" },
-    { id: "security", name: "Security", color: "#ff5c5c" },
-    { id: "social", name: "Social", color: "#46c5e8" },
-    { id: "news", name: "News", color: "#8b7cf6" },
-    { id: "updates", name: "Updates", color: "#5b8def" },
-    { id: "promo", name: "Promo", color: "#f5d042" },
-    { id: "waiting", name: "Waiting for Reply", color: "#ff5c5c" },
-  ];
-  for (const l of defaults) {
-    run(
-      `INSERT OR IGNORE INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)`,
-      [l.id, l.name, l.color, now],
-    );
-  }
-}
-
-export function getDb(): SqlDatabase {
+export function getDb(): MailDb {
   if (!db) {
     throw new Error("Database not initialized — call initDb() first");
   }
@@ -84,45 +27,30 @@ export function getDb(): SqlDatabase {
 }
 
 export function closeDb(): void {
-  if (persistTimer) {
-    clearTimeout(persistTimer);
-    persistTimer = null;
-  }
   if (!db) return;
   try {
-    const data = db.export();
-    if (dbPath) writeFileSync(dbPath, Buffer.from(data));
+    db.close();
   } catch {
     /* ignore */
   }
-  db.close();
   db = null;
+}
+
+export function dbBackend(): string {
+  return db?.backend() ?? "uninitialized";
 }
 
 function run(sql: string, params: unknown[] = []): void {
   getDb().run(sql, params as never[]);
-  schedulePersist();
 }
 
 function get<T>(sql: string, params: unknown[] = []): T | undefined {
-  const stmt = getDb().prepare(sql);
-  stmt.bind(params as never[]);
-  if (!stmt.step()) {
-    stmt.free();
-    return undefined;
-  }
-  const row = stmt.getAsObject() as T;
-  stmt.free();
-  return row;
+  const row = getDb().get(sql, params as never[]);
+  return (row as T | null) ?? undefined;
 }
 
 function all<T>(sql: string, params: unknown[] = []): T[] {
-  const stmt = getDb().prepare(sql);
-  stmt.bind(params as never[]);
-  const rows: T[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject() as T);
-  stmt.free();
-  return rows;
+  return getDb().all(sql, params as never[]) as T[];
 }
 
 export type AccountRow = {
@@ -174,6 +102,11 @@ export type SendQueueRow = {
   send_at_ms: number;
   created_at: string;
   status: string;
+  attempts: number;
+  next_attempt_at_ms: number | null;
+  last_error: string | null;
+  message_id: string | null;
+  locked_until_ms: number | null;
 };
 
 export type ContactRow = {
@@ -198,6 +131,7 @@ export type SyncStateRow = {
   status: string;
   error: string | null;
   progress: string | null;
+  imap_cursor_json: string | null;
 };
 
 export function listAccountRows(): AccountRow[] {
@@ -266,14 +200,15 @@ export function getSyncState(accountId: string): SyncStateRow | undefined {
 
 export function upsertSyncState(row: SyncStateRow): void {
   run(
-    `INSERT INTO sync_state (account_id, history_id, last_sync_at, status, error, progress)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO sync_state (account_id, history_id, last_sync_at, status, error, progress, imap_cursor_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(account_id) DO UPDATE SET
        history_id=excluded.history_id,
        last_sync_at=excluded.last_sync_at,
        status=excluded.status,
        error=excluded.error,
-       progress=excluded.progress`,
+       progress=excluded.progress,
+       imap_cursor_json=excluded.imap_cursor_json`,
     [
       row.account_id,
       row.history_id,
@@ -281,6 +216,7 @@ export function upsertSyncState(row: SyncStateRow): void {
       row.status,
       row.error,
       row.progress,
+      row.imap_cursor_json ?? null,
     ],
   );
 }
@@ -356,11 +292,30 @@ export function upsertMessage(row: MessageRow): void {
       row.internal_date,
     ],
   );
+
+  const body = getBody(row.id)?.text_plain ?? "";
+  getDb().upsertFts(
+    row.id,
+    row.subject,
+    row.snippet,
+    row.from_name,
+    row.from_email,
+    body,
+  );
 }
 
-/** Kept for callers that index body text; sql.js has no FTS5, so this is a no-op. */
-export function updateFtsBody(_messageId: string, _bodyText: string): void {
-  /* no-op until a native SQLite build with FTS5 is wired in */
+/** Index body text into the Rust FTS5 table for search. */
+export function updateFtsBody(messageId: string, bodyText: string): void {
+  const msg = getMessageRow(messageId);
+  if (!msg) return;
+  getDb().upsertFts(
+    messageId,
+    msg.subject,
+    msg.snippet,
+    msg.from_name,
+    msg.from_email,
+    bodyText,
+  );
 }
 
 export function getMessageRow(id: string): MessageRow | undefined {
@@ -414,33 +369,53 @@ export function searchMessageRows(
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((t) => t.replace(/[%_\\]/g, ""));
+    .map((t) => t.replace(/["*]/g, "").replace(/'/g, ""));
   if (!terms.length) return [];
 
-  // sql.js WASM ships without FTS5 — use LIKE across header fields + body.
-  const where: string[] = [];
-  const params: unknown[] = [];
-  for (const term of terms) {
-    const like = `%${term}%`;
-    where.push(
-      `(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_name LIKE ? OR m.from_email LIKE ? OR IFNULL(b.text_plain, '') LIKE ?)`,
-    );
-    params.push(like, like, like, like, like);
-  }
+  // FTS5 prefix query — Rust owns the index; fall back to LIKE if MATCH fails.
+  const match = terms.map((t) => `"${t}"*`).join(" AND ");
+  const params: unknown[] = [match];
+  let accountClause = "";
   if (opts.accountId && opts.accountId !== "all") {
-    where.push("m.account_id = ?");
+    accountClause = "AND m.account_id = ?";
     params.push(opts.accountId);
   }
   params.push(opts.limit);
 
-  return all<MessageRow>(
-    `SELECT m.* FROM messages m
-     LEFT JOIN bodies b ON b.message_id = m.id
-     WHERE ${where.join(" AND ")}
-     ORDER BY m.date_ms DESC
-     LIMIT ?`,
-    params,
-  );
+  try {
+    return all<MessageRow>(
+      `SELECT m.* FROM messages m
+       INNER JOIN messages_fts f ON f.message_id = m.id
+       WHERE f MATCH ?
+       ${accountClause}
+       ORDER BY m.date_ms DESC
+       LIMIT ?`,
+      params,
+    );
+  } catch {
+    const likeParams: unknown[] = [];
+    const where: string[] = [];
+    for (const term of terms) {
+      const like = `%${term}%`;
+      where.push(
+        `(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_name LIKE ? OR m.from_email LIKE ? OR IFNULL(b.text_plain, '') LIKE ?)`,
+      );
+      likeParams.push(like, like, like, like, like);
+    }
+    if (opts.accountId && opts.accountId !== "all") {
+      where.push("m.account_id = ?");
+      likeParams.push(opts.accountId);
+    }
+    likeParams.push(opts.limit);
+    return all<MessageRow>(
+      `SELECT m.* FROM messages m
+       LEFT JOIN bodies b ON b.message_id = m.id
+       WHERE ${where.join(" AND ")}
+       ORDER BY m.date_ms DESC
+       LIMIT ?`,
+      likeParams,
+    );
+  }
 }
 
 export function listThreadMessages(
@@ -465,6 +440,7 @@ export function upsertBody(row: BodyRow): void {
        fetched_at=excluded.fetched_at`,
     [row.message_id, row.text_plain, row.text_html, row.fetched_at],
   );
+  updateFtsBody(row.message_id, row.text_plain ?? "");
 }
 
 export function getBody(messageId: string): BodyRow | undefined {
@@ -538,10 +514,20 @@ export function getLabel(id: string): LabelRow | undefined {
   return get<LabelRow>("SELECT * FROM labels WHERE id = ?", [id]);
 }
 
-export function enqueueSend(row: SendQueueRow): void {
+export function enqueueSend(row: {
+  id: string;
+  account_id: string;
+  draft_json: string;
+  send_at_ms: number;
+  created_at: string;
+  status: string;
+  message_id?: string | null;
+}): void {
   run(
-    `INSERT INTO send_queue (id, account_id, draft_json, send_at_ms, created_at, status)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO send_queue (
+       id, account_id, draft_json, send_at_ms, created_at, status,
+       attempts, next_attempt_at_ms, last_error, message_id, locked_until_ms
+     ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, NULL)`,
     [
       row.id,
       row.account_id,
@@ -549,6 +535,8 @@ export function enqueueSend(row: SendQueueRow): void {
       row.send_at_ms,
       row.created_at,
       row.status,
+      row.send_at_ms,
+      row.message_id ?? null,
     ],
   );
 }
@@ -556,10 +544,92 @@ export function enqueueSend(row: SendQueueRow): void {
 export function listDueSends(nowMs: number): SendQueueRow[] {
   return all<SendQueueRow>(
     `SELECT * FROM send_queue
-     WHERE status = 'pending' AND send_at_ms <= ?
-     ORDER BY send_at_ms ASC`,
-    [nowMs],
+     WHERE status = 'pending'
+       AND (next_attempt_at_ms IS NULL OR next_attempt_at_ms <= ?)
+       AND send_at_ms <= ?
+     ORDER BY send_at_ms ASC
+     LIMIT 25`,
+    [nowMs, nowMs],
   );
+}
+
+/** Reset rows left in `sending` by a crash/quit so they are retried. */
+export function recoverStaleSends(nowMs: number, ignoreLock = false): number {
+  const stale = all<{ id: string }>(
+    `SELECT id FROM send_queue
+     WHERE status = 'sending'
+       ${ignoreLock ? "" : "AND (locked_until_ms IS NULL OR locked_until_ms <= ?)"}`,
+    ignoreLock ? [] : [nowMs],
+  );
+  for (const row of stale) {
+    run(
+      `UPDATE send_queue
+       SET status = 'pending',
+           locked_until_ms = NULL,
+           next_attempt_at_ms = ?,
+           last_error = 'Recovered after an interrupted send'
+       WHERE id = ?`,
+      [nowMs, row.id],
+    );
+  }
+  return stale.length;
+}
+
+/**
+ * Atomically claim a due row. Returns false when another loop already took it,
+ * which is what keeps a slow send from being dispatched twice.
+ */
+export function claimSend(id: string, nowMs: number, lockMs: number): boolean {
+  const row = getSendQueueRow(id);
+  if (!row || row.status !== "pending") return false;
+  run(
+    `UPDATE send_queue
+     SET status = 'sending', attempts = attempts + 1, locked_until_ms = ?
+     WHERE id = ? AND status = 'pending'`,
+    [nowMs + lockMs, id],
+  );
+  return getSendQueueRow(id)?.status === "sending";
+}
+
+export function markSendSent(id: string): void {
+  run(
+    `UPDATE send_queue
+     SET status = 'sent', last_error = NULL, locked_until_ms = NULL
+     WHERE id = ?`,
+    [id],
+  );
+}
+
+export function markSendRetry(
+  id: string,
+  error: string,
+  nextAttemptMs: number,
+): void {
+  run(
+    `UPDATE send_queue
+     SET status = 'pending',
+         last_error = ?,
+         next_attempt_at_ms = ?,
+         locked_until_ms = NULL
+     WHERE id = ?`,
+    [error.slice(0, 500), nextAttemptMs, id],
+  );
+}
+
+export function markSendFailed(id: string, error: string): void {
+  run(
+    `UPDATE send_queue
+     SET status = 'error', last_error = ?, locked_until_ms = NULL
+     WHERE id = ?`,
+    [error.slice(0, 500), id],
+  );
+}
+
+export function setSendQueueMessageId(id: string, messageId: string): void {
+  run(`UPDATE send_queue SET message_id = ? WHERE id = ? AND message_id IS NULL`, [
+    messageId,
+    id,
+  ]);
 }
 
 export function getSendQueueRow(id: string): SendQueueRow | undefined {
@@ -671,9 +741,14 @@ export function deleteMessageByProviderId(
     [accountId, providerId],
   );
   if (!row) return;
-  run("DELETE FROM messages WHERE id = ?", [row.id]);
+  deleteMessageById(row.id);
 }
 
 export function deleteMessageById(id: string): void {
+  try {
+    getDb().deleteFts(id);
+  } catch {
+    /* fts row may not exist */
+  }
   run("DELETE FROM messages WHERE id = ?", [id]);
 }

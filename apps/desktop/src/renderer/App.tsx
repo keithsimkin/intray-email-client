@@ -79,7 +79,7 @@ import {
 import {
   UNIFIED_ID,
   accounts as seedAccounts,
-  customFolders,
+  customFolders as seedCustomFolders,
   defaultSmartReplies,
   folders,
   labels as seedLabels,
@@ -97,6 +97,8 @@ import {
   MentionTextarea,
   RecipientChips,
 } from "./MentionTextarea";
+import { AppSelect } from "./AppSelect";
+import { useUndoStack } from "./useUndoStack";
 import {
   looksLikeHtml,
   sanitizeSignatureHtml,
@@ -515,6 +517,29 @@ function slugLabelId(name: string) {
   return base || `label-${Date.now().toString(36)}`;
 }
 
+const CUSTOM_FOLDERS_KEY = "intray.custom-folders.v1";
+
+function loadCustomFolders(): string[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_FOLDERS_KEY);
+    if (!raw) return [...seedCustomFolders];
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((item): item is string => typeof item === "string")
+    ) {
+      return parsed.map((name) => name.trim()).filter(Boolean);
+    }
+  } catch {
+    /* keep seed */
+  }
+  return [...seedCustomFolders];
+}
+
+function saveCustomFolders(names: string[]) {
+  localStorage.setItem(CUSTOM_FOLDERS_KEY, JSON.stringify(names));
+}
+
 type AppNotification = {
   id: string;
   kind: "mail" | "meeting" | "ai" | "sync";
@@ -768,23 +793,71 @@ function Sidebar({
   activeFolder,
   inboxCount,
   folderCounts,
+  customFolders,
   labels,
   syncLabel,
   onFolder,
   onCompose,
   onEmptyFolder,
+  onCreateFolder,
+  onCreateLabel,
 }: {
   account: Account;
   activeFolder: string;
   inboxCount: number;
   folderCounts: Record<string, number>;
+  customFolders: string[];
   labels: Label[];
   syncLabel: string;
   onFolder: (id: string) => void;
   onCompose: () => void;
   onEmptyFolder?: (folderId: "junk" | "trash") => void;
+  onCreateFolder: (name: string) => boolean;
+  onCreateLabel: (name: string, color: string) => void;
 }) {
   const unified = account.id === UNIFIED_ID;
+  const [creating, setCreating] = useState<"folder" | "label" | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newLabelName, setNewLabelName] = useState("");
+  const [newLabelColor, setNewLabelColor] = useState(LABEL_COLORS[4]);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const labelInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (creating === "folder") folderInputRef.current?.focus();
+    if (creating === "label") labelInputRef.current?.focus();
+  }, [creating]);
+
+  const startCreate = (kind: "folder" | "label") => {
+    setCreating(kind);
+    if (kind === "folder") {
+      setNewFolderName("");
+    } else {
+      setNewLabelName("");
+      setNewLabelColor(LABEL_COLORS[4]);
+    }
+  };
+
+  const cancelCreate = () => {
+    setCreating(null);
+    setNewFolderName("");
+    setNewLabelName("");
+  };
+
+  const submitFolder = () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    if (onCreateFolder(name)) {
+      cancelCreate();
+    }
+  };
+
+  const submitLabel = () => {
+    const name = newLabelName.trim();
+    if (!name) return;
+    onCreateLabel(name, newLabelColor);
+    cancelCreate();
+  };
 
   return (
     <aside className="sidebar">
@@ -845,8 +918,56 @@ function Sidebar({
       <div>
         <div className="section-label">
           Folders
-          <Plus size={12} strokeWidth={2} />
+          <button
+            type="button"
+            className="section-add"
+            aria-label="New folder"
+            title="New folder"
+            onClick={() =>
+              creating === "folder" ? cancelCreate() : startCreate("folder")
+            }
+          >
+            <Plus size={12} strokeWidth={2} />
+          </button>
         </div>
+        {creating === "folder" && (
+          <div className="sidebar-create">
+            <input
+              ref={folderInputRef}
+              className="sidebar-create-input"
+              placeholder="Folder name"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitFolder();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelCreate();
+                }
+              }}
+            />
+            <div className="sidebar-create-actions">
+              <button
+                type="button"
+                className="sidebar-create-btn ghost"
+                onClick={cancelCreate}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sidebar-create-btn"
+                disabled={!newFolderName.trim()}
+                onClick={submitFolder}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        )}
         <div className="nav-section">
           {customFolders.map((name) => (
             <button
@@ -865,11 +986,76 @@ function Sidebar({
       <div>
         <div className="section-label">
           Labels
-          <Plus size={12} strokeWidth={2} />
+          <button
+            type="button"
+            className="section-add"
+            aria-label="New label"
+            title="New label"
+            onClick={() =>
+              creating === "label" ? cancelCreate() : startCreate("label")
+            }
+          >
+            <Plus size={12} strokeWidth={2} />
+          </button>
         </div>
+        {creating === "label" && (
+          <div className="sidebar-create">
+            <input
+              ref={labelInputRef}
+              className="sidebar-create-input"
+              placeholder="Label name"
+              value={newLabelName}
+              onChange={(e) => setNewLabelName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitLabel();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelCreate();
+                }
+              }}
+            />
+            <div className="ctx-new-label-colors">
+              {LABEL_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`ctx-color-swatch${newLabelColor === c ? " active" : ""}`}
+                  style={{ background: c }}
+                  aria-label={`Color ${c}`}
+                  onClick={() => setNewLabelColor(c)}
+                />
+              ))}
+            </div>
+            <div className="sidebar-create-actions">
+              <button
+                type="button"
+                className="sidebar-create-btn ghost"
+                onClick={cancelCreate}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sidebar-create-btn"
+                disabled={!newLabelName.trim()}
+                onClick={submitLabel}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        )}
         <div className="nav-section">
           {labels.map((l) => (
-            <button key={l.id} type="button" className="nav-item">
+            <button
+              key={l.id}
+              type="button"
+              className={`nav-item${activeFolder === `label:${l.id}` ? " active" : ""}`}
+              onClick={() => onFolder(`label:${l.id}`)}
+            >
               <span className="label-dot" style={{ color: l.color }} />
               {l.name}
             </button>
@@ -915,9 +1101,11 @@ function MessageActionMenu({
   x,
   y,
   labels,
+  customFolders,
   onAction,
   onClose,
   onCreateLabel,
+  onCreateFolder,
   initialPanel,
   showAi = false,
 }: {
@@ -925,9 +1113,11 @@ function MessageActionMenu({
   x: number;
   y: number;
   labels: Label[];
+  customFolders: string[];
   onAction: (action: MailAction, detail?: string) => void;
   onClose: () => void;
   onCreateLabel: (name: string, color: string) => void;
+  onCreateFolder?: (name: string) => boolean;
   /** Open a submenu immediately (toolbar Label / Snooze / Move). */
   initialPanel?: "snooze" | "label" | "move";
   showAi?: boolean;
@@ -938,9 +1128,12 @@ function MessageActionMenu({
     initialPanel ?? null,
   );
   const [creatingLabel, setCreatingLabel] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [newLabelName, setNewLabelName] = useState("");
+  const [newFolderName, setNewFolderName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState(LABEL_COLORS[4]);
   const newLabelInputRef = useRef<HTMLInputElement | null>(null);
+  const newFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -967,11 +1160,15 @@ function MessageActionMenu({
     if (dx || dy) {
       el.style.transform = `translate(${dx}px, ${dy}px)`;
     }
-  }, [x, y, panel, creatingLabel]);
+  }, [x, y, panel, creatingLabel, creatingFolder]);
 
   useEffect(() => {
     if (creatingLabel) newLabelInputRef.current?.focus();
   }, [creatingLabel]);
+
+  useEffect(() => {
+    if (creatingFolder) newFolderInputRef.current?.focus();
+  }, [creatingFolder]);
 
   const openPanel = (next: "snooze" | "label" | "move") => {
     if (leaveTimer.current != null) {
@@ -980,6 +1177,7 @@ function MessageActionMenu({
     }
     setPanel(next);
     if (next !== "label") setCreatingLabel(false);
+    if (next !== "move") setCreatingFolder(false);
   };
 
   const submitNewLabel = () => {
@@ -988,6 +1186,16 @@ function MessageActionMenu({
     onCreateLabel(name, newLabelColor);
     setCreatingLabel(false);
     setNewLabelName("");
+  };
+
+  const submitNewFolder = () => {
+    const name = newFolderName.trim();
+    if (!name || !onCreateFolder) return;
+    if (onCreateFolder(name)) {
+      onAction("move", name);
+      setCreatingFolder(false);
+      setNewFolderName("");
+    }
   };
 
   const scheduleClosePanel = () => {
@@ -1136,6 +1344,67 @@ function MessageActionMenu({
                 </button>
               );
             })}
+            {onCreateFolder && (
+              <>
+                <div className="ctx-sep" />
+                {creatingFolder ? (
+                  <div
+                    className="ctx-new-label"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      ref={newFolderInputRef}
+                      className="ctx-new-label-input"
+                      placeholder="Folder name"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          submitNewFolder();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setCreatingFolder(false);
+                          setNewFolderName("");
+                        }
+                      }}
+                    />
+                    <div className="ctx-new-label-actions">
+                      <button
+                        type="button"
+                        className="ctx-item"
+                        onClick={() => {
+                          setCreatingFolder(false);
+                          setNewFolderName("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="ctx-item ctx-new-label-create"
+                        disabled={!newFolderName.trim()}
+                        onClick={submitNewFolder}
+                      >
+                        <Plus size={14} strokeWidth={2} />
+                        Create
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="ctx-item"
+                    onClick={() => setCreatingFolder(true)}
+                  >
+                    <Plus size={14} strokeWidth={2} />
+                    New folder…
+                  </button>
+                )}
+              </>
+            )}
           </>,
           "ctx-folder-flyout",
         )}
@@ -1289,6 +1558,7 @@ function MessageList({
   hoverActions,
   reduceMotion,
   labels,
+  customFolders,
   showAi,
   syncing,
   fullScreen,
@@ -1302,6 +1572,7 @@ function MessageList({
   onCompose,
   onAction,
   onCreateLabel,
+  onCreateFolder,
 }: {
   items: Message[];
   selectedId: string;
@@ -1316,6 +1587,7 @@ function MessageList({
   hoverActions: boolean;
   reduceMotion: boolean;
   labels: Label[];
+  customFolders: string[];
   showAi: boolean;
   syncing?: boolean;
   fullScreen?: boolean;
@@ -1332,6 +1604,7 @@ function MessageList({
   onCompose?: () => void;
   onAction: (messageId: string, action: MailAction, snoozeLabel?: string) => void;
   onCreateLabel: (messageId: string, name: string, color: string) => void;
+  onCreateFolder: (name: string) => boolean;
 }) {
   const otherCount = items.filter((m) => !m.important && m.unread).length;
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -1719,12 +1992,14 @@ function MessageList({
           x={menu.x}
           y={menu.y}
           labels={labels}
+          customFolders={customFolders}
           showAi={showAi}
           onClose={() => setMenu(null)}
           onCreateLabel={(name, color) => {
             onCreateLabel(menu.messageId, name, color);
             setMenu(null);
           }}
+          onCreateFolder={onCreateFolder}
           onAction={(action, snoozeLabel) => {
             onAction(menu.messageId, action, snoozeLabel);
             setMenu(null);
@@ -1743,6 +2018,8 @@ function HtmlBody({
   forceDark?: boolean;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
+  const [showImages, setShowImages] = useState(false);
+  const [hasBlockedImages, setHasBlockedImages] = useState(false);
 
   useEffect(() => {
     const frame = ref.current;
@@ -1759,11 +2036,39 @@ function HtmlBody({
          body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
          img { max-width: 100%; height: auto; }
          a { color: #2563eb; }`;
+    // Block every remote fetch (tracking pixels, CSS imports, media) unless the
+    // user explicitly asks to load images for this message.
+    const csp = showImages
+      ? "default-src 'none'; img-src https: http: data: blob:; style-src 'unsafe-inline'; font-src data:; media-src https: http: data: blob:; base-uri 'none'; form-action 'none';"
+      : "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none';";
     doc.open();
     doc.write(`<!doctype html><html><head><meta charset="utf-8" />
+      <meta http-equiv="Content-Security-Policy" content="${csp}" />
       <style>${dark}</style>
     </head><body>${html}</body></html>`);
     doc.close();
+
+    if (!showImages) {
+      const remote = Array.from(doc.images ?? []).some((img) =>
+        /^https?:/i.test(img.getAttribute("src") ?? ""),
+      );
+      setHasBlockedImages(remote);
+    }
+
+    // Links inside the sandbox cannot navigate; route them through the main
+    // process, which re-validates the protocol.
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      const anchor = target?.closest?.("a");
+      const href = anchor?.getAttribute("href") ?? "";
+      if (!href) return;
+      event.preventDefault();
+      if (/^(https?:|mailto:)/i.test(href)) {
+        void window.intray?.openExternal?.(href);
+      }
+    };
+    doc.addEventListener("click", onClick);
+
     const resize = () => {
       const h = doc.body?.scrollHeight ?? 120;
       frame.style.height = `${Math.min(Math.max(h + 8, 80), 900)}px`;
@@ -1771,18 +2076,32 @@ function HtmlBody({
     resize();
     const ob = new ResizeObserver(resize);
     if (doc.body) ob.observe(doc.body);
-    return () => ob.disconnect();
-  }, [html, forceDark]);
+    return () => {
+      ob.disconnect();
+      doc.removeEventListener("click", onClick);
+    };
+  }, [html, forceDark, showImages]);
 
   return (
-    <iframe
-      ref={ref}
-      className="html-frame"
-      title="Email HTML"
-      // allow-same-origin so we can write/measure the doc; no allow-scripts
-      sandbox="allow-same-origin"
-      referrerPolicy="no-referrer"
-    />
+    <div className="html-frame-wrap">
+      {hasBlockedImages && !showImages && (
+        <button
+          type="button"
+          className="html-images-btn"
+          onClick={() => setShowImages(true)}
+        >
+          Remote images blocked · Load images
+        </button>
+      )}
+      <iframe
+        ref={ref}
+        className="html-frame"
+        title="Email HTML"
+        // allow-same-origin so we can write/measure the doc; no allow-scripts.
+        sandbox="allow-same-origin"
+        referrerPolicy="no-referrer"
+      />
+    </div>
   );
 }
 
@@ -1997,13 +2316,16 @@ function ReadingPane({
   conversationView,
   showAi,
   labels,
+  customFolders,
   prefs,
   live,
   account,
+  accounts,
   onBack,
   onAsk,
   onAction,
   onCreateLabel,
+  onCreateFolder,
   onComposeTo,
   onToast,
   onReplySent,
@@ -2015,22 +2337,49 @@ function ReadingPane({
   conversationView: boolean;
   showAi: boolean;
   labels: Label[];
+  customFolders: string[];
   prefs: Preferences;
   live: boolean;
   account: Account;
+  accounts: Account[];
   onBack?: () => void;
   onAsk: () => void;
   onAction: (action: MailAction, snoozeLabel?: string) => void;
   onCreateLabel: (name: string, color: string) => void;
+  onCreateFolder: (name: string) => boolean;
   onComposeTo: (r: Recipient) => void;
   onToast: (text: string) => void;
   onReplySent?: (message: Message) => void;
   /** Bumped by parent to focus the reply box (context menu / shortcuts). */
   focusReplySignal?: number;
 }) {
+  const sendable = useMemo(
+    () => accounts.filter((a) => a.id !== UNIFIED_ID),
+    [accounts],
+  );
+  const defaultReplyFromId = useMemo(() => {
+    if (
+      message?.accountId &&
+      sendable.some((a) => a.id === message.accountId)
+    ) {
+      return message.accountId;
+    }
+    if (account.id !== UNIFIED_ID) return account.id;
+    return sendable[0]?.id ?? account.id;
+  }, [message?.accountId, account.id, sendable]);
+
   const [draft, setDraft] = useState("");
+  const [fromId, setFromId] = useState(defaultReplyFromId);
   const [ccMentions, setCcMentions] = useState<Recipient[]>([]);
+  const [bccMentions, setBccMentions] = useState<Recipient[]>([]);
+  const [showCc, setShowCc] = useState(false);
+  const [showBcc, setShowBcc] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
+  const replyFrom =
+    sendable.find((a) => a.id === fromId) ??
+    sendable.find((a) => a.id === defaultReplyFromId) ??
+    sendable[0] ??
+    account;
   const [aiReplies, setAiReplies] = useState<string[]>([]);
   const [unsubState, setUnsubState] = useState<
     "idle" | "scanning" | "done" | "missing"
@@ -2041,6 +2390,10 @@ function ReadingPane({
     panel?: "snooze" | "label" | "move";
   } | null>(null);
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
+  const replyStateRef = useRef({ draft, ccMentions, bccMentions });
+  replyStateRef.current = { draft, ccMentions, bccMentions };
+  const replyHistory = useUndoStack(() => replyStateRef.current);
+
   const seedReplies = message
     ? (smartRepliesById[message.id] ?? defaultSmartReplies)
     : [];
@@ -2048,8 +2401,8 @@ function ReadingPane({
 
   const predictions = useMemo(() => {
     if (!showAi || !prefs.aiWriteEnabled || !replies.length) return [];
-    const q = draft.trim().toLowerCase();
-    const pool = q
+    const q = draft.toLowerCase();
+    const pool = q.trim()
       ? replies.filter((r) => {
           const t = r.toLowerCase();
           return t.startsWith(q) && t !== q;
@@ -2057,6 +2410,61 @@ function ReadingPane({
       : replies;
     return pool.slice(0, 2);
   }, [showAi, prefs.aiWriteEnabled, replies, draft]);
+
+  const prediction = predictions[0] ?? null;
+  const ghostSuffix = (() => {
+    if (!prediction) return null;
+    if (!prediction.toLowerCase().startsWith(draft.toLowerCase())) return null;
+    const rest = prediction.slice(draft.length);
+    return rest.length > 0 ? rest : null;
+  })();
+
+  const applyReplyState = (next: {
+    draft: string;
+    ccMentions: Recipient[];
+    bccMentions: Recipient[];
+  }) => {
+    setDraft(next.draft);
+    setCcMentions(next.ccMentions);
+    setBccMentions(next.bccMentions);
+    replyHistory.finishApply();
+  };
+
+  const setDraftTracked = (next: string) => {
+    if (next === draft) return;
+    replyHistory.push();
+    setDraft(next);
+  };
+
+  const setCcTracked = (next: Recipient[]) => {
+    replyHistory.push();
+    setCcMentions(next);
+  };
+
+  const setBccTracked = (next: Recipient[]) => {
+    replyHistory.push();
+    setBccMentions(next);
+  };
+
+  const undoReply = () => {
+    const prev = replyHistory.undo();
+    if (!prev) return false;
+    applyReplyState(prev);
+    return true;
+  };
+
+  const redoReply = () => {
+    const next = replyHistory.redo();
+    if (!next) return false;
+    applyReplyState(next);
+    return true;
+  };
+
+  const acceptPrediction = (index: number) => {
+    const text = predictions[index];
+    if (!text) return;
+    setDraftTracked(text);
+  };
 
   useEffect(() => {
     setAiReplies([]);
@@ -2073,22 +2481,47 @@ function ReadingPane({
     };
   }, [message?.id, showAi, prefs.aiWriteEnabled, prefs.aiBridge, prefs.aiModelHint]);
 
+  const replyExcludeEmails = [
+    message?.email ?? "",
+    replyFrom.email,
+    ...ccMentions.map((p) => p.email),
+    ...bccMentions.map((p) => p.email),
+  ].filter(Boolean);
+
   const addCcMention = (contact: Contact) => {
-    setCcMentions((prev) => {
-      if (prev.some((p) => p.email.toLowerCase() === contact.email.toLowerCase())) {
-        return prev;
-      }
-      return [...prev, { name: contact.name, email: contact.email }];
-    });
+    const email = contact.email.toLowerCase();
+    if (
+      ccMentions.some((p) => p.email.toLowerCase() === email) ||
+      bccMentions.some((p) => p.email.toLowerCase() === email)
+    ) {
+      return;
+    }
+    setCcTracked([
+      ...ccMentions,
+      { name: contact.name, email: contact.email },
+    ]);
   };
 
   useEffect(() => {
     setDraft("");
+    setFromId(defaultReplyFromId);
     setCcMentions([]);
+    setBccMentions([]);
+    setShowCc(false);
+    setShowBcc(false);
+    replyHistory.clear();
     setMenu(null);
     setUnsubState("idle");
     setSendingReply(false);
-  }, [message?.id]);
+  }, [message?.id, defaultReplyFromId]);
+
+  useEffect(() => {
+    if (ccMentions.length) setShowCc(true);
+  }, [ccMentions.length]);
+
+  useEffect(() => {
+    if (bccMentions.length) setShowBcc(true);
+  }, [bccMentions.length]);
 
   useEffect(() => {
     if (!focusReplySignal || !message) return;
@@ -2105,9 +2538,10 @@ function ReadingPane({
     try {
       if (live) {
         const dto = await bridgeSendMail({
-          accountId: message.accountId || account.id,
+          accountId: replyFrom.id,
           to: [message.email],
           cc: ccMentions.map((c) => c.email),
+          bcc: bccMentions.map((c) => c.email),
           subject: message.subject.startsWith("Re:")
             ? message.subject
             : `Re: ${message.subject}`,
@@ -2120,6 +2554,8 @@ function ReadingPane({
       }
       setDraft("");
       setCcMentions([]);
+      setBccMentions([]);
+      replyHistory.clear();
       onToast("Reply sent");
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Send failed");
@@ -2137,7 +2573,7 @@ function ReadingPane({
     try {
       const text = await aiSummarizeMessage(prefs, message);
       onToast(text.slice(0, 180) + (text.length > 180 ? "…" : ""));
-      setDraft((d) => (d.trim() ? d : text));
+      if (!draft.trim()) setDraftTracked(text);
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Summarize failed");
     }
@@ -2151,7 +2587,7 @@ function ReadingPane({
     onToast("Translating…");
     try {
       const text = await aiTranslateMessage(prefs, message);
-      setDraft(text);
+      setDraftTracked(text);
       onToast("Translation ready in reply box");
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Translate failed");
@@ -2166,7 +2602,7 @@ function ReadingPane({
     onToast("Writing reply…");
     try {
       const text = await aiWriteReply(prefs, message);
-      setDraft(text);
+      setDraftTracked(text);
     } catch (e) {
       onToast(e instanceof Error ? e.message : "AI write failed");
     }
@@ -2333,12 +2769,14 @@ function ReadingPane({
           y={menu.y}
           initialPanel={menu.panel}
           labels={labels}
+          customFolders={customFolders}
           showAi={showAi}
           onClose={() => setMenu(null)}
           onCreateLabel={(name, color) => {
             onCreateLabel(name, color);
             setMenu(null);
           }}
+          onCreateFolder={onCreateFolder}
           onAction={(action, detail) => {
             onAction(action, detail);
             setMenu(null);
@@ -2452,40 +2890,193 @@ function ReadingPane({
       </div>
 
       <div className="reply-dock">
-        <div className="reply-box">
-          <RecipientChips
-            label="Cc"
-            people={ccMentions}
-            onRemove={(email) =>
-              setCcMentions((prev) =>
-                prev.filter((p) => p.email.toLowerCase() !== email.toLowerCase()),
-              )
+        <div
+          className="reply-box"
+          onKeyDown={(e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            const key = e.key.toLowerCase();
+            if (key === "z" && !e.shiftKey) {
+              if (undoReply()) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+              return;
             }
-            onAdd={(r) => {
-              setCcMentions((prev) => {
-                if (
-                  prev.some(
-                    (p) => p.email.toLowerCase() === r.email.toLowerCase(),
+            if ((key === "z" && e.shiftKey) || key === "y") {
+              if (redoReply()) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }
+          }}
+        >
+          <div className="reply-recipients">
+            <div className="reply-meta-bar">
+              <div className="reply-from-compact">
+                <span className="reply-from-prefix">From</span>
+                <AppSelect
+                  compact
+                  ariaLabel="Send reply from account"
+                  value={replyFrom.id}
+                  onChange={setFromId}
+                  options={sendable.map((a) => ({
+                    id: a.id,
+                    label: a.name,
+                    detail: a.email,
+                    leading: (
+                      <span
+                        className="account-chip"
+                        style={{
+                          background: "transparent",
+                          color: a.color,
+                          borderColor: a.color,
+                        }}
+                      >
+                        {a.label}
+                      </span>
+                    ),
+                  }))}
+                />
+              </div>
+              <div className="reply-meta-toggles">
+                <button
+                  type="button"
+                  className={`reply-meta-toggle${showCc ? " active" : ""}`}
+                  aria-pressed={showCc}
+                  onClick={() => setShowCc((v) => !v)}
+                >
+                  Cc
+                  {ccMentions.length > 0 ? (
+                    <span className="reply-meta-count">{ccMentions.length}</span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  className={`reply-meta-toggle${showBcc ? " active" : ""}`}
+                  aria-pressed={showBcc}
+                  onClick={() => setShowBcc((v) => !v)}
+                >
+                  Bcc
+                  {bccMentions.length > 0 ? (
+                    <span className="reply-meta-count">{bccMentions.length}</span>
+                  ) : null}
+                </button>
+              </div>
+            </div>
+            {showCc && (
+              <RecipientChips
+                label="Cc"
+                people={ccMentions}
+                excludeEmails={replyExcludeEmails}
+                onRemove={(email) =>
+                  setCcTracked(
+                    ccMentions.filter(
+                      (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                    ),
                   )
-                ) {
-                  return prev;
                 }
-                return [...prev, r];
-              });
-            }}
-            placeholder="Cc email…"
-          />
-          <MentionTextarea
-            textareaRef={replyRef}
-            placeholder={`Reply to ${message.from}… Type @ to Cc someone`}
-            value={draft}
-            onChange={setDraft}
-            onMention={addCcMention}
-            excludeEmails={[
-              message.email,
-              ...ccMentions.map((p) => p.email),
-            ]}
-          />
+                onAdd={(r) => {
+                  if (
+                    replyExcludeEmails.some(
+                      (e) => e.toLowerCase() === r.email.toLowerCase(),
+                    )
+                  ) {
+                    return;
+                  }
+                  setCcTracked([...ccMentions, r]);
+                }}
+                placeholder="Cc email…"
+              />
+            )}
+            {showBcc && (
+              <RecipientChips
+                label="Bcc"
+                people={bccMentions}
+                excludeEmails={replyExcludeEmails}
+                onRemove={(email) =>
+                  setBccTracked(
+                    bccMentions.filter(
+                      (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                    ),
+                  )
+                }
+                onAdd={(r) => {
+                  if (
+                    replyExcludeEmails.some(
+                      (e) => e.toLowerCase() === r.email.toLowerCase(),
+                    )
+                  ) {
+                    return;
+                  }
+                  setBccTracked([...bccMentions, r]);
+                }}
+                placeholder="Bcc email…"
+              />
+            )}
+          </div>
+          <div className="reply-input-stack">
+            {ghostSuffix != null && prediction && (
+              <div className="reply-ghost" aria-hidden>
+                <span className="reply-ghost-typed">{draft}</span>
+                <span className="reply-ghost-rest">{ghostSuffix}</span>
+              </div>
+            )}
+            <MentionTextarea
+              textareaRef={replyRef}
+              placeholder={
+                ghostSuffix != null
+                  ? ""
+                  : `Reply to ${message.from}… Type @ to Cc someone`
+              }
+              value={draft}
+              onChange={setDraftTracked}
+              onMention={addCcMention}
+              excludeEmails={replyExcludeEmails}
+              aria-autocomplete={predictions.length ? "both" : undefined}
+              aria-description={
+                predictions.length
+                  ? "Press Tab or 1–2 to accept a suggested reply. Ctrl+Z to undo."
+                  : undefined
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Tab" && !e.shiftKey && ghostSuffix != null) {
+                  e.preventDefault();
+                  acceptPrediction(0);
+                  return;
+                }
+                if (
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.altKey &&
+                  (e.key === "1" || e.key === "2")
+                ) {
+                  const idx = Number(e.key) - 1;
+                  const text = predictions[idx];
+                  if (!text) return;
+                  const q = draft.toLowerCase();
+                  if (q && !text.toLowerCase().startsWith(q)) return;
+                  e.preventDefault();
+                  acceptPrediction(idx);
+                }
+              }}
+            />
+          </div>
+          {predictions.length > 0 && (
+            <div className="reply-suggests" role="listbox" aria-label="Reply suggestions">
+              {predictions.map((text, i) => (
+                <button
+                  key={text}
+                  type="button"
+                  className="reply-suggest"
+                  role="option"
+                  onClick={() => acceptPrediction(i)}
+                >
+                  <kbd className="reply-suggest-key">Tab {i + 1}</kbd>
+                  <span className="reply-suggest-text">{text}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="reply-actions">
             <div style={{ display: "flex", gap: 4 }}>
               <button type="button" className="icon-btn" aria-label="Attach">
@@ -2512,41 +3103,6 @@ function ReadingPane({
             </button>
           </div>
         </div>
-        {predictions.length > 0 && (
-          <div className="smart-row" role="listbox" aria-label="Reply predictions">
-            {predictions.map((text) => {
-              const typed = draft.trim();
-              const matchLen =
-                typed && text.toLowerCase().startsWith(typed.toLowerCase())
-                  ? typed.length
-                  : 0;
-              return (
-                <button
-                  key={text}
-                  type="button"
-                  className="smart"
-                  role="option"
-                  onClick={() => setDraft(text)}
-                >
-                  <span className="smart-text">
-                    {matchLen > 0 ? (
-                      <>
-                        <span className="smart-typed">
-                          {text.slice(0, matchLen)}
-                        </span>
-                        <span className="smart-rest">
-                          {text.slice(matchLen)}
-                        </span>
-                      </>
-                    ) : (
-                      text
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
     </section>
   );
@@ -2598,12 +3154,14 @@ function ModalShell({
 
 function ShortcutsCheatSheet({
   pack,
+  overrides,
   onClose,
 }: {
   pack: ShortcutPackId;
+  overrides: Preferences["shortcutOverrides"];
   onClose: () => void;
 }) {
-  const rows = listShortcuts(pack);
+  const rows = listShortcuts(pack, overrides ?? {});
   const groups = ["Navigate", "Actions", "Compose", "Jump", "Help"] as const;
   return (
     <div className="modal-root" onClick={onClose} role="presentation">
@@ -2627,9 +3185,11 @@ function ShortcutsCheatSheet({
               <div key={group}>
                 <div className="section-label">{group}</div>
                 {g.map((s) => (
-                  <div key={`${s.action}-${s.keys}`} className="settings-row">
+                  <div key={s.action} className="settings-row">
                     <strong>{s.label}</strong>
-                    <kbd className="keycap">{s.keys}</kbd>
+                    <kbd className={`keycap${s.customized ? " custom" : ""}`}>
+                      {s.keys}
+                    </kbd>
                   </div>
                 ))}
               </div>
@@ -2637,8 +3197,8 @@ function ShortcutsCheatSheet({
           })}
         </div>
         <p className="modal-note">
-          Change packs in Settings → Shortcuts. Muscle memory from Gmail or
-          Superhuman transfers here.
+          Change packs or remap keys in Settings → Shortcuts. Muscle memory from
+          Gmail or Superhuman transfers here.
         </p>
       </div>
     </div>
@@ -2718,6 +3278,51 @@ function ComposeModal({
   const [sendError, setSendError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepth = useRef(0);
+  const composeStateRef = useRef({ to, subject, body });
+  composeStateRef.current = { to, subject, body };
+  const composeHistory = useUndoStack(() => composeStateRef.current);
+
+  const applyComposeState = (next: {
+    to: Recipient[];
+    subject: string;
+    body: string;
+  }) => {
+    setTo(next.to);
+    setSubject(next.subject);
+    setBody(next.body);
+    composeHistory.finishApply();
+  };
+
+  const setToTracked = (next: Recipient[]) => {
+    composeHistory.push();
+    setTo(next);
+  };
+
+  const setSubjectTracked = (next: string) => {
+    if (next === subject) return;
+    composeHistory.push();
+    setSubject(next);
+  };
+
+  const setBodyTracked = (next: string) => {
+    if (next === body) return;
+    composeHistory.push();
+    setBody(next);
+  };
+
+  const undoCompose = () => {
+    const prev = composeHistory.undo();
+    if (!prev) return false;
+    applyComposeState(prev);
+    return true;
+  };
+
+  const redoCompose = () => {
+    const next = composeHistory.redo();
+    if (!next) return false;
+    applyComposeState(next);
+    return true;
+  };
 
   const signature = signatureForAccount(prefs, from.id);
   const signatureHtml = looksLikeHtml(signature);
@@ -2869,12 +3474,10 @@ function ComposeModal({
   };
 
   const addRecipient = (r: Recipient) => {
-    setTo((prev) => {
-      if (prev.some((p) => p.email.toLowerCase() === r.email.toLowerCase())) {
-        return prev;
-      }
-      return [...prev, r];
-    });
+    if (to.some((p) => p.email.toLowerCase() === r.email.toLowerCase())) {
+      return;
+    }
+    setToTracked([...to, r]);
   };
 
   const addTo = (contact: Contact) => {
@@ -2889,6 +3492,23 @@ function ComposeModal({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
+        onKeyDown={(e) => {
+          if (!(e.ctrlKey || e.metaKey)) return;
+          const key = e.key.toLowerCase();
+          if (key === "z" && !e.shiftKey) {
+            if (undoCompose()) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+            return;
+          }
+          if ((key === "z" && e.shiftKey) || key === "y") {
+            if (redoCompose()) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }
+        }}
       >
         {draggingFiles && (
           <div className="compose-drop-overlay" aria-hidden>
@@ -2902,28 +3522,28 @@ function ComposeModal({
           <div className="compose-field">
             <span className="compose-field-label">From</span>
             <div className="compose-from">
-              <select
-                className="compose-from-select"
+              <AppSelect
+                ariaLabel="Send from account"
                 value={from.id}
-                onChange={(e) => setFromId(e.target.value)}
-                aria-label="Send from account"
-              >
-                {sendable.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name} · {a.email}
-                  </option>
-                ))}
-              </select>
-              <span
-                className="account-chip"
-                style={{
-                  background: "transparent",
-                  color: from.color,
-                  borderColor: from.color,
-                }}
-              >
-                {from.label}
-              </span>
+                onChange={setFromId}
+                options={sendable.map((a) => ({
+                  id: a.id,
+                  label: a.name,
+                  detail: a.email,
+                  leading: (
+                    <span
+                      className="account-chip"
+                      style={{
+                        background: "transparent",
+                        color: a.color,
+                        borderColor: a.color,
+                      }}
+                    >
+                      {a.label}
+                    </span>
+                  ),
+                }))}
+              />
             </div>
           </div>
 
@@ -2935,8 +3555,8 @@ function ComposeModal({
               people={to}
               excludeEmails={[from.email]}
               onRemove={(email) =>
-                setTo((prev) =>
-                  prev.filter(
+                setToTracked(
+                  to.filter(
                     (p) => p.email.toLowerCase() !== email.toLowerCase(),
                   ),
                 )
@@ -2952,7 +3572,7 @@ function ComposeModal({
               className="compose-subject"
               placeholder="What’s this about?"
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={(e) => setSubjectTracked(e.target.value)}
             />
           </div>
         </div>
@@ -2964,7 +3584,7 @@ function ComposeModal({
             autoFocus
             placeholder="Write your message… Type @ to add someone — or drop files to attach"
             value={body}
-            onChange={setBody}
+            onChange={setBodyTracked}
             onMention={addTo}
             excludeEmails={[from.email, ...to.map((p) => p.email)]}
           />
@@ -3122,6 +3742,9 @@ export default function App() {
   const [labels, setLabels] = useState<Label[]>(() =>
     seedLabels.map((l) => ({ ...l })),
   );
+  const [customFolders, setCustomFolders] = useState<string[]>(() =>
+    loadCustomFolders(),
+  );
   const [mail, setMail] = useState<Message[]>(() =>
     seedMessages.map((m) => ({ ...m })),
   );
@@ -3245,7 +3868,8 @@ export default function App() {
     q?: string;
   }) => {
     const aid = opts?.accountId ?? accountId;
-    const folder = opts?.folder ?? folderId;
+    const requested = opts?.folder ?? folderId;
+    const folder = requested.startsWith("label:") ? "inbox" : requested;
     const f = opts?.filter ?? filter;
     const q = opts?.q ?? searchQuery;
     const result = await bridgeListMail({
@@ -3883,20 +4507,98 @@ export default function App() {
     showToast(`Emptied ${label}`);
   };
 
+  const ensureLabel = (
+    name: string,
+    color: string,
+  ): Promise<{ label: Label; created: boolean } | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return Promise.resolve(null);
+
+    const existing = labels.find(
+      (l) => l.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (existing) return Promise.resolve({ label: existing, created: false });
+
+    const localLabel = (): Label => {
+      let id = slugLabelId(trimmed);
+      let n = 2;
+      while (labels.some((l) => l.id === id)) {
+        id = `${slugLabelId(trimmed)}-${n++}`;
+      }
+      return { id, name: trimmed, color };
+    };
+
+    if (live) {
+      return bridgeCreateLabel({ name: trimmed, color })
+        .then((dto) => ({
+          label: { id: dto.id, name: dto.name, color: dto.color },
+          created: true,
+        }))
+        .catch(() => ({ label: localLabel(), created: true }));
+    }
+
+    return Promise.resolve({ label: localLabel(), created: true });
+  };
+
+  const createFolder = (name: string): boolean => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+
+    const systemIds = new Set(folders.map((f) => f.id));
+    if (systemIds.has(trimmed.toLowerCase())) {
+      showToast(`“${trimmed}” is a system folder`);
+      return false;
+    }
+    if (
+      customFolders.some((f) => f.toLowerCase() === trimmed.toLowerCase())
+    ) {
+      showToast(`Folder “${trimmed}” already exists`);
+      return false;
+    }
+
+    setCustomFolders((prev) => {
+      const next = [...prev, trimmed];
+      saveCustomFolders(next);
+      return next;
+    });
+    setFolderId(trimmed);
+    setFilter("all");
+    setStackView("list");
+    clearChecks();
+    showToast(`Created folder “${trimmed}”`);
+    return true;
+  };
+
+  const createLabel = (name: string, color: string) => {
+    void ensureLabel(name, color).then((result) => {
+      if (!result) return;
+      const { label, created } = result;
+      if (created) {
+        setLabels((prev) =>
+          prev.some((l) => l.id === label.id) ? prev : [...prev, label],
+        );
+      }
+      setFolderId(`label:${label.id}`);
+      setFilter("all");
+      setStackView("list");
+      clearChecks();
+      showToast(
+        created
+          ? `Created label “${label.name}”`
+          : `Label “${label.name}” already exists`,
+      );
+    });
+  };
+
   const createLabelForMessage = (
     messageId: string,
     name: string,
     color: string,
   ) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-
-    const existing = labels.find(
-      (l) => l.name.toLowerCase() === trimmed.toLowerCase(),
-    );
-
-    const apply = (label: Label) => {
-      if (!existing) {
+    void ensureLabel(name, color).then((result) => {
+      if (!result) return;
+      const { label, created } = result;
+      if (created) {
         setLabels((prev) =>
           prev.some((l) => l.id === label.id) ? prev : [...prev, label],
         );
@@ -3916,41 +4618,10 @@ export default function App() {
         void bridgeMutateMail(messageId, "label", { detail: label.id });
       }
       showToast(
-        existing
-          ? `Labeled “${label.name}”`
-          : `Created label “${label.name}”`,
+        created
+          ? `Created label “${label.name}”`
+          : `Labeled “${label.name}”`,
       );
-    };
-
-    if (existing) {
-      apply(existing);
-      return;
-    }
-
-    if (live) {
-      void bridgeCreateLabel({ name: trimmed, color })
-        .then((dto) => apply({ id: dto.id, name: dto.name, color: dto.color }))
-        .catch(() => {
-          apply({
-            id: slugLabelId(trimmed),
-            name: trimmed,
-            color,
-          });
-        });
-      return;
-    }
-
-    apply({
-      id: (() => {
-        let id = slugLabelId(trimmed);
-        let n = 2;
-        while (labels.some((l) => l.id === id)) {
-          id = `${slugLabelId(trimmed)}-${n++}`;
-        }
-        return id;
-      })(),
-      name: trimmed,
-      color,
     });
   };
 
@@ -4009,10 +4680,16 @@ export default function App() {
   const scoped = useMemo(() => {
     return mail.filter((m) => {
       if (accountId !== UNIFIED_ID && m.accountId !== accountId) return false;
+      if (folderId.startsWith("label:")) {
+        const labelId = folderId.slice("label:".length);
+        const label = labels.find((l) => l.id === labelId);
+        if (!label) return false;
+        return m.tag?.label === label.name;
+      }
       if (folderId === "inbox") return m.folder === "inbox";
       return m.folder === folderId;
     });
-  }, [mail, accountId, folderId]);
+  }, [mail, accountId, folderId, labels]);
 
   const folderCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -4254,7 +4931,12 @@ export default function App() {
       )
         return;
 
-      const result = resolveShortcut(prefs.shortcutPack, e, chord);
+      const result = resolveShortcut(
+        prefs.shortcutPack,
+        e,
+        chord,
+        prefs.shortcutOverrides ?? {},
+      );
       if (result.type === "none") {
         if (chord) setChord(null);
         return;
@@ -4272,13 +4954,19 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const listTitle =
-    folderId === "inbox"
-      ? accountId === UNIFIED_ID
-        ? "Unified Inbox"
-        : "Inbox"
-      : (folders.find((f) => f.id === folderId)?.name ??
-        (customFolders.includes(folderId) ? folderId : "Mail"));
+  const listTitle = (() => {
+    if (folderId === "inbox") {
+      return accountId === UNIFIED_ID ? "Unified Inbox" : "Inbox";
+    }
+    if (folderId.startsWith("label:")) {
+      const labelId = folderId.slice("label:".length);
+      return labels.find((l) => l.id === labelId)?.name ?? "Label";
+    }
+    return (
+      folders.find((f) => f.id === folderId)?.name ??
+      (customFolders.includes(folderId) ? folderId : "Mail")
+    );
+  })();
 
   const showUnifiedChrome = accountId === UNIFIED_ID;
 
@@ -4371,6 +5059,7 @@ export default function App() {
         <Sidebar
           account={account}
           activeFolder={folderId}
+          customFolders={customFolders}
           labels={labels}
           syncLabel={
             syncing
@@ -4396,6 +5085,8 @@ export default function App() {
           onEmptyFolder={(folder) => {
             void emptyFolder(folder);
           }}
+          onCreateFolder={createFolder}
+          onCreateLabel={createLabel}
         />
         <MessageList
           items={filtered}
@@ -4411,6 +5102,7 @@ export default function App() {
           hoverActions={prefs.hoverActions}
           reduceMotion={prefs.reduceMotion}
           labels={labels}
+          customFolders={customFolders}
           showAi={showAi}
           syncing={syncing}
           fullScreen={prefs.layout === "stack"}
@@ -4461,6 +5153,7 @@ export default function App() {
             void requestMailAction(messageId, action, detail);
           }}
           onCreateLabel={createLabelForMessage}
+          onCreateFolder={createFolder}
         />
         {showAi && askOpen ? (
           <FloatingAsk
@@ -4497,10 +5190,12 @@ export default function App() {
             prefs={prefs}
             live={live}
             account={account}
+            accounts={accounts}
             onBack={
               prefs.layout === "stack" ? () => setStackView("list") : undefined
             }
             labels={labels}
+            customFolders={customFolders}
             onAsk={() => {
               setAskFocusThread(true);
               setAskOpen(true);
@@ -4514,6 +5209,7 @@ export default function App() {
               if (!selected) return;
               createLabelForMessage(selected.id, name, color);
             }}
+            onCreateFolder={createFolder}
             onComposeTo={(r) => openCompose({ to: [r] })}
             onToast={showToast}
             focusReplySignal={focusReplySignal}
@@ -4627,6 +5323,7 @@ export default function App() {
       {cheatOpen && (
         <ShortcutsCheatSheet
           pack={prefs.shortcutPack}
+          overrides={prefs.shortcutOverrides}
           onClose={() => setCheatOpen(false)}
         />
       )}

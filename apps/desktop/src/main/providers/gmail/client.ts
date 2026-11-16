@@ -45,17 +45,76 @@ export type GmailHistoryResponse = {
   nextPageToken?: string;
 };
 
-async function accessTokenFor(accountId: string): Promise<string> {
+async function accessTokenFor(
+  accountId: string,
+  forceRefresh = false,
+): Promise<string> {
   const creds = loadCredentials(accountId);
   if (!creds || creds.provider !== "gmail") {
     throw new Error("Gmail credentials missing");
   }
   let tokens = creds.tokens;
-  if (Date.now() >= tokens.expiryMs) {
-    tokens = await refreshGmailTokens(tokens.refreshToken);
+  if (forceRefresh || Date.now() >= tokens.expiryMs - 60_000) {
+    // Concurrent callers must share one refresh: Google rotates refresh tokens
+    // and a second refresh with a stale token can revoke the account.
+    let pending = refreshing.get(accountId);
+    if (!pending) {
+      pending = refreshGmailTokens(tokens.refreshToken).finally(() => {
+        refreshing.delete(accountId);
+      });
+      refreshing.set(accountId, pending);
+    }
+    tokens = await pending;
     saveCredentials(accountId, { provider: "gmail", tokens });
   }
   return tokens.accessToken;
+}
+
+const refreshing = new Map<string, Promise<GmailTokens>>();
+
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function gmailFetch<T>(
+  accountId: string,
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  let token = await accessTokenFor(accountId);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const maxAttempts = method === "GET" ? 3 : 1;
+
+  let lastError: Error | null = null;
+  let refreshed = false;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const res = await fetch(`${API}${path}`, {
+      ...init,
+      // A stalled socket used to wedge the whole sync loop.
+      signal: init?.signal ?? AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (res.ok) {
+      if (res.status === 204) return undefined as T;
+      return (await res.json()) as T;
+    }
+    // An expired token is common right after wake-from-sleep. Refresh once and
+    // replay the request instead of surfacing a spurious sync/send error.
+    if (res.status === 401 && !refreshed) {
+      refreshed = true;
+      token = await accessTokenFor(accountId, true);
+      attempt -= 1;
+      continue;
+    }
+    const text = await res.text().catch(() => "");
+    const error = new Error(`Gmail API ${path} → ${res.status}: ${text}`);
+    if (!RETRYABLE.has(res.status) || attempt === maxAttempts) throw error;
+    lastError = error;
+    await sleep(400 * attempt * attempt + Math.random() * 250);
+  }
+  throw lastError ?? new Error(`Gmail API ${path} failed`);
 }
 
 export async function persistGmailTokens(
@@ -63,27 +122,6 @@ export async function persistGmailTokens(
   tokens: GmailTokens,
 ): Promise<void> {
   saveCredentials(accountId, { provider: "gmail", tokens });
-}
-
-async function gmailFetch<T>(
-  accountId: string,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const token = await accessTokenFor(accountId);
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gmail API ${path} → ${res.status}: ${text}`);
-  }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
 }
 
 export async function listMessageIds(
@@ -190,6 +228,27 @@ export async function sendRawMessage(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ raw }),
   });
+}
+
+/**
+ * Idempotency check for retries: did a message with this Message-ID already
+ * reach Gmail? Prevents duplicate mail when the process dies after the API
+ * accepted a send but before the queue row was marked `sent`.
+ */
+export async function findMessageIdByRfc822(
+  accountId: string,
+  messageId: string,
+): Promise<string | null> {
+  const params = new URLSearchParams({
+    q: `rfc822msgid:${messageId}`,
+    maxResults: "1",
+    fields: "messages/id",
+  });
+  const res = await gmailFetch<GmailListResponse>(
+    accountId,
+    `/messages?${params}`,
+  );
+  return res.messages?.[0]?.id ?? null;
 }
 
 export function headerValue(

@@ -1,4 +1,4 @@
-import type { ShortcutPackId } from "./shortcuts";
+import type { ShortcutAction, ShortcutPackId } from "./shortcuts";
 
 export type ThemeMode = "dark" | "light" | "system";
 export type Density = "comfortable" | "compact" | "dense";
@@ -35,6 +35,8 @@ export type Preferences = {
 
   // Inbox
   shortcutPack: ShortcutPackId;
+  /** Per-action key overrides on top of the active pack (e.g. archive → "E"). */
+  shortcutOverrides: Partial<Record<ShortcutAction, string>>;
   unifiedInbox: boolean;
   importantSplit: boolean;
   conversationView: boolean;
@@ -122,6 +124,7 @@ export const defaultPreferences: Preferences = {
   stickySubject: true,
 
   shortcutPack: "superhuman",
+  shortcutOverrides: {},
   unifiedInbox: true,
   importantSplit: true,
   conversationView: true,
@@ -270,7 +273,8 @@ export const aiBridgeMeta: Record<
   },
   cursor: {
     name: "Cursor",
-    blurb: "Cursor agent CLI when installed on PATH.",
+    blurb:
+      "Uses the Cursor agent CLI (cursor-agent). Detects PATH and %LOCALAPPDATA%\\cursor-agent.",
     status: "optional",
   },
   opencode: {
@@ -299,6 +303,10 @@ export function loadPreferences(): Preferences {
       signaturesByAccount: {
         ...defaultPreferences.signaturesByAccount,
         ...(saved.signaturesByAccount ?? {}),
+      },
+      shortcutOverrides: {
+        ...defaultPreferences.shortcutOverrides,
+        ...(saved.shortcutOverrides ?? {}),
       },
     } as Preferences & { aiBridge?: string; layout?: string };
     // CASA was removed — migrate saved preference to Cursor.

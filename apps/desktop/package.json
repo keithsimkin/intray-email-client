@@ -12,14 +12,14 @@
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
+    "@intray/native": "workspace:*",
     "imapflow": "^2.12.1",
     "lucide-react": "^0.525.0",
     "mailparser": "^3.14.5",
     "nodemailer": "^10.6.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "simple-icons": "^16.38.0",
-    "sql.js": "^1.16.0"
+    "simple-icons": "^16.38.0"
   },
   "devDependencies": {
     "@types/mailparser": "^3.9.0",
@@ -27,7 +27,6 @@
     "@types/nodemailer": "^8.0.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^37.2.0",
     "electron-builder": "^26.0.12",
@@ -43,11 +42,18 @@
     },
     "files": [
       "out/**/*",
-      "resources/**/*"
+      "resources/**/*",
+      {
+        "from": "../../crates/intray-native",
+        "to": "node_modules/@intray/native",
+        "filter": ["index.js", "index.d.ts", "*.node"]
+      }
     ],
+    "asarUnpack": ["**/*.node"],
+    "icon": "resources/icon.png",
     "win": {
       "target": ["nsis"],
-      "icon": "resources/icon.png"
+      "icon": "resources/icon.ico"
     }
   }
 }

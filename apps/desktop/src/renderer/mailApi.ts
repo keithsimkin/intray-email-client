@@ -172,6 +172,11 @@ export async function bridgeMcpStop() {
   return window.intray.mcp.stop();
 }
 
+export async function bridgeMcpRotateToken() {
+  if (!hasIntrayBridge()) return { running: false, port: null, url: null };
+  return window.intray.mcp.rotateToken();
+}
+
 export async function bridgeLaunchAtLogin(): Promise<LaunchAtLoginState> {
   if (!hasIntrayBridge()) return { openAtLogin: false, openAsHidden: true };
   return window.intray.getLaunchAtLogin();
