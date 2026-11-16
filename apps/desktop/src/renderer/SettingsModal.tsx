@@ -1,16 +1,21 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bell,
   Bot,
   FileText,
+  KeyRound,
   Keyboard,
   LayoutGrid,
   Layers,
+  Link2,
+  Lock,
   Moon,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Shield,
+  Trash2,
   X,
 } from "lucide-react";
 import type { AiSecretId, McpStatus } from "../shared/types";
@@ -28,11 +33,16 @@ import {
   bridgeMcpStop,
   bridgeMcpRotateToken,
   bridgeNotifyShow,
+  bridgeRemoveAccount,
   bridgeSetLaunchAtLogin,
+  bridgeSync,
+  hasIntrayBridge,
 } from "./mailApi";
+import { ProviderLogo, providerById, type ProviderId } from "./providers";
 import {
   accentColors,
   aiBridgeMeta,
+  defaultPreferences,
   type AccentId,
   type AiBridgeId,
   type Preferences,
@@ -46,6 +56,7 @@ import {
   bindingFromEvent,
   listShortcuts,
   packMeta,
+  seedCustomOverrides,
   type ShortcutAction,
   type ShortcutPackId,
 } from "./shortcuts";
@@ -68,31 +79,6 @@ function Toggle({
   );
 }
 
-function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-}: {
-  value: T;
-  options: { id: T; label: string }[];
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div className="segmented">
-      {options.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          className={`segment${value === o.id ? " active" : ""}`}
-          onClick={() => onChange(o.id)}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function Row({
   title,
   hint,
@@ -104,11 +90,11 @@ function Row({
 }) {
   return (
     <label className="settings-row">
-      <div>
+      <div className="settings-row-copy">
         <strong>{title}</strong>
         {hint && <span>{hint}</span>}
       </div>
-      {children}
+      <div className="settings-row-control">{children}</div>
     </label>
   );
 }
@@ -116,18 +102,27 @@ function Row({
 function Block({
   title,
   hint,
+  action,
   children,
 }: {
   title: string;
   hint?: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="settings-block">
-      <strong>{title}</strong>
-      {hint && <span className="settings-hint">{hint}</span>}
-      {children}
-    </div>
+    <section className="settings-section">
+      <div className="settings-section-head">
+        <div className="settings-section-copy">
+          <h3 className="settings-section-title">{title}</h3>
+          {hint && <p className="settings-section-hint">{hint}</p>}
+        </div>
+        {action ? (
+          <div className="settings-section-action">{action}</div>
+        ) : null}
+      </div>
+      <div className="settings-card">{children}</div>
+    </section>
   );
 }
 
@@ -167,20 +162,81 @@ type TabId =
   | "accounts"
   | "privacy";
 
+const SETTINGS_TABS: {
+  id: TabId;
+  label: string;
+  Icon: typeof Moon;
+  group: string;
+}[] = [
+  { id: "appearance", label: "Appearance", Icon: Moon, group: "Workspace" },
+  { id: "inbox", label: "Inbox", Icon: LayoutGrid, group: "Mail" },
+  { id: "notifications", label: "Notifications", Icon: Bell, group: "Mail" },
+  { id: "compose", label: "Compose", Icon: FileText, group: "Mail" },
+  { id: "ai", label: "AI & agents", Icon: Bot, group: "Agents" },
+  { id: "shortcuts", label: "Shortcuts", Icon: Keyboard, group: "System" },
+  { id: "accounts", label: "Accounts", Icon: Layers, group: "System" },
+  { id: "privacy", label: "Privacy", Icon: Shield, group: "System" },
+];
+
+function linkedAccounts(accounts: Account[]) {
+  return accounts.filter((a) => a.id !== UNIFIED_ID);
+}
+
+function accountProviderId(account: Account): ProviderId {
+  return account.provider ?? "imap";
+}
+
+function credentialGuide(account: Account) {
+  const provider = providerById(accountProviderId(account));
+  if (provider.auth === "oauth") {
+    return {
+      kind: "oauth" as const,
+      title: "Google sign-in",
+      summary:
+        "This mailbox uses OAuth — not a password field. Tokens stay on this PC (DPAPI).",
+      steps: [
+        "Update sign-in / Reconnect opens Google in your browser and replaces the stored token.",
+        "Revoke access anytime in Google Account → Security → Third-party access.",
+        "Remove deletes local mail cache and tokens from this device only.",
+      ],
+    };
+  }
+  const where =
+    provider.id === "imap"
+      ? "your mail host’s security / app-password settings"
+      : `${provider.shortName} → Security (app passwords)`;
+  return {
+    kind: "imap" as const,
+    title: "App password (not your login password)",
+    summary:
+      provider.guide ??
+      "IMAP providers need an app-specific password when 2FA is on — not the password you use on the web.",
+    steps: [
+      `Create an app password in ${where}, then use Update sign-in to paste it.`,
+      "Your everyday login password usually will not work once two-factor auth is enabled.",
+      "Secrets are encrypted with Windows DPAPI on this PC — mail never routes through Intray servers.",
+      "Remove wipes the stored app password and local copies of this mailbox.",
+    ],
+  };
+}
+
 export function SettingsModal({
   prefs,
   accounts,
   onChange,
   onAddAccount,
+  onRemoveAccount,
   onClose,
 }: {
   prefs: Preferences;
   accounts: Account[];
   onChange: (p: Preferences) => void;
   onAddAccount: () => void;
+  onRemoveAccount?: (accountId: string) => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
+  const [navQuery, setNavQuery] = useState("");
   const [query, setQuery] = useState("");
   const [snippetFilter, setSnippetFilter] = useState("");
   const [recordingAction, setRecordingAction] = useState<ShortcutAction | null>(
@@ -188,6 +244,12 @@ export function SettingsModal({
   );
   const [chordPending, setChordPending] = useState<string | null>(null);
   const [launchAtLogin, setLaunchAtLogin] = useState(prefs.launchAtLogin);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
+    null,
+  );
+  const [accountBusy, setAccountBusy] = useState<string | null>(null);
+  const [accountNote, setAccountNote] = useState<string | null>(null);
+  const navSearchRef = useRef<HTMLInputElement>(null);
   const [secretStatus, setSecretStatus] = useState<Record<AiSecretId, boolean>>({
     openai: false,
     grok: false,
@@ -225,6 +287,25 @@ export function SettingsModal({
       setRecordingAction(null);
       setChordPending(null);
     }
+  }, [tab]);
+
+  const mailAccounts = useMemo(() => linkedAccounts(accounts), [accounts]);
+
+  useEffect(() => {
+    if (mailAccounts.length === 0) {
+      setSelectedAccountId(null);
+      return;
+    }
+    if (
+      !selectedAccountId ||
+      !mailAccounts.some((a) => a.id === selectedAccountId)
+    ) {
+      setSelectedAccountId(mailAccounts[0].id);
+    }
+  }, [mailAccounts, selectedAccountId]);
+
+  useEffect(() => {
+    if (tab !== "accounts") setAccountNote(null);
   }, [tab]);
 
   useEffect(() => {
@@ -310,16 +391,49 @@ export function SettingsModal({
     return null;
   };
 
-  const tabs: { id: TabId; label: string; Icon: typeof Moon }[] = [
-    { id: "appearance", label: "Appearance", Icon: Moon },
-    { id: "inbox", label: "Inbox", Icon: LayoutGrid },
-    { id: "notifications", label: "Notifications", Icon: Bell },
-    { id: "compose", label: "Compose", Icon: FileText },
-    { id: "ai", label: "AI & agents", Icon: Bot },
-    { id: "shortcuts", label: "Shortcuts", Icon: Keyboard },
-    { id: "accounts", label: "Accounts", Icon: Layers },
-    { id: "privacy", label: "Privacy", Icon: Shield },
-  ];
+  const navGroups = useMemo(() => {
+    const q = navQuery.trim().toLowerCase();
+    const filtered = q
+      ? SETTINGS_TABS.filter((t) => t.label.toLowerCase().includes(q))
+      : SETTINGS_TABS;
+    const groups: { name: string; items: typeof SETTINGS_TABS }[] = [];
+    for (const item of filtered) {
+      const last = groups[groups.length - 1];
+      if (last && last.name === item.group) last.items.push(item);
+      else groups.push({ name: item.group, items: [item] });
+    }
+    return groups;
+  }, [navQuery]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      navSearchRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const activeTab = SETTINGS_TABS.find((t) => t.id === tab) ?? SETTINGS_TABS[0];
+
+  const restoreDefaults = () => {
+    onChange({ ...defaultPreferences });
+    setLaunchAtLogin(defaultPreferences.launchAtLogin);
+    void bridgeSetLaunchAtLogin(
+      defaultPreferences.launchAtLogin,
+      defaultPreferences.launchToTray,
+    );
+  };
 
   const patch = (partial: Partial<Preferences>) =>
     onChange({ ...prefs, ...partial });
@@ -353,248 +467,302 @@ export function SettingsModal({
         aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="modal-head">
-          <h2>Settings</h2>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <X size={16} strokeWidth={1.75} />
-          </button>
-        </div>
-
         <div className="settings-layout">
-          <nav className="settings-nav">
-            {tabs.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                type="button"
-                className={`nav-item${tab === id ? " active" : ""}`}
-                onClick={() => setTab(id)}
-              >
-                <Icon size={15} strokeWidth={1.75} />
-                {label}
-              </button>
-            ))}
-          </nav>
+          <nav className="settings-nav" aria-label="Settings categories">
+            <label className="settings-nav-search">
+              <Search size={14} strokeWidth={1.75} aria-hidden />
+              <input
+                ref={navSearchRef}
+                value={navQuery}
+                onChange={(e) => setNavQuery(e.target.value)}
+                placeholder="Search settings"
+                aria-label="Search settings"
+              />
+              <kbd className="settings-nav-kbd">/</kbd>
+            </label>
 
-          <div className="settings-body">
-            {tab === "appearance" && (
-              <>
-                <Block
-                  title="Theme"
-                  hint="Match Windows, or lock light/dark. No glow effects."
-                >
-                  <Segmented
-                    value={prefs.theme}
-                    onChange={(theme) => patch({ theme })}
-                    options={[
-                      { id: "light", label: "Light" },
-                      { id: "dark", label: "Dark" },
-                      { id: "system", label: "System" },
-                    ]}
-                  />
-                </Block>
-
-                <Block title="Accent color" hint="Highlights, Join pills, unread dots.">
-                  <div className="accent-row">
-                    {(Object.keys(accentColors) as AccentId[]).map((id) => (
+            <div className="settings-nav-scroll">
+              {navGroups.length === 0 ? (
+                <p className="settings-nav-empty">No matching categories</p>
+              ) : (
+                navGroups.map((group) => (
+                  <div key={group.name} className="settings-nav-group">
+                    <div className="settings-nav-group-label">{group.name}</div>
+                    {group.items.map(({ id, label, Icon }) => (
                       <button
                         key={id}
                         type="button"
-                        className={`accent-swatch${prefs.accent === id ? " active" : ""}`}
-                        style={{ background: accentColors[id] }}
-                        title={id}
-                        onClick={() => patch({ accent: id })}
-                      />
+                        className={`nav-item${tab === id ? " active" : ""}`}
+                        onClick={() => setTab(id)}
+                      >
+                        <Icon size={15} strokeWidth={1.75} />
+                        {label}
+                      </button>
                     ))}
                   </div>
+                ))
+              )}
+            </div>
+          </nav>
+
+          <div className="settings-main">
+            <header className="settings-topbar">
+              <div className="settings-breadcrumb" aria-label="Breadcrumb">
+                <span>Settings</span>
+                <span className="settings-breadcrumb-sep" aria-hidden>
+                  /
+                </span>
+                <span className="settings-breadcrumb-current">
+                  {activeTab.label}
+                </span>
+              </div>
+              <div className="settings-topbar-actions">
+                <button
+                  type="button"
+                  className="settings-restore-btn"
+                  onClick={restoreDefaults}
+                >
+                  <RotateCcw size={14} strokeWidth={1.75} />
+                  Restore defaults
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={onClose}
+                  aria-label="Close"
+                >
+                  <X size={16} strokeWidth={1.75} />
+                </button>
+              </div>
+            </header>
+
+            <div className="settings-body">
+            {tab === "appearance" && (
+              <>
+                <Block
+                  title="Appearance"
+                  hint="Match Windows, or lock light/dark. No glow effects."
+                >
+                  <Row title="Theme" hint="Light, dark, or follow the OS">
+                    <Select
+                      value={prefs.theme}
+                      onChange={(theme) => patch({ theme })}
+                      options={[
+                        { id: "light", label: "Light" },
+                        { id: "dark", label: "Dark" },
+                        { id: "system", label: "System" },
+                      ]}
+                    />
+                  </Row>
+                  <Row
+                    title="Accent color"
+                    hint="Highlights, Join pills, unread dots"
+                  >
+                    <div className="accent-row">
+                      {(Object.keys(accentColors) as AccentId[]).map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`accent-swatch${prefs.accent === id ? " active" : ""}`}
+                          style={{ background: accentColors[id] }}
+                          title={id}
+                          onClick={() => patch({ accent: id })}
+                        />
+                      ))}
+                    </div>
+                  </Row>
                 </Block>
 
                 <Block
                   title="Layout"
                   hint="Compact = list + reader side by side. Wide = bigger list. Full screen = open mail on its own page."
                 >
-                  <Segmented
-                    value={prefs.layout}
-                    onChange={(layout) => patch({ layout })}
-                    options={[
-                      { id: "panels", label: "Compact" },
-                      { id: "wide", label: "Wide list" },
-                      { id: "stack", label: "Full screen" },
-                    ]}
-                  />
+                  <Row
+                    title="Panels"
+                    hint="How the list and reading pane sit together"
+                  >
+                    <Select
+                      value={prefs.layout}
+                      onChange={(layout) => patch({ layout })}
+                      options={[
+                        { id: "panels", label: "Compact" },
+                        { id: "wide", label: "Wide list" },
+                        { id: "stack", label: "Full screen" },
+                      ]}
+                    />
+                  </Row>
+                  <Row title="Density">
+                    <Select
+                      value={prefs.density}
+                      onChange={(density) => patch({ density })}
+                      options={[
+                        { id: "comfortable", label: "Comfortable" },
+                        { id: "compact", label: "Compact" },
+                        { id: "dense", label: "Dense" },
+                      ]}
+                    />
+                  </Row>
+                  <Row title="Reading width">
+                    <Select
+                      value={prefs.readingWidth}
+                      onChange={(readingWidth) => patch({ readingWidth })}
+                      options={[
+                        { id: "narrow", label: "Narrow" },
+                        { id: "medium", label: "Medium" },
+                        { id: "wide", label: "Wide" },
+                      ]}
+                    />
+                  </Row>
+                  <Row
+                    title="Interface scale"
+                    hint={`${prefs.fontScale}% — list and reading pane`}
+                  >
+                    <input
+                      className="settings-range"
+                      type="range"
+                      min={90}
+                      max={120}
+                      step={5}
+                      value={prefs.fontScale}
+                      onChange={(e) =>
+                        patch({ fontScale: Number(e.target.value) })
+                      }
+                    />
+                  </Row>
                 </Block>
 
-                <Block title="Density">
-                  <Segmented
-                    value={prefs.density}
-                    onChange={(density) => patch({ density })}
-                    options={[
-                      { id: "comfortable", label: "Comfortable" },
-                      { id: "compact", label: "Compact" },
-                      { id: "dense", label: "Dense" },
-                    ]}
-                  />
+                <Block title="Display">
+                  <Row title="Sender avatars" hint="Show photos / initials in the list">
+                    <Toggle
+                      on={prefs.showAvatars}
+                      onChange={(showAvatars) => patch({ showAvatars })}
+                    />
+                  </Row>
+                  <Row
+                    title="Preview lines"
+                    hint="Second line snippet under the subject"
+                  >
+                    <Toggle
+                      on={prefs.showPreviewLines}
+                      onChange={(showPreviewLines) =>
+                        patch({ showPreviewLines })
+                      }
+                    />
+                  </Row>
+                  <Row
+                    title="Sticky subject"
+                    hint="Keep the thread subject pinned while scrolling"
+                  >
+                    <Toggle
+                      on={prefs.stickySubject}
+                      onChange={(stickySubject) => patch({ stickySubject })}
+                    />
+                  </Row>
+                  <Row
+                    title="Force dark HTML bodies"
+                    hint="Restyle light newsletters when the app is dark"
+                  >
+                    <Toggle
+                      on={prefs.forceDarkHtml}
+                      onChange={(forceDarkHtml) => patch({ forceDarkHtml })}
+                    />
+                  </Row>
+                  <Row title="Reduce motion" hint="Disable list fade and soft transitions">
+                    <Toggle
+                      on={prefs.reduceMotion}
+                      onChange={(reduceMotion) => patch({ reduceMotion })}
+                    />
+                  </Row>
                 </Block>
-
-                <Block title="Reading width">
-                  <Segmented
-                    value={prefs.readingWidth}
-                    onChange={(readingWidth) => patch({ readingWidth })}
-                    options={[
-                      { id: "narrow", label: "Narrow" },
-                      { id: "medium", label: "Medium" },
-                      { id: "wide", label: "Wide" },
-                    ]}
-                  />
-                </Block>
-
-                <Row
-                  title="Interface scale"
-                  hint={`${prefs.fontScale}% — list and reading pane`}
-                >
-                  <input
-                    className="settings-range"
-                    type="range"
-                    min={90}
-                    max={120}
-                    step={5}
-                    value={prefs.fontScale}
-                    onChange={(e) =>
-                      patch({ fontScale: Number(e.target.value) })
-                    }
-                  />
-                </Row>
-
-                <Row title="Sender avatars" hint="Show photos / initials in the list">
-                  <Toggle
-                    on={prefs.showAvatars}
-                    onChange={(showAvatars) => patch({ showAvatars })}
-                  />
-                </Row>
-                <Row
-                  title="Preview lines"
-                  hint="Second line snippet under the subject"
-                >
-                  <Toggle
-                    on={prefs.showPreviewLines}
-                    onChange={(showPreviewLines) =>
-                      patch({ showPreviewLines })
-                    }
-                  />
-                </Row>
-                <Row
-                  title="Sticky subject"
-                  hint="Keep the thread subject pinned while scrolling"
-                >
-                  <Toggle
-                    on={prefs.stickySubject}
-                    onChange={(stickySubject) => patch({ stickySubject })}
-                  />
-                </Row>
-                <Row
-                  title="Force dark HTML bodies"
-                  hint="Restyle light newsletters when the app is dark"
-                >
-                  <Toggle
-                    on={prefs.forceDarkHtml}
-                    onChange={(forceDarkHtml) => patch({ forceDarkHtml })}
-                  />
-                </Row>
-                <Row title="Reduce motion" hint="Disable list fade and soft transitions">
-                  <Toggle
-                    on={prefs.reduceMotion}
-                    onChange={(reduceMotion) => patch({ reduceMotion })}
-                  />
-                </Row>
               </>
             )}
 
             {tab === "inbox" && (
               <>
-                <Row
-                  title="Unified Inbox"
-                  hint="Merge every account into one Inbox"
-                >
-                  <Toggle
-                    on={prefs.unifiedInbox}
-                    onChange={(unifiedInbox) => patch({ unifiedInbox })}
-                  />
-                </Row>
-                <Row
-                  title="Important / Other split"
-                  hint="People & security first; newsletters in Other"
-                >
-                  <Toggle
-                    on={prefs.importantSplit}
-                    onChange={(importantSplit) => patch({ importantSplit })}
-                  />
-                </Row>
-                <Row
-                  title="Conversation view"
-                  hint="Group replies into threads in the reading pane"
-                >
-                  <Toggle
-                    on={prefs.conversationView}
-                    onChange={(conversationView) =>
-                      patch({ conversationView })
-                    }
-                  />
-                </Row>
-                <Row
-                  title="Waiting for Reply"
-                  hint="Auto-label after this many days with no response"
-                >
-                  <Select
-                    value={prefs.waitingForReplyDays}
-                    onChange={(waitingForReplyDays) =>
-                      patch({ waitingForReplyDays })
-                    }
-                    options={[
-                      { id: 2, label: "2 days" },
-                      { id: 3, label: "3 days" },
-                      { id: 5, label: "5 days" },
-                      { id: 7, label: "7 days" },
-                    ]}
-                  />
-                </Row>
-                <Row title="Unread dots in list">
-                  <Toggle
-                    on={prefs.showUnreadBadgeInList}
-                    onChange={(showUnreadBadgeInList) =>
-                      patch({ showUnreadBadgeInList })
-                    }
-                  />
-                </Row>
-                <Row title="Mark as read when opened">
-                  <Toggle
-                    on={prefs.markReadOnOpen}
-                    onChange={(markReadOnOpen) => patch({ markReadOnOpen })}
-                  />
-                </Row>
-                <Row
-                  title="Mark as read on scroll"
-                  hint="Like Superhuman — reading past the fold clears unread"
-                >
-                  <Toggle
-                    on={prefs.markReadOnScroll}
-                    onChange={(markReadOnScroll) =>
-                      patch({ markReadOnScroll })
-                    }
-                  />
-                </Row>
-                <Row
-                  title="Hover actions on rows"
-                  hint="Unread, snooze, archive, delete without opening"
-                >
-                  <Toggle
-                    on={prefs.hoverActions}
-                    onChange={(hoverActions) => patch({ hoverActions })}
-                  />
-                </Row>
+                <Block title="Inbox">
+                  <Row
+                    title="Unified Inbox"
+                    hint="Merge every account into one Inbox"
+                  >
+                    <Toggle
+                      on={prefs.unifiedInbox}
+                      onChange={(unifiedInbox) => patch({ unifiedInbox })}
+                    />
+                  </Row>
+                  <Row
+                    title="Important / Other split"
+                    hint="People & security first; newsletters in Other"
+                  >
+                    <Toggle
+                      on={prefs.importantSplit}
+                      onChange={(importantSplit) => patch({ importantSplit })}
+                    />
+                  </Row>
+                  <Row
+                    title="Conversation view"
+                    hint="Group replies into threads in the reading pane"
+                  >
+                    <Toggle
+                      on={prefs.conversationView}
+                      onChange={(conversationView) =>
+                        patch({ conversationView })
+                      }
+                    />
+                  </Row>
+                </Block>
+                <Block title="Reading">
+                  <Row
+                    title="Waiting for Reply"
+                    hint="Auto-label after this many days with no response"
+                  >
+                    <Select
+                      value={prefs.waitingForReplyDays}
+                      onChange={(waitingForReplyDays) =>
+                        patch({ waitingForReplyDays })
+                      }
+                      options={[
+                        { id: 2, label: "2 days" },
+                        { id: 3, label: "3 days" },
+                        { id: 5, label: "5 days" },
+                        { id: 7, label: "7 days" },
+                      ]}
+                    />
+                  </Row>
+                  <Row title="Unread dots in list">
+                    <Toggle
+                      on={prefs.showUnreadBadgeInList}
+                      onChange={(showUnreadBadgeInList) =>
+                        patch({ showUnreadBadgeInList })
+                      }
+                    />
+                  </Row>
+                  <Row title="Mark as read when opened">
+                    <Toggle
+                      on={prefs.markReadOnOpen}
+                      onChange={(markReadOnOpen) => patch({ markReadOnOpen })}
+                    />
+                  </Row>
+                  <Row
+                    title="Mark as read on scroll"
+                    hint="Like Superhuman — reading past the fold clears unread"
+                  >
+                    <Toggle
+                      on={prefs.markReadOnScroll}
+                      onChange={(markReadOnScroll) =>
+                        patch({ markReadOnScroll })
+                      }
+                    />
+                  </Row>
+                  <Row
+                    title="Hover actions on rows"
+                    hint="Unread, snooze, archive, delete without opening"
+                  >
+                    <Toggle
+                      on={prefs.hoverActions}
+                      onChange={(hoverActions) => patch({ hoverActions })}
+                    />
+                  </Row>
+                </Block>
               </>
             )}
 
@@ -603,6 +771,26 @@ export function SettingsModal({
                 <Block
                   title="Windows notifications"
                   hint="System toasts in the notification center — like WhatsApp’s master switch."
+                  action={
+                    <button
+                      type="button"
+                      className="settings-section-btn"
+                      onClick={() => {
+                        void bridgeNotifyShow({
+                          title: prefs.notifyShowSender
+                            ? "Ava Martin"
+                            : "Intray",
+                          body: prefs.notifyShowPreview
+                            ? "Q4 roadmap — notes attached"
+                            : "You have new mail",
+                          silent: !prefs.notifySound,
+                        });
+                      }}
+                    >
+                      <Bell size={14} strokeWidth={1.75} />
+                      Send test
+                    </button>
+                  }
                 >
                   <Row
                     title="Show desktop notifications"
@@ -613,40 +801,26 @@ export function SettingsModal({
                       onChange={(notifyDesktop) => patch({ notifyDesktop })}
                     />
                   </Row>
-                  <button
-                    type="button"
-                    className="compose settings-add"
-                    style={{ marginTop: 8 }}
-                    onClick={() => {
-                      void bridgeNotifyShow({
-                        title: prefs.notifyShowSender
-                          ? "Ava Martin"
-                          : "Intray",
-                        body: prefs.notifyShowPreview
-                          ? "Q4 roadmap — notes attached"
-                          : "You have new mail",
-                        silent: !prefs.notifySound,
-                      });
-                    }}
-                  >
-                    <Bell size={14} strokeWidth={1.75} />
-                    Send test notification
-                  </button>
                 </Block>
 
                 <Block
                   title="Which mail"
                   hint="Important-only matches the inbox Important / Other split."
                 >
-                  <Segmented
-                    value={prefs.notifyMode}
-                    onChange={(notifyMode) => patch({ notifyMode })}
-                    options={[
-                      { id: "all", label: "All mail" },
-                      { id: "important", label: "Important" },
-                      { id: "off", label: "Off" },
-                    ]}
-                  />
+                  <Row
+                    title="Notify about"
+                    hint="Which arrivals raise a desktop toast"
+                  >
+                    <Select
+                      value={prefs.notifyMode}
+                      onChange={(notifyMode) => patch({ notifyMode })}
+                      options={[
+                        { id: "all", label: "All mail" },
+                        { id: "important", label: "Important" },
+                        { id: "off", label: "Off" },
+                      ]}
+                    />
+                  </Row>
                 </Block>
 
                 <Block title="Message content">
@@ -704,167 +878,177 @@ export function SettingsModal({
                   </Row>
                 </Block>
 
-                <Block
-                  title="Taskbar badge"
-                  hint="Unread count overlay on the Windows taskbar icon"
-                >
-                  <Segmented
-                    value={prefs.taskbarBadge}
-                    onChange={(taskbarBadge) => patch({ taskbarBadge })}
-                    options={[
-                      { id: "count", label: "Count" },
-                      { id: "dot", label: "Dot" },
-                      { id: "important", label: "Important" },
-                      { id: "off", label: "Off" },
-                    ]}
-                  />
+                <Block title="Badges">
+                  <Row
+                    title="Taskbar badge"
+                    hint="Unread overlay on the Windows taskbar icon"
+                  >
+                    <Select
+                      value={prefs.taskbarBadge}
+                      onChange={(taskbarBadge) => patch({ taskbarBadge })}
+                      options={[
+                        { id: "count", label: "Count" },
+                        { id: "dot", label: "Dot" },
+                        { id: "important", label: "Important" },
+                        { id: "off", label: "Off" },
+                      ]}
+                    />
+                  </Row>
+                  <Row
+                    title="Tray badge"
+                    hint="Tooltip / tray flyout unread signal"
+                  >
+                    <Select
+                      value={prefs.trayBadge}
+                      onChange={(trayBadge) => patch({ trayBadge })}
+                      options={[
+                        { id: "count", label: "Count" },
+                        { id: "dot", label: "Dot" },
+                        { id: "important", label: "Important" },
+                        { id: "off", label: "Off" },
+                      ]}
+                    />
+                  </Row>
                 </Block>
 
-                <Block title="Tray badge" hint="Tooltip / tray flyout unread signal">
-                  <Segmented
-                    value={prefs.trayBadge}
-                    onChange={(trayBadge) => patch({ trayBadge })}
-                    options={[
-                      { id: "count", label: "Count" },
-                      { id: "dot", label: "Dot" },
-                      { id: "important", label: "Important" },
-                      { id: "off", label: "Off" },
-                    ]}
-                  />
-                </Block>
-
-                <Row
-                  title="Start with Windows"
-                  hint="Open Intray when you sign in (hidden to tray)"
-                >
-                  <Toggle
-                    on={launchAtLogin}
-                    onChange={(next) => {
-                      setLaunchAtLogin(next);
-                      patch({ launchAtLogin: next });
-                      void bridgeSetLaunchAtLogin(next, prefs.launchToTray);
-                    }}
-                  />
-                </Row>
-                <Row
-                  title="Launch to system tray"
-                  hint="Keep Intray available from the notification area"
-                >
-                  <Toggle
-                    on={prefs.launchToTray}
-                    onChange={(launchToTray) => {
-                      patch({ launchToTray });
-                      if (launchAtLogin) {
-                        void bridgeSetLaunchAtLogin(true, launchToTray);
-                      }
-                    }}
-                  />
-                </Row>
-                <Row
-                  title="Global hotkey"
-                  hint="Ctrl+Alt+M opens the tray quick panel"
-                >
-                  <Toggle
-                    on={prefs.globalHotkey}
-                    onChange={(globalHotkey) => patch({ globalHotkey })}
-                  />
-                </Row>
-                <Row title="Quiet hours" hint="Mute Windows toasts overnight">
-                  <Toggle
-                    on={prefs.quietHours}
-                    onChange={(quietHours) => patch({ quietHours })}
-                  />
-                </Row>
-                {prefs.quietHours && (
-                  <div className="quiet-row">
-                    <label>
-                      From
-                      <input
-                        type="time"
-                        value={prefs.quietStart}
-                        onChange={(e) =>
-                          patch({ quietStart: e.target.value })
+                <Block title="Startup & tray">
+                  <Row
+                    title="Start with Windows"
+                    hint="Open Intray when you sign in (hidden to tray)"
+                  >
+                    <Toggle
+                      on={launchAtLogin}
+                      onChange={(next) => {
+                        setLaunchAtLogin(next);
+                        patch({ launchAtLogin: next });
+                        void bridgeSetLaunchAtLogin(next, prefs.launchToTray);
+                      }}
+                    />
+                  </Row>
+                  <Row
+                    title="Launch to system tray"
+                    hint="Keep Intray available from the notification area"
+                  >
+                    <Toggle
+                      on={prefs.launchToTray}
+                      onChange={(launchToTray) => {
+                        patch({ launchToTray });
+                        if (launchAtLogin) {
+                          void bridgeSetLaunchAtLogin(true, launchToTray);
                         }
-                      />
-                    </label>
-                    <label>
-                      To
-                      <input
-                        type="time"
-                        value={prefs.quietEnd}
-                        onChange={(e) => patch({ quietEnd: e.target.value })}
-                      />
-                    </label>
-                  </div>
-                )}
+                      }}
+                    />
+                  </Row>
+                  <Row
+                    title="Global hotkey"
+                    hint="Ctrl+Alt+M opens the tray quick panel"
+                  >
+                    <Toggle
+                      on={prefs.globalHotkey}
+                      onChange={(globalHotkey) => patch({ globalHotkey })}
+                    />
+                  </Row>
+                  <Row title="Quiet hours" hint="Mute Windows toasts overnight">
+                    <Toggle
+                      on={prefs.quietHours}
+                      onChange={(quietHours) => patch({ quietHours })}
+                    />
+                  </Row>
+                  {prefs.quietHours && (
+                    <div className="quiet-row">
+                      <label>
+                        From
+                        <input
+                          type="time"
+                          value={prefs.quietStart}
+                          onChange={(e) =>
+                            patch({ quietStart: e.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        To
+                        <input
+                          type="time"
+                          value={prefs.quietEnd}
+                          onChange={(e) => patch({ quietEnd: e.target.value })}
+                        />
+                      </label>
+                    </div>
+                  )}
+                </Block>
               </>
             )}
 
             {tab === "compose" && (
               <>
-                <Row
-                  title="Undo Send"
-                  hint="Hold messages in Outbox before they leave"
-                >
-                  <Select
-                    value={prefs.undoSendSeconds}
-                    onChange={(undoSendSeconds) =>
-                      patch({ undoSendSeconds })
-                    }
-                    options={[
-                      { id: 5, label: "5 seconds" },
-                      { id: 10, label: "10 seconds" },
-                      { id: 20, label: "20 seconds" },
-                      { id: 0, label: "Off" },
-                    ]}
-                  />
-                </Row>
-                <Row title="Default to Reply all">
-                  <Toggle
-                    on={prefs.defaultReplyAll}
-                    onChange={(defaultReplyAll) => patch({ defaultReplyAll })}
-                  />
-                </Row>
-                <Row
-                  title="Send & Archive"
-                  hint="Archive the thread when you hit Send"
-                >
-                  <Toggle
-                    on={prefs.sendAndArchive}
-                    onChange={(sendAndArchive) => patch({ sendAndArchive })}
-                  />
-                </Row>
-                <Row title="Spellcheck">
-                  <Toggle
-                    on={prefs.spellcheck}
-                    onChange={(spellcheck) => patch({ spellcheck })}
-                  />
-                </Row>
-                <Row
-                  title="Open tracking"
-                  hint="Delivery ticks on Sent — gray when delivered, blue when opened"
-                >
-                  <Toggle
-                    on={prefs.trackOpens}
-                    onChange={(trackOpens) => patch({ trackOpens })}
-                  />
-                </Row>
-                <Row title="Signature on replies">
-                  <Toggle
-                    on={prefs.includeSignatureOnReply}
-                    onChange={(includeSignatureOnReply) =>
-                      patch({ includeSignatureOnReply })
-                    }
-                  />
-                </Row>
-                <Row title="Signature on forwards">
-                  <Toggle
-                    on={prefs.includeSignatureOnForward}
-                    onChange={(includeSignatureOnForward) =>
-                      patch({ includeSignatureOnForward })
-                    }
-                  />
-                </Row>
+                <Block title="Sending">
+                  <Row
+                    title="Undo Send"
+                    hint="Hold messages in Outbox before they leave"
+                  >
+                    <Select
+                      value={prefs.undoSendSeconds}
+                      onChange={(undoSendSeconds) =>
+                        patch({ undoSendSeconds })
+                      }
+                      options={[
+                        { id: 5, label: "5 seconds" },
+                        { id: 10, label: "10 seconds" },
+                        { id: 20, label: "20 seconds" },
+                        { id: 0, label: "Off" },
+                      ]}
+                    />
+                  </Row>
+                  <Row title="Default to Reply all">
+                    <Toggle
+                      on={prefs.defaultReplyAll}
+                      onChange={(defaultReplyAll) => patch({ defaultReplyAll })}
+                    />
+                  </Row>
+                  <Row
+                    title="Send & Archive"
+                    hint="Archive the thread when you hit Send"
+                  >
+                    <Toggle
+                      on={prefs.sendAndArchive}
+                      onChange={(sendAndArchive) => patch({ sendAndArchive })}
+                    />
+                  </Row>
+                  <Row title="Spellcheck">
+                    <Toggle
+                      on={prefs.spellcheck}
+                      onChange={(spellcheck) => patch({ spellcheck })}
+                    />
+                  </Row>
+                  <Row
+                    title="Open tracking"
+                    hint="Delivery ticks on Sent — gray when delivered, blue when opened"
+                  >
+                    <Toggle
+                      on={prefs.trackOpens}
+                      onChange={(trackOpens) => patch({ trackOpens })}
+                    />
+                  </Row>
+                </Block>
+                <Block title="Signatures">
+                  <Row title="Signature on replies">
+                    <Toggle
+                      on={prefs.includeSignatureOnReply}
+                      onChange={(includeSignatureOnReply) =>
+                        patch({ includeSignatureOnReply })
+                      }
+                    />
+                  </Row>
+                  <Row title="Signature on forwards">
+                    <Toggle
+                      on={prefs.includeSignatureOnForward}
+                      onChange={(includeSignatureOnForward) =>
+                        patch({ includeSignatureOnForward })
+                      }
+                    />
+                  </Row>
+                </Block>
                 <Block
                   title="Signatures by account"
                   hint="Plain text or HTML. Use a designed Intray card, or paste your own markup."
@@ -1085,8 +1269,8 @@ export function SettingsModal({
                           title={`${aiBridgeMeta[prefs.aiBridge].name} API key`}
                           hint={
                             secretStatus[secretId]
-                              ? "Key saved on this PC (DPAPI). Paste a new one to replace."
-                              : "Stored only on this device with Windows DPAPI."
+                              ? "Provider API key saved on this PC (DPAPI) — not your email password. Paste a new key to replace."
+                              : "This is a provider API key (sk-…), not a mail account password. Stored only on this device with Windows DPAPI."
                           }
                         >
                           <input
@@ -1096,7 +1280,7 @@ export function SettingsModal({
                             placeholder={
                               secretStatus[secretId]
                                 ? "•••••••••••• (saved)"
-                                : "sk-…"
+                                : "sk-… API key"
                             }
                             value={secretDraft}
                             onChange={(e) => setSecretDraft(e.target.value)}
@@ -1121,6 +1305,12 @@ export function SettingsModal({
                               });
                             }}
                           />
+                          <p className="settings-inline-note">
+                            Create or rotate keys in your{" "}
+                            {aiBridgeMeta[prefs.aiBridge].name} dashboard, then
+                            paste here. Clearing and blurring with an empty
+                            field leaves the saved key unchanged.
+                          </p>
                         </Block>
                       );
                     })()}
@@ -1153,66 +1343,66 @@ export function SettingsModal({
                   </>
                 )}
 
-                <div className="section-label">Features</div>
-                <Row title="Write with AI" hint="Suggested replies in your voice">
-                  <Toggle
-                    on={prefs.aiWriteEnabled}
-                    onChange={(aiWriteEnabled) => patch({ aiWriteEnabled })}
-                  />
-                </Row>
-                <Row title="Ask AI" hint="Natural language over your mail">
-                  <Toggle
-                    on={prefs.aiAskEnabled}
-                    onChange={(aiAskEnabled) => patch({ aiAskEnabled })}
-                  />
-                </Row>
-                <Row title="Summarize">
-                  <Toggle
-                    on={prefs.aiSummarizeEnabled}
-                    onChange={(aiSummarizeEnabled) =>
-                      patch({ aiSummarizeEnabled })
-                    }
-                  />
-                </Row>
-                <Row title="Translate">
-                  <Toggle
-                    on={prefs.aiTranslateEnabled}
-                    onChange={(aiTranslateEnabled) =>
-                      patch({ aiTranslateEnabled })
-                    }
-                  />
-                </Row>
-                <Row
-                  title="Auto-label"
-                  hint="Suggest labels from subject, sender, and body via your AI provider"
-                >
-                  <Toggle
-                    on={prefs.aiAutoLabel}
-                    onChange={(aiAutoLabel) => patch({ aiAutoLabel })}
-                  />
-                </Row>
-                <Row
-                  title="Catch Me Up"
-                  hint="Tray summary of unread, actionable first"
-                >
-                  <Toggle
-                    on={prefs.aiCatchMeUp}
-                    onChange={(aiCatchMeUp) => patch({ aiCatchMeUp })}
-                  />
-                </Row>
-                <Row
-                  title="Confirm destructive AI actions"
-                  hint="Show exact emails before Trash / Junk"
-                >
-                  <Toggle
-                    on={prefs.aiConfirmDestructive}
-                    onChange={(aiConfirmDestructive) =>
-                      patch({ aiConfirmDestructive })
-                    }
-                  />
-                </Row>
+                <Block title="Features">
+                  <Row title="Write with AI" hint="Suggested replies in your voice">
+                    <Toggle
+                      on={prefs.aiWriteEnabled}
+                      onChange={(aiWriteEnabled) => patch({ aiWriteEnabled })}
+                    />
+                  </Row>
+                  <Row title="Ask AI" hint="Natural language over your mail">
+                    <Toggle
+                      on={prefs.aiAskEnabled}
+                      onChange={(aiAskEnabled) => patch({ aiAskEnabled })}
+                    />
+                  </Row>
+                  <Row title="Summarize">
+                    <Toggle
+                      on={prefs.aiSummarizeEnabled}
+                      onChange={(aiSummarizeEnabled) =>
+                        patch({ aiSummarizeEnabled })
+                      }
+                    />
+                  </Row>
+                  <Row title="Translate">
+                    <Toggle
+                      on={prefs.aiTranslateEnabled}
+                      onChange={(aiTranslateEnabled) =>
+                        patch({ aiTranslateEnabled })
+                      }
+                    />
+                  </Row>
+                  <Row
+                    title="Auto-label"
+                    hint="Suggest labels from subject, sender, and body via your AI provider"
+                  >
+                    <Toggle
+                      on={prefs.aiAutoLabel}
+                      onChange={(aiAutoLabel) => patch({ aiAutoLabel })}
+                    />
+                  </Row>
+                  <Row
+                    title="Catch Me Up"
+                    hint="Tray summary of unread, actionable first"
+                  >
+                    <Toggle
+                      on={prefs.aiCatchMeUp}
+                      onChange={(aiCatchMeUp) => patch({ aiCatchMeUp })}
+                    />
+                  </Row>
+                  <Row
+                    title="Confirm destructive AI actions"
+                    hint="Show exact emails before Trash / Junk"
+                  >
+                    <Toggle
+                      on={prefs.aiConfirmDestructive}
+                      onChange={(aiConfirmDestructive) =>
+                        patch({ aiConfirmDestructive })
+                      }
+                    />
+                  </Row>
+                </Block>
 
-                <div className="section-label">MCP</div>
                 <Block
                   title="Local MCP server"
                   hint={
@@ -1287,7 +1477,20 @@ export function SettingsModal({
                           aria-label={packMeta[id].name}
                           title={packMeta[id].name}
                           className={`bridge-icon${selected ? " active" : ""}`}
-                          onClick={() => patch({ shortcutPack: id })}
+                          onClick={() => {
+                            if (id === "custom") {
+                              if (prefs.shortcutPack === "custom") return;
+                              patch({
+                                shortcutPack: "custom",
+                                shortcutOverrides: seedCustomOverrides(
+                                  prefs.shortcutPack,
+                                  overrides,
+                                ),
+                              });
+                              return;
+                            }
+                            patch({ shortcutPack: id });
+                          }}
                         >
                           <PackLogo id={id} size={22} />
                         </button>
@@ -1299,139 +1502,333 @@ export function SettingsModal({
                     <span>{packMeta[prefs.shortcutPack].blurb}</span>
                   </div>
                 </Block>
-                <label className="shortcut-search">
-                  <Search size={15} strokeWidth={1.75} />
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Filter shortcuts…"
-                    aria-label="Filter shortcuts"
-                  />
-                </label>
-                <p className="settings-hint shortcut-edit-hint">
-                  Click a key to remap it. Press Esc to cancel, Backspace to
-                  clear a custom binding.
-                </p>
-                {groups.map((group) => {
-                  const rows = shortcutRows.filter((s) => s.group === group);
-                  if (!rows.length) return null;
-                  return (
-                    <div key={group} className="shortcut-group">
-                      <div className="section-label">{group}</div>
-                      {rows.map((s) => {
-                        const recording = recordingAction === s.action;
-                        return (
-                          <div
-                            key={s.action}
-                            className={`settings-row shortcut-row${s.customized ? " customized" : ""}`}
-                          >
-                            <strong>{s.label}</strong>
-                            <div className="shortcut-keys">
-                              {s.customized && !recording && (
+                <Block
+                  title="Bindings"
+                  hint="Click a key to remap it. Esc cancels; Backspace clears a custom binding."
+                >
+                  <label className="shortcut-search">
+                    <Search size={15} strokeWidth={1.75} />
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Filter shortcuts…"
+                      aria-label="Filter shortcuts"
+                    />
+                  </label>
+                  {groups.map((group) => {
+                    const rows = shortcutRows.filter((s) => s.group === group);
+                    if (!rows.length) return null;
+                    return (
+                      <div key={group} className="shortcut-group">
+                        <div className="settings-card-group-label">{group}</div>
+                        {rows.map((s) => {
+                          const recording = recordingAction === s.action;
+                          return (
+                            <div
+                              key={s.action}
+                              className={`settings-row shortcut-row${s.customized ? " customized" : ""}`}
+                            >
+                              <strong>{s.label}</strong>
+                              <div className="shortcut-keys">
+                                {s.customized && !recording && (
+                                  <button
+                                    type="button"
+                                    className="shortcut-reset"
+                                    title="Reset to pack default"
+                                    aria-label={`Reset ${s.label}`}
+                                    onClick={() => {
+                                      const next = { ...overrides };
+                                      delete next[s.action];
+                                      patch({ shortcutOverrides: next });
+                                    }}
+                                  >
+                                    <RotateCcw size={12} strokeWidth={2} />
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  className="shortcut-reset"
-                                  title="Reset to pack default"
-                                  aria-label={`Reset ${s.label}`}
+                                  className={`keycap keycap-edit${recording ? " recording" : ""}${s.customized ? " custom" : ""}`}
                                   onClick={() => {
-                                    const next = { ...overrides };
-                                    delete next[s.action];
-                                    patch({ shortcutOverrides: next });
+                                    setChordPending(null);
+                                    setRecordingAction(
+                                      recording ? null : s.action,
+                                    );
                                   }}
+                                  aria-pressed={recording}
+                                  title={
+                                    recording
+                                      ? chordPending
+                                        ? `${chordPending} then…`
+                                        : "Press a key…"
+                                      : "Click to customize"
+                                  }
                                 >
-                                  <RotateCcw size={12} strokeWidth={2} />
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className={`keycap keycap-edit${recording ? " recording" : ""}${s.customized ? " custom" : ""}`}
-                                onClick={() => {
-                                  setChordPending(null);
-                                  setRecordingAction(
-                                    recording ? null : s.action,
-                                  );
-                                }}
-                                aria-pressed={recording}
-                                title={
-                                  recording
+                                  {recording
                                     ? chordPending
                                       ? `${chordPending} then…`
-                                      : "Press a key…"
-                                    : "Click to customize"
-                                }
-                              >
-                                {recording
-                                  ? chordPending
-                                    ? `${chordPending} then…`
-                                    : "Press key…"
-                                  : s.keys}
-                              </button>
+                                      : "Press key…"
+                                    : s.keys}
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-                {customCount > 0 && (
-                  <button
-                    type="button"
-                    className="compose settings-add shortcut-reset-all"
-                    onClick={() => patch({ shortcutOverrides: {} })}
-                  >
-                    <RotateCcw size={14} strokeWidth={1.75} />
-                    Reset {customCount} custom shortcut
-                    {customCount === 1 ? "" : "s"}
-                  </button>
-                )}
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  {customCount > 0 && (
+                    <button
+                      type="button"
+                      className="compose settings-add shortcut-reset-all"
+                      onClick={() => patch({ shortcutOverrides: {} })}
+                    >
+                      <RotateCcw size={14} strokeWidth={1.75} />
+                      Reset {customCount} custom shortcut
+                      {customCount === 1 ? "" : "s"}
+                    </button>
+                  )}
+                </Block>
               </>
             )}
 
             {tab === "accounts" && (
-              <div className="settings-accounts">
-                {accounts
-                  .filter((a) => a.id !== UNIFIED_ID)
-                  .map((a) => (
-                    <div key={a.id} className="settings-account">
-                      {a.avatarUrl ? (
-                        <img
-                          className="avatar photo"
-                          src={a.avatarUrl}
-                          alt=""
-                          draggable={false}
-                        />
-                      ) : (
-                        <div
-                          className="avatar"
-                          style={{ background: a.color, color: "#0a0a0b" }}
-                        >
-                          {a.label}
-                        </div>
-                      )}
-                      <div>
-                        <strong>{a.name}</strong>
-                        <span>{a.email}</span>
-                      </div>
-                      <span
-                        className={`muted-pill${a.loggedOut ? " danger" : ""}`}
-                      >
-                        {a.loggedOut ? "Logged out" : "Connected"}
-                      </span>
-                    </div>
-                  ))}
-                <button
-                  type="button"
-                  className="compose settings-add"
-                  onClick={onAddAccount}
+              <>
+                <Block
+                  title="Connected accounts"
+                  hint="Pick a mailbox to manage. Credentials stay on this PC (Windows DPAPI) — mail never routes through Intray servers."
                 >
-                  <Plus size={15} strokeWidth={2} />
-                  Add account
-                </button>
-                <p className="settings-hint" style={{ marginTop: 12 }}>
-                  Credentials stay on this PC (DPAPI). Remove an account from the
-                  Add account flow or by disconnecting in a future settings row.
-                </p>
-              </div>
+                  <div
+                    className="bridge-icons"
+                    role="radiogroup"
+                    aria-label="Connected accounts"
+                  >
+                    {mailAccounts.map((a) => {
+                      const selected = selectedAccountId === a.id;
+                      const providerId = accountProviderId(a);
+                      return (
+                        <button
+                          key={a.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          aria-label={`${a.name} (${a.email})`}
+                          title={`${a.name} · ${a.email}`}
+                          className={`bridge-icon account-bridge-icon${selected ? " active" : ""}${a.loggedOut ? " account-bridge-warn" : ""}`}
+                          onClick={() => {
+                            setSelectedAccountId(a.id);
+                            setAccountNote(null);
+                          }}
+                        >
+                          {a.avatarUrl ? (
+                            <img
+                              className="account-bridge-face"
+                              src={a.avatarUrl}
+                              alt=""
+                              draggable={false}
+                            />
+                          ) : (
+                            <span
+                              className="account-bridge-face fallback"
+                              style={{ background: a.color }}
+                            >
+                              {a.label.slice(0, 2)}
+                            </span>
+                          )}
+                          <span className="account-bridge-provider" aria-hidden>
+                            <ProviderLogo id={providerId} size={12} />
+                          </span>
+                          {!a.loggedOut && (
+                            <span className="bridge-dot" aria-hidden />
+                          )}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      className="bridge-icon bridge-icon-off"
+                      aria-label="Add account"
+                      title="Add account"
+                      onClick={onAddAccount}
+                    >
+                      <Plus size={18} strokeWidth={1.75} />
+                    </button>
+                  </div>
+                  {(() => {
+                    const selected =
+                      mailAccounts.find((a) => a.id === selectedAccountId) ??
+                      mailAccounts[0];
+                    if (!selected) {
+                      return (
+                        <div className="bridge-selection">
+                          <strong>No accounts yet</strong>
+                          <span>
+                            Add Gmail (Google sign-in) or any IMAP mailbox with
+                            an app password.
+                          </span>
+                        </div>
+                      );
+                    }
+                    const provider = providerById(
+                      accountProviderId(selected),
+                    );
+                    return (
+                      <div className="bridge-selection">
+                        <div className="bridge-selection-title">
+                          <strong>{selected.name}</strong>
+                          <span
+                            className={`muted-pill account-status-pill${selected.loggedOut ? " danger" : ""}`}
+                          >
+                            {selected.loggedOut
+                              ? "Needs reconnect"
+                              : "Connected"}
+                          </span>
+                        </div>
+                        <span>
+                          {selected.email} · {provider.name} ·{" "}
+                          {provider.auth === "oauth"
+                            ? "OAuth sign-in"
+                            : "App password + IMAP"}
+                        </span>
+                      </div>
+                    );
+                  })()}
+                </Block>
+
+                {(() => {
+                  const selected =
+                    mailAccounts.find((a) => a.id === selectedAccountId) ??
+                    null;
+                  if (!selected) return null;
+                  const provider = providerById(accountProviderId(selected));
+                  const guide = credentialGuide(selected);
+                  const busy = accountBusy === selected.id;
+                  return (
+                    <>
+                      <Block
+                        title="Manage this account"
+                        hint={
+                          selected.loggedOut
+                            ? "Sign-in expired or was revoked — reconnect before syncing or sending."
+                            : "Sync, refresh credentials, or remove this mailbox from Intray."
+                        }
+                      >
+                        <div className="account-manage-actions">
+                          <button
+                            type="button"
+                            className="compose settings-add"
+                            disabled={busy}
+                            onClick={() => {
+                              setAccountNote(null);
+                              onAddAccount();
+                            }}
+                          >
+                            <Link2 size={14} strokeWidth={1.75} />
+                            {selected.loggedOut ? "Reconnect" : "Update sign-in"}
+                          </button>
+                          <button
+                            type="button"
+                            className="compose settings-add"
+                            disabled={busy || !hasIntrayBridge()}
+                            onClick={() => {
+                              setAccountBusy(selected.id);
+                              setAccountNote(null);
+                              void bridgeSync(selected.id)
+                                .then(() =>
+                                  setAccountNote(
+                                    `Synced ${selected.email} from ${provider.shortName}.`,
+                                  ),
+                                )
+                                .catch((err: unknown) =>
+                                  setAccountNote(
+                                    err instanceof Error
+                                      ? err.message
+                                      : "Sync failed — try reconnecting.",
+                                  ),
+                                )
+                                .finally(() => setAccountBusy(null));
+                            }}
+                          >
+                            <RefreshCw
+                              size={14}
+                              strokeWidth={1.75}
+                              className={busy ? "spin" : undefined}
+                            />
+                            Sync now
+                          </button>
+                          <button
+                            type="button"
+                            className="compose settings-add account-remove-btn"
+                            disabled={busy}
+                            onClick={() => {
+                              const ok = window.confirm(
+                                `Remove ${selected.email} from Intray?\n\nLocal mail for this account and stored credentials will be deleted from this PC. Nothing changes on ${provider.shortName}.`,
+                              );
+                              if (!ok) return;
+                              setAccountBusy(selected.id);
+                              setAccountNote(null);
+                              void (async () => {
+                                try {
+                                  if (hasIntrayBridge()) {
+                                    await bridgeRemoveAccount(selected.id);
+                                  }
+                                  onRemoveAccount?.(selected.id);
+                                  setAccountNote(`Removed ${selected.email}.`);
+                                } catch (err) {
+                                  setAccountNote(
+                                    err instanceof Error
+                                      ? err.message
+                                      : "Could not remove account.",
+                                  );
+                                } finally {
+                                  setAccountBusy(null);
+                                }
+                              })();
+                            }}
+                          >
+                            <Trash2 size={14} strokeWidth={1.75} />
+                            Remove
+                          </button>
+                        </div>
+                        {accountNote && (
+                          <p className="settings-inline-note">{accountNote}</p>
+                        )}
+                      </Block>
+
+                      <Block
+                        title={guide.title}
+                        hint={guide.summary}
+                      >
+                        <div className="account-credential-card">
+                          <div className="account-credential-head">
+                            {guide.kind === "oauth" ? (
+                              <Lock size={15} strokeWidth={1.75} />
+                            ) : (
+                              <KeyRound size={15} strokeWidth={1.75} />
+                            )}
+                            <div>
+                              <strong>
+                                {guide.kind === "oauth"
+                                  ? "No password to store"
+                                  : "Use an app password"}
+                              </strong>
+                              <span>
+                                {guide.kind === "oauth"
+                                  ? "Browser sign-in issues a token Intray keeps encrypted locally."
+                                  : "In the connect form, use App password — paste the app-specific password from your provider, not your web login."}
+                              </span>
+                            </div>
+                          </div>
+                          <ol className="account-credential-steps">
+                            {guide.steps.map((step) => (
+                              <li key={step}>{step}</li>
+                            ))}
+                          </ol>
+                        </div>
+                      </Block>
+                    </>
+                  );
+                })()}
+              </>
             )}
 
             {tab === "privacy" && (
@@ -1441,42 +1838,45 @@ export function SettingsModal({
                   Mail never routes through Intray servers. Device ↔ provider
                   only. License checks send a key — never message content.
                 </div>
-                <Row
-                  title="Block remote images"
-                  hint="Stop trackers until you choose to load"
-                >
-                  <Toggle
-                    on={prefs.blockRemoteImages}
-                    onChange={(blockRemoteImages) =>
-                      patch({ blockRemoteImages })
-                    }
-                  />
-                </Row>
-                <Row title="Analytics" hint="Off by default — nothing phones home">
-                  <Toggle
-                    on={prefs.analytics}
-                    onChange={(analytics) => patch({ analytics })}
-                  />
-                </Row>
-                <Row title="Crash reports" hint="Optional, no mail bodies">
-                  <Toggle
-                    on={prefs.crashReports}
-                    onChange={(crashReports) => patch({ crashReports })}
-                  />
-                </Row>
-                <Row
-                  title="Windows Hello lock"
-                  hint="Require biometric / PIN when waking from tray"
-                >
-                  <Toggle
-                    on={prefs.lockWithWindowsHello}
-                    onChange={(lockWithWindowsHello) =>
-                      patch({ lockWithWindowsHello })
-                    }
-                  />
-                </Row>
+                <Block title="Privacy">
+                  <Row
+                    title="Block remote images"
+                    hint="Stop trackers until you choose to load"
+                  >
+                    <Toggle
+                      on={prefs.blockRemoteImages}
+                      onChange={(blockRemoteImages) =>
+                        patch({ blockRemoteImages })
+                      }
+                    />
+                  </Row>
+                  <Row title="Analytics" hint="Off by default — nothing phones home">
+                    <Toggle
+                      on={prefs.analytics}
+                      onChange={(analytics) => patch({ analytics })}
+                    />
+                  </Row>
+                  <Row title="Crash reports" hint="Optional, no mail bodies">
+                    <Toggle
+                      on={prefs.crashReports}
+                      onChange={(crashReports) => patch({ crashReports })}
+                    />
+                  </Row>
+                  <Row
+                    title="Windows Hello lock"
+                    hint="Require biometric / PIN when waking from tray"
+                  >
+                    <Toggle
+                      on={prefs.lockWithWindowsHello}
+                      onChange={(lockWithWindowsHello) =>
+                        patch({ lockWithWindowsHello })
+                      }
+                    />
+                  </Row>
+                </Block>
               </>
             )}
+            </div>
           </div>
         </div>
       </div>

@@ -317,6 +317,10 @@ export function loadPreferences(): Preferences {
     if ((parsed.layout as string) === "spark") {
       parsed.layout = "stack";
     }
+    const packs = new Set(["gmail", "superhuman", "outlook", "custom"]);
+    if (!packs.has(parsed.shortcutPack as string)) {
+      parsed.shortcutPack = defaultPreferences.shortcutPack;
+    }
     return parsed;
   } catch {
     return { ...defaultPreferences };

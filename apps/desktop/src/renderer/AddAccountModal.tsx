@@ -253,8 +253,8 @@ export function AddAccountModal({
                   <span className="provider-card-text">
                     <strong>{p.name}</strong>
                     <span>
-                    {p.badge ?? (p.auth === "oauth" ? "OAuth" : "IMAP")}
-                  </span>
+                      {p.badge ?? (p.auth === "oauth" ? "OAuth" : "IMAP")}
+                    </span>
                   </span>
                   <ChevronRight
                     size={14}
@@ -368,7 +368,7 @@ export function AddAccountModal({
                   />
                 </label>
                 <label className="add-field">
-                  <span>{provider.id === "gmail" ? "App password" : "Password"}</span>
+                  <span>App password</span>
                   <div className="add-field-password">
                     <input
                       type={showPassword ? "text" : "password"}
@@ -379,7 +379,7 @@ export function AddAccountModal({
                       placeholder={
                         provider.id === "gmail"
                           ? "abcd efgh ijkl mnop"
-                          : "App password"
+                          : "App-specific password"
                       }
                       autoComplete="current-password"
                     />
@@ -398,6 +398,12 @@ export function AddAccountModal({
                       )}
                     </button>
                   </div>
+                  <span className="add-field-hint">
+                    Not your everyday login password. With 2FA on, create an
+                    app-specific password in {provider.shortName} security
+                    settings, then paste it here. Stored on this PC only
+                    (DPAPI).
+                  </span>
                 </label>
                 <label className="add-field">
                   <span>Display name</span>
