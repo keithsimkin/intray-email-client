@@ -25,6 +25,7 @@ import {
   Forward,
   Inbox,
   Calendar,
+  ImageOff,
   Languages,
   Layers,
   Link2,
@@ -120,6 +121,7 @@ import {
 import {
   accentColors,
   aiBridgeMeta,
+  allowRemoteImagesForSender,
   loadPreferences,
   resolvedTheme,
   savePreferences,
@@ -2197,24 +2199,67 @@ function MessageList({
   );
 }
 
+/** True when HTML references remote http(s) or protocol-relative images. */
+function htmlHasRemoteImages(html: string): boolean {
+  if (!html) return false;
+  // src / srcset / background / url(...) with http(s) or //host
+  return /(?:src|srcset|background)\s*=\s*["']?\s*(?:https?:)?\/\//i.test(
+    html,
+  ) || /url\(\s*['"]?(?:https?:)?\/\//i.test(html);
+}
+
+function isRemoteImageUrl(src: string): boolean {
+  return /^(?:https?:)?\/\//i.test(src.trim());
+}
+
+/** about:blank iframes resolve //host poorly — pin to https when loading. */
+function promoteProtocolRelativeUrls(html: string): string {
+  return html
+    .replace(/(\s(?:src|srcset|href|background)\s*=\s*["'])\/\//gi, "$1https://")
+    .replace(/(url\(\s*['"]?)\/\//gi, "$1https://");
+}
+
 function HtmlBody({
   html,
   forceDark,
+  allowRemote,
+  senderEmail,
+  onTrustSender,
 }: {
   html: string;
   forceDark?: boolean;
+  /** When true, remote images load without a per-message opt-in. */
+  allowRemote: boolean;
+  senderEmail?: string;
+  /** Offer to add this sender to the trusted list (Settings → Privacy). */
+  onTrustSender?: (email: string) => void;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
-  const [showImages, setShowImages] = useState(false);
-  const [hasBlockedImages, setHasBlockedImages] = useState(false);
+  const hasRemote = useMemo(() => htmlHasRemoteImages(html), [html]);
+  const [showImages, setShowImages] = useState(allowRemote);
+  /** blocked | loading | ready — banner stays visible through load. */
+  const [imagePhase, setImagePhase] = useState<
+    "blocked" | "loading" | "ready" | "hidden"
+  >(allowRemote || !hasRemote ? "hidden" : "blocked");
   const [userHeight, setUserHeight] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const naturalHeight = useRef(160);
+  const loadGeneration = useRef(0);
 
   useEffect(() => {
     setUserHeight(null);
-  }, [html]);
+    setShowImages(allowRemote);
+    // Auto-allowed messages skip the banner; blocked ones always show it.
+    setImagePhase(hasRemote && !allowRemote ? "blocked" : "hidden");
+  }, [html, allowRemote, hasRemote]);
+
+  const startLoadingImages = (trustSender?: boolean) => {
+    if (trustSender && senderEmail) onTrustSender?.(senderEmail);
+    loadGeneration.current += 1;
+    setImagePhase("loading");
+    setShowImages(true);
+  };
 
   useEffect(() => {
     const frame = ref.current;
@@ -2232,23 +2277,17 @@ function HtmlBody({
          img { max-width: 100%; height: auto; }
          a { color: #2563eb; }`;
     // Block every remote fetch (tracking pixels, CSS imports, media) unless the
-    // user explicitly asks to load images for this message.
+    // policy allows them or the user loads images for this message.
     const csp = showImages
       ? "default-src 'none'; img-src https: http: data: blob:; style-src 'unsafe-inline'; font-src data:; media-src https: http: data: blob:; base-uri 'none'; form-action 'none';"
       : "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none';";
+    const bodyHtml = showImages ? promoteProtocolRelativeUrls(html) : html;
     doc.open();
     doc.write(`<!doctype html><html><head><meta charset="utf-8" />
       <meta http-equiv="Content-Security-Policy" content="${csp}" />
       <style>${dark}</style>
-    </head><body>${html}</body></html>`);
+    </head><body>${bodyHtml}</body></html>`);
     doc.close();
-
-    if (!showImages) {
-      const remote = Array.from(doc.images ?? []).some((img) =>
-        /^https?:/i.test(img.getAttribute("src") ?? ""),
-      );
-      setHasBlockedImages(remote);
-    }
 
     // Links inside the sandbox cannot navigate; route them through the main
     // process, which re-validates the protocol.
@@ -2304,12 +2343,47 @@ function HtmlBody({
     const ob = new ResizeObserver(resize);
     if (doc.body) ob.observe(doc.body);
     if (doc.documentElement) ob.observe(doc.documentElement);
+
+    let cancelled = false;
+    const timers: number[] = [];
+    if (showImages && hasRemote) {
+      const gen = loadGeneration.current;
+      const remoteImgs = Array.from(doc.images ?? []).filter((img) =>
+        isRemoteImageUrl(img.getAttribute("src") ?? img.currentSrc ?? ""),
+      );
+      const finish = () => {
+        if (cancelled || loadGeneration.current !== gen) return;
+        setImagePhase((phase) => (phase === "loading" ? "ready" : phase));
+      };
+      if (remoteImgs.length === 0) {
+        // CSS backgrounds only — short beat so the Loading state is visible.
+        timers.push(window.setTimeout(finish, 450));
+      } else {
+        let pending = remoteImgs.length;
+        const settle = () => {
+          pending -= 1;
+          if (pending <= 0) finish();
+        };
+        for (const img of remoteImgs) {
+          if (img.complete) settle();
+          else {
+            img.addEventListener("load", settle, { once: true });
+            img.addEventListener("error", settle, { once: true });
+          }
+        }
+        // Cap wait so a hung host doesn't leave the banner spinning forever.
+        timers.push(window.setTimeout(finish, 8000));
+      }
+    }
+
     return () => {
+      cancelled = true;
+      for (const t of timers) window.clearTimeout(t);
       window.cancelAnimationFrame(raf);
       ob.disconnect();
       doc.removeEventListener("click", onClick);
     };
-  }, [html, forceDark, showImages, userHeight]);
+  }, [html, forceDark, showImages, userHeight, hasRemote]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -2329,16 +2403,96 @@ function HtmlBody({
     };
   }, [dragging]);
 
+  const canTrust =
+    Boolean(onTrustSender && senderEmail?.includes("@")) && !allowRemote;
+  const showBanner =
+    hasRemote &&
+    (imagePhase === "blocked" ||
+      imagePhase === "loading" ||
+      imagePhase === "ready");
+
   return (
     <div className="html-frame-wrap">
-      {hasBlockedImages && !showImages && (
-        <button
-          type="button"
-          className="html-images-btn"
-          onClick={() => setShowImages(true)}
+      {showBanner && (
+        <div
+          className={`html-images-banner phase-${imagePhase}`}
+          role="status"
+          aria-live="polite"
         >
-          Remote images blocked · Load images
-        </button>
+          <div className="html-images-banner-copy">
+            {imagePhase === "loading" ? (
+              <Loader2 size={16} strokeWidth={2} className="spin" />
+            ) : (
+              <ImageOff size={16} strokeWidth={1.75} />
+            )}
+            <div>
+              <strong>
+                {imagePhase === "blocked"
+                  ? "Remote images are blocked"
+                  : imagePhase === "loading"
+                    ? "Loading remote images…"
+                    : "Remote images loaded"}
+              </strong>
+              <span>
+                {imagePhase === "blocked"
+                  ? "Blocked to stop trackers from knowing you opened this message."
+                  : imagePhase === "loading"
+                    ? "Fetching images from the sender’s servers."
+                    : "You can hide them again anytime for this message."}
+              </span>
+            </div>
+          </div>
+          <div className="html-images-banner-actions">
+            {imagePhase === "blocked" && (
+              <>
+                <button
+                  type="button"
+                  className="html-images-primary"
+                  onClick={() => startLoadingImages(false)}
+                >
+                  Load images
+                </button>
+                {canTrust && (
+                  <button
+                    type="button"
+                    className="html-images-secondary"
+                    onClick={() => startLoadingImages(true)}
+                  >
+                    Always from this sender
+                  </button>
+                )}
+              </>
+            )}
+            {imagePhase === "loading" && (
+              <button type="button" className="html-images-primary" disabled>
+                Loading…
+              </button>
+            )}
+            {imagePhase === "ready" && (
+              <>
+                <button
+                  type="button"
+                  className="html-images-secondary"
+                  onClick={() => {
+                    loadGeneration.current += 1;
+                    setShowImages(false);
+                    setImagePhase("blocked");
+                  }}
+                >
+                  Hide images
+                </button>
+                <button
+                  type="button"
+                  className="html-images-ghost"
+                  onClick={() => setImagePhase("hidden")}
+                  aria-label="Dismiss image banner"
+                >
+                  Dismiss
+                </button>
+              </>
+            )}
+          </div>
+        </div>
       )}
       <div
         ref={shellRef}
@@ -2383,6 +2537,9 @@ function ThreadMessageView({
   defaultExpanded,
   forceDarkHtml,
   showAi,
+  remoteImagePolicy,
+  trustedImageSenders,
+  onTrustImageSender,
   onComposeTo,
   onSummarize,
   onTranslate,
@@ -2391,6 +2548,9 @@ function ThreadMessageView({
   defaultExpanded: boolean;
   forceDarkHtml?: boolean;
   showAi: boolean;
+  remoteImagePolicy: Preferences["remoteImagePolicy"];
+  trustedImageSenders: string[];
+  onTrustImageSender: (email: string) => void;
   onComposeTo: (r: Recipient) => void;
   onSummarize?: () => void;
   onTranslate?: () => void;
@@ -2521,7 +2681,21 @@ function ThreadMessageView({
           )}
 
           {message.bodyHtml ? (
-            <HtmlBody html={message.bodyHtml} forceDark={forceDarkHtml} />
+            <HtmlBody
+              html={message.bodyHtml}
+              forceDark={forceDarkHtml}
+              allowRemote={allowRemoteImagesForSender(
+                remoteImagePolicy,
+                message.email,
+                trustedImageSenders,
+              )}
+              senderEmail={message.email}
+              onTrustSender={
+                remoteImagePolicy === "always"
+                  ? undefined
+                  : onTrustImageSender
+              }
+            />
           ) : (
             <div className="body-copy">
               {(message.body ?? []).map((p) => (
@@ -2600,6 +2774,7 @@ function ReadingPane({
   onComposeTo,
   onToast,
   onReplySent,
+  onUpdatePrefs,
   replyIntent = { key: 0, mode: "reply" as ReplyMode },
 }: {
   message: Message | null;
@@ -2621,6 +2796,7 @@ function ReadingPane({
   onComposeTo: (r: Recipient) => void;
   onToast: (text: string) => void;
   onReplySent?: (message: Message) => void;
+  onUpdatePrefs: (next: Preferences) => void;
   /** Bumped by parent to focus/seed the reply box (Reply vs Reply all). */
   replyIntent?: { key: number; mode: ReplyMode };
 }) {
@@ -3192,6 +3368,28 @@ function ReadingPane({
               defaultExpanded={idx === arr.length - 1}
               forceDarkHtml={forceDarkHtml}
               showAi={showAi}
+              remoteImagePolicy={prefs.remoteImagePolicy}
+              trustedImageSenders={prefs.trustedImageSenders}
+              onTrustImageSender={(email) => {
+                const normalized = email.trim().toLowerCase();
+                if (!normalized.includes("@")) return;
+                if (
+                  prefs.trustedImageSenders.some(
+                    (s) => s.trim().toLowerCase() === normalized,
+                  )
+                ) {
+                  return;
+                }
+                onUpdatePrefs({
+                  ...prefs,
+                  remoteImagePolicy: "trusted",
+                  trustedImageSenders: [
+                    ...prefs.trustedImageSenders,
+                    normalized,
+                  ],
+                });
+                onToast(`Images will load from ${normalized}`);
+              }}
               onComposeTo={onComposeTo}
               onSummarize={() => void runSummarize()}
               onTranslate={() => void runTranslate()}
@@ -5896,6 +6094,7 @@ export default function App() {
             onCreateFolder={createFolder}
             onComposeTo={(r) => openCompose({ to: [r] })}
             onToast={showToast}
+            onUpdatePrefs={updatePrefs}
             replyIntent={replyIntent}
             onReplySent={(message) => {
               setMail((prev) => {
