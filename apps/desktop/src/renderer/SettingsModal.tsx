@@ -18,13 +18,14 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { AiSecretId, McpStatus } from "../shared/types";
+import type { AiModelList, AiProviderStatus, AiSecretId, McpStatus } from "../shared/types";
 import { AppSelect } from "./AppSelect";
 import { PackLogo } from "./BrandIcon";
 import { BridgeLogo, bridgePickerOrder } from "./bridgeLogos";
 import { UNIFIED_ID, type Account } from "./data/mock";
 import {
   bridgeAiDetect,
+  bridgeAiModels,
   bridgeAiSecretsStatus,
   bridgeAiSetSecret,
   bridgeLaunchAtLogin,
@@ -212,7 +213,7 @@ function credentialGuide(account: Account) {
       provider.guide ??
       "IMAP providers need an app-specific password when 2FA is on — not the password you use on the web.",
     steps: [
-      `Create an app password in ${where}, then use Update sign-in to paste it.`,
+      `Create an app password in ${where}, then use Reconnect / Update sign-in — only the password is asked for; email and server settings stay.`,
       "Your everyday login password usually will not work once two-factor auth is enabled.",
       "Secrets are encrypted with Windows DPAPI on this PC — mail never routes through Intray servers.",
       "Remove wipes the stored app password and local copies of this mailbox.",
@@ -225,6 +226,7 @@ export function SettingsModal({
   accounts,
   onChange,
   onAddAccount,
+  onReconnectAccount,
   onRemoveAccount,
   onClose,
 }: {
@@ -232,6 +234,7 @@ export function SettingsModal({
   accounts: Account[];
   onChange: (p: Preferences) => void;
   onAddAccount: () => void;
+  onReconnectAccount?: (account: Account) => void;
   onRemoveAccount?: (accountId: string) => void;
   onClose: () => void;
 }) {
@@ -258,7 +261,16 @@ export function SettingsModal({
     ollama: false,
   });
   const [secretDraft, setSecretDraft] = useState("");
-  const [detected, setDetected] = useState<Record<string, boolean>>({});
+  const [detectedRows, setDetectedRows] = useState<AiProviderStatus[]>([]);
+  const [modelList, setModelList] = useState<AiModelList | null>(null);
+  const [modelListLoading, setModelListLoading] = useState(true);
+  const [connectionCheck, setConnectionCheck] = useState(0);
+  const [pathOverrideOpen, setPathOverrideOpen] = useState(false);
+  const detected = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    for (const row of detectedRows) map[row.id] = row.available;
+    return map;
+  }, [detectedRows]);
   const [mcpInfo, setMcpInfo] = useState<McpStatus>({
     running: false,
     port: null,
@@ -273,14 +285,52 @@ export function SettingsModal({
 
   useEffect(() => {
     if (tab !== "ai") return;
-    void bridgeAiSecretsStatus().then(setSecretStatus);
-    void bridgeAiDetect(prefs.aiBridgePath || undefined).then((list) => {
-      const map: Record<string, boolean> = {};
-      for (const row of list) map[row.id] = row.available;
-      setDetected(map);
-    });
-    void bridgeMcpStatus().then(setMcpInfo);
-  }, [tab, prefs.aiBridge, prefs.aiBridgePath]);
+    let cancel = false;
+    setModelListLoading(true);
+    void (async () => {
+      try {
+        const [rows, secrets, models, mcp] = await Promise.all([
+          bridgeAiDetect(prefs.aiBridgePath || undefined),
+          bridgeAiSecretsStatus(),
+          prefs.aiBridge === "none"
+            ? Promise.resolve<AiModelList>({ connected: false, models: [] })
+            : bridgeAiModels(prefs.aiBridge, prefs.aiBridgePath || undefined),
+          bridgeMcpStatus(),
+        ]);
+        if (cancel) return;
+        setDetectedRows(rows);
+        setSecretStatus(secrets);
+        setModelList(prefs.aiBridge === "none" ? null : models);
+        setMcpInfo(mcp);
+        const liveIds = new Set(models.models.map((m) => m.id));
+        if (
+          prefs.aiBridge !== "none" &&
+          models.models.length > 0 &&
+          prefs.aiModelHint &&
+          !liveIds.has(prefs.aiModelHint)
+        ) {
+          patch({ aiModelHint: "" });
+        }
+      } catch {
+        if (cancel) return;
+        setModelList({
+          connected: false,
+          models: [],
+          detail:
+            "Couldn’t check the connection. Try again once the desktop app is running.",
+        });
+      } finally {
+        if (!cancel) setModelListLoading(false);
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [tab, prefs.aiBridge, prefs.aiBridgePath, connectionCheck]);
+
+  useEffect(() => {
+    setPathOverrideOpen(false);
+  }, [prefs.aiBridge]);
 
   useEffect(() => {
     if (tab !== "shortcuts") {
@@ -390,6 +440,35 @@ export function SettingsModal({
     if (id === "ollama") return "ollama";
     return null;
   };
+
+  const activeBridge = aiBridgeMeta[prefs.aiBridge];
+  const activeStatus = detectedRows.find((row) => row.id === prefs.aiBridge);
+  const detectedPath = activeStatus?.path ?? "";
+  const liveModels = (modelList?.models ?? []).filter(
+    (model) => model.id && model.id !== "auto",
+  );
+  const hasAuto = (modelList?.models ?? []).some((model) => model.id === "auto");
+  const modelOptions =
+    liveModels.length > 0 || hasAuto
+      ? [
+          { id: "", label: hasAuto ? "Auto" : "Account default" },
+          ...liveModels,
+        ]
+      : [];
+  const modelHint = modelListLoading
+    ? "Checking the connection on this PC."
+    : modelOptions.length > 0
+      ? `Models reported by ${activeBridge.name}.`
+      : modelList?.connected
+        ? "Connected, but no models were returned."
+        : "Not connected.";
+  const connectionDetail =
+    modelList?.detail ||
+    (activeBridge.kind === "api"
+      ? `Connect ${activeBridge.name} by adding an API key above, then check the connection.`
+      : activeBridge.kind === "ollama"
+        ? "Connect Ollama on this PC, then check the connection."
+        : `Connect ${activeBridge.name} on this PC — install ${activeBridge.binary ?? "the CLI"} or paste its path — then check the connection.`);
 
   const navGroups = useMemo(() => {
     const q = navQuery.trim().toLowerCase();
@@ -1228,11 +1307,17 @@ export function SettingsModal({
                     <span>
                       {prefs.aiBridge === "none"
                         ? "AI features stay off until you pick a provider."
-                        : detected[prefs.aiBridge]
-                          ? "Ready on this PC."
-                          : aiBridgeMeta[prefs.aiBridge].needsKey
-                            ? "Add an API key below."
-                            : "Not detected yet — set a path if needed."}
+                        : activeBridge.kind === "api"
+                          ? detected[prefs.aiBridge]
+                            ? "API key saved on this PC."
+                            : "Add an API key below."
+                          : activeBridge.kind === "ollama"
+                            ? detected[prefs.aiBridge]
+                              ? "Ollama is running on this PC."
+                              : "Not reachable — set the host below."
+                            : detectedPath
+                              ? "CLI found on this PC."
+                              : "Not detected yet — set a path below."}
                     </span>
                   </div>
                 </Block>
@@ -1291,17 +1376,7 @@ export function SettingsModal({
                                 secretDraft.trim(),
                               ).then(() => {
                                 setSecretDraft("");
-                                void bridgeAiSecretsStatus().then(
-                                  setSecretStatus,
-                                );
-                                void bridgeAiDetect(
-                                  prefs.aiBridgePath || undefined,
-                                ).then((list) => {
-                                  const map: Record<string, boolean> = {};
-                                  for (const row of list)
-                                    map[row.id] = row.available;
-                                  setDetected(map);
-                                });
+                                setConnectionCheck((n) => n + 1);
                               });
                             }}
                           />
@@ -1314,31 +1389,85 @@ export function SettingsModal({
                         </Block>
                       );
                     })()}
-                    <Block
-                      title="CLI path"
-                      hint="For Claude Code / Codex / Cursor — leave blank to use PATH."
-                    >
-                      <input
-                        className="settings-input settings-input-wide"
-                        placeholder="e.g. C:\Users\…\claude.exe"
-                        value={prefs.aiBridgePath}
-                        onChange={(e) =>
-                          patch({ aiBridgePath: e.target.value })
+                    {activeBridge.kind === "cli" && (
+                      <Block
+                        title="CLI path"
+                        hint={
+                          detectedPath && !prefs.aiBridgePath
+                            ? `Found ${activeBridge.binary ?? "the CLI"} on this PC.`
+                            : prefs.aiBridgePath &&
+                                detectedPath &&
+                                prefs.aiBridgePath !== detectedPath
+                              ? `Custom path. Detected install is ${detectedPath}.`
+                              : prefs.aiBridgePath
+                                ? "Custom path. Clear the field to search PATH and the usual install folders."
+                                : `Not found yet. Paste the full path to ${activeBridge.binary ?? "the CLI"}, or leave blank to search PATH.`
                         }
-                      />
-                    </Block>
-                    <Block
-                      title="Model"
-                      hint="Optional override (gpt-4o-mini, grok-2-latest, llama3.2, …)"
-                    >
-                      <input
-                        className="settings-input settings-input-wide"
-                        placeholder="e.g. gpt-4o-mini, grok-2-latest"
-                        value={prefs.aiModelHint}
-                        onChange={(e) =>
-                          patch({ aiModelHint: e.target.value })
-                        }
-                      />
+                      >
+                        {detectedPath && !prefs.aiBridgePath && (
+                          <p className="settings-detected-path">{detectedPath}</p>
+                        )}
+                        {(prefs.aiBridgePath ||
+                          !detectedPath ||
+                          pathOverrideOpen) && (
+                          <input
+                            className="settings-input settings-input-wide"
+                            spellCheck={false}
+                            placeholder={
+                              detectedPath
+                                ? "Override path (optional)"
+                                : (activeBridge.pathPlaceholder ??
+                                  "Full path to the CLI")
+                            }
+                            value={prefs.aiBridgePath}
+                            onChange={(e) =>
+                              patch({ aiBridgePath: e.target.value })
+                            }
+                          />
+                        )}
+                        {detectedPath &&
+                          !prefs.aiBridgePath &&
+                          !pathOverrideOpen && (
+                            <button
+                              type="button"
+                              className="settings-path-change"
+                              onClick={() => setPathOverrideOpen(true)}
+                            >
+                              Use a different path
+                            </button>
+                          )}
+                      </Block>
+                    )}
+                    <Block title="Model" hint={modelHint}>
+                      <div className="settings-connect">
+                        {modelListLoading ? (
+                          <p>Checking the connection…</p>
+                        ) : modelOptions.length > 0 ? (
+                          <AppSelect
+                            className="settings-model-select"
+                            ariaLabel={`${activeBridge.name} model`}
+                            value={
+                              modelOptions.some(
+                                (o) => o.id === prefs.aiModelHint,
+                              )
+                                ? prefs.aiModelHint
+                                : ""
+                            }
+                            options={modelOptions}
+                            onChange={(aiModelHint) => patch({ aiModelHint })}
+                          />
+                        ) : (
+                          <p>{connectionDetail}</p>
+                        )}
+                        <button
+                          type="button"
+                          className="settings-check"
+                          disabled={modelListLoading}
+                          onClick={() => setConnectionCheck((n) => n + 1)}
+                        >
+                          Check connection
+                        </button>
+                      </div>
                     </Block>
                   </>
                 )}
@@ -1719,6 +1848,10 @@ export function SettingsModal({
                             disabled={busy}
                             onClick={() => {
                               setAccountNote(null);
+                              if (onReconnectAccount) {
+                                onReconnectAccount(selected);
+                                return;
+                              }
                               onAddAccount();
                             }}
                           >

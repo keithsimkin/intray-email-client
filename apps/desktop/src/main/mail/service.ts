@@ -29,6 +29,7 @@ import {
   accountUsesImap,
   isGmailImapAccount,
   loadCredentials,
+  peekCredentials,
   saveCredentials,
   type ImapCredentials,
 } from "../crypto/credentials";
@@ -79,6 +80,7 @@ import {
 } from "../sync/engine";
 import type {
   AccountDto,
+  AccountReconnectInfo,
   AddImapAccountInput,
   ComposeDraft,
   ContactDto,
@@ -88,6 +90,7 @@ import type {
   MailMutateAction,
   MailMutateOptions,
   MessageDto,
+  ReconnectAccountInput,
   RecipientDto,
   ThreadMessageDto,
 } from "../../shared/types";
@@ -421,6 +424,113 @@ export async function addImapAccount(
   });
   startAccountPolling(id);
   void syncAccount(id).catch(() => undefined);
+  return accountToDto(row);
+}
+
+function clearAuthErrorAndResume(accountId: string): void {
+  const sync = getSyncState(accountId);
+  upsertSyncState({
+    account_id: accountId,
+    history_id: sync?.history_id ?? null,
+    last_sync_at: sync?.last_sync_at ?? null,
+    status: "idle",
+    error: null,
+    progress: null,
+    imap_cursor_json: sync?.imap_cursor_json ?? null,
+  });
+  startAccountPolling(accountId);
+  void syncAccount(accountId).catch(() => undefined);
+}
+
+export function getAccountReconnectInfo(
+  accountId: string,
+): AccountReconnectInfo {
+  const row = getAccountRow(accountId);
+  if (!row) throw new Error("Account not found.");
+  const peeked = peekCredentials(accountId);
+  let authMode: "imap" | "oauth";
+  if (peeked?.provider === "gmail") authMode = "oauth";
+  else if (peeked?.provider === "imap") authMode = "imap";
+  else {
+    // No usable secret left — prefer app-password reconnect (primary path).
+    authMode = "imap";
+  }
+  return {
+    accountId: row.id,
+    email: row.email,
+    name: row.name,
+    provider: row.provider as AccountReconnectInfo["provider"],
+    authMode,
+  };
+}
+
+export async function reconnectAccount(
+  input: ReconnectAccountInput,
+): Promise<AccountDto> {
+  const row = getAccountRow(input.accountId);
+  if (!row) throw new Error("Account not found.");
+
+  const info = getAccountReconnectInfo(row.id);
+  const mode = input.mode ?? info.authMode;
+
+  if (mode === "oauth") {
+    if (row.provider !== "gmail") {
+      throw new Error("Google sign-in is only available for Gmail accounts.");
+    }
+    if (!gmailOAuthConfigured()) {
+      throw new Error(
+        "Google sign-in needs GMAIL_CLIENT_ID. Use an app password instead.",
+      );
+    }
+    const { tokens, profile } = await runGmailOAuth();
+    if (profile.email.toLowerCase() !== row.email.toLowerCase()) {
+      throw new Error(
+        `Signed in as ${profile.email}, but this mailbox is ${row.email}.`,
+      );
+    }
+    await persistGmailTokens(row.id, tokens);
+    const now = new Date().toISOString();
+    upsertAccount({ ...row, name: profile.name || row.name, updated_at: now });
+    clearAuthErrorAndResume(row.id);
+    return accountToDto(getAccountRow(row.id) ?? row);
+  }
+
+  const password = input.password?.trim() ?? "";
+  if (!password) throw new Error("Enter your app password.");
+
+  const peeked = peekCredentials(row.id);
+  const preset = presetFor(row.provider);
+  const brand =
+    (peeked?.provider === "imap" && peeked.brand) || row.provider;
+
+  const creds = resolveImapCreds({
+    provider: brand as AddImapAccountInput["provider"],
+    email: row.email,
+    password,
+    username:
+      peeked?.provider === "imap" ? peeked.username : undefined,
+    imapHost:
+      peeked?.provider === "imap"
+        ? peeked.imapHost
+        : preset?.imapHost || undefined,
+    imapPort:
+      peeked?.provider === "imap"
+        ? peeked.imapPort
+        : preset?.imapPort,
+    smtpHost:
+      peeked?.provider === "imap"
+        ? peeked.smtpHost
+        : preset?.smtpHost || undefined,
+    smtpPort:
+      peeked?.provider === "imap"
+        ? peeked.smtpPort
+        : preset?.smtpPort,
+  });
+
+  await verifyImapLogin(creds);
+  saveCredentials(row.id, creds);
+  upsertAccount({ ...row, updated_at: new Date().toISOString() });
+  clearAuthErrorAndResume(row.id);
   return accountToDto(row);
 }
 

@@ -47,7 +47,7 @@ export function saveCredentials(
   setCredentialPayload(accountId, encrypted.toString("base64"));
 }
 
-export function loadCredentials(
+function decryptCredentialsPayload(
   accountId: string,
 ): StoredCredentials | null {
   const b64 = getCredentialPayload(accountId);
@@ -58,22 +58,49 @@ export function loadCredentials(
     const json = safeStorage.decryptString(buf);
     const parsed = JSON.parse(json) as StoredCredentials;
     if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.provider === "gmail") {
-      if (!parsed.tokens?.accessToken || !parsed.tokens?.refreshToken) {
-        return null;
-      }
-      return parsed;
-    }
-    if (parsed.provider === "imap") {
-      if (!parsed.email || !parsed.password || !parsed.imapHost) return null;
-      return parsed;
-    }
-    return null;
+    return parsed;
   } catch {
     // Corrupt ciphertext (profile copy, DPAPI reset) is treated as missing
     // rather than crashing every sync attempt.
     return null;
   }
+}
+
+export function loadCredentials(
+  accountId: string,
+): StoredCredentials | null {
+  const parsed = decryptCredentialsPayload(accountId);
+  if (!parsed) return null;
+  if (parsed.provider === "gmail") {
+    if (!parsed.tokens?.accessToken || !parsed.tokens?.refreshToken) {
+      return null;
+    }
+    return parsed;
+  }
+  if (parsed.provider === "imap") {
+    if (!parsed.email || !parsed.password || !parsed.imapHost) return null;
+    return parsed;
+  }
+  return null;
+}
+
+/**
+ * Read stored connection settings without requiring a usable password/token.
+ * Used to pre-fill re-auth (email, hosts) when the account is logged out.
+ */
+export function peekCredentials(
+  accountId: string,
+): StoredCredentials | null {
+  const parsed = decryptCredentialsPayload(accountId);
+  if (!parsed) return null;
+  if (parsed.provider === "gmail") {
+    return parsed.tokens ? parsed : null;
+  }
+  if (parsed.provider === "imap") {
+    if (!parsed.email || !parsed.imapHost) return null;
+    return parsed;
+  }
+  return null;
 }
 
 /**
@@ -82,14 +109,14 @@ export function loadCredentials(
  * IMAP even though the account row's provider is still "gmail".
  */
 export function accountUsesImap(accountId: string, provider: string): boolean {
-  const creds = loadCredentials(accountId);
+  const creds = peekCredentials(accountId) ?? loadCredentials(accountId);
   if (creds?.provider === "imap") return true;
   if (creds?.provider === "gmail") return false;
   return provider !== "gmail";
 }
 
 export function isGmailImapAccount(accountId: string): boolean {
-  const creds = loadCredentials(accountId);
+  const creds = peekCredentials(accountId) ?? loadCredentials(accountId);
   if (!creds || creds.provider !== "imap") return false;
   return (
     creds.brand === "gmail" ||

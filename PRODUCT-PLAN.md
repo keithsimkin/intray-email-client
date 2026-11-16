@@ -110,27 +110,87 @@ Mail providers (Gmail / Graph / IMAP)
 - Local SQLite sync, unified Inbox, Important/Other, search, compose/send, offline indicator, Credential Manager
 - Two layouts; Ctrl+1–9 account switch
 
-### Phase 2 — Power mail + tray v1
+### Phase 2 — Power mail + tray v1 (Superhuman speed core)
 
-- Snooze, Send Later, Undo Send, Waiting for Reply, labels, signatures
-- Tray flyout: unread/Important, message actions, OTP detect+copy, global hotkey (Ctrl+Alt+M)
-- Subscription cleanup basics
+- **Done / partial today:** Snooze (local), Undo Send delay, signatures, Important/Other, Superhuman shortcut pack
+- **Ship next (solo productivity parity):**
+  - **Send Later** — compose picker (date/time), not only undo-delay; reuse `enqueueDelayedSend`
+  - **Snippets** — persist + insert in compose (body, subject, CC/BCC; attachments later); retire Settings sample cards
+  - **Remind Me + follow-up engine** — explicit remind date/time; **Waiting for Reply** job using `waitingForReplyDays`; resurface threads with no reply; **Auto Reminders** suggest follow-ups on sent mail
+  - **Split Inbox v2** — custom tabs beyond Important/Other (VIP, team/domain, tools/newsletters, label-backed); settings to add/reorder splits
+  - **Instant Open / Instant Copy / Instant Intro / Instant Send** — one-key open link from thread, copy address/thread, intro template flow, confirm-less send when enabled
+  - **Read Statuses** — opt-in open tracking for sent mail (replace demo ticks); clear privacy copy; off by default (`trackOpens`)
+  - **Block + Unsubscribe** — productize block sender; harden unsubscribe helpers
+  - Tray flyout: unread/Important, message actions, OTP detect+copy, global hotkey (Ctrl+Alt+M)
+  - Subscription cleanup basics
 
-### Phase 3 — AI
+### Phase 3 — AI (Superhuman AI parity, local/BYO)
 
 - Ollama + BYO keys; Write / Ask / Summarize / Translate; Catch Me Up in tray
 - Confirmations before destructive AI actions
+- **Instant Reply** — short suggested replies on every thread (already partial chips → always-on, one-key send)
+- **Auto Labels + library** — built-in categories (marketing, pitch, social, news); wire real `aiSuggestLabel` (today is heuristic-only)
+- **Custom Auto Labels** — user prompt → label; power Split Inbox tabs
+- **Auto Archive** — skip inbox for matched labels; never auto-skip prior contacts / same domain
+- **Auto Drafts** — draft before open for threads that need a reply; never send without user
+- **Personalization / Voice Match** — learn tone from sent mail + settings profile (not mic yet)
+- Autocomplete / Autocorrect in compose
 
 ### Phase 4 — MCP
 
 - Tools: `search_emails`, `read_thread`, label/move/archive/snooze, draft-opens-in-app
 - Safe defaults: no Trash/OTP/sign-in links; send opt-in; account allowlist
 - One-click Cursor / Claude Desktop config
+- Align with Superhuman Mail MCP surface where it does not break privacy defaults
 
 ### Phase 5 — Polish
 
-- Shortcut packs, EN-first i18n hooks, calendar RSVP, parcels
+- Shortcut packs (already shipped — keep tightening end-to-end), EN-first i18n hooks, calendar RSVP, parcels
+- Offline UX first-class (explicit offline mode + queue clarity)
 - Signed MSIX/NSIS + SmartScreen, auto-update, full licensing UX
+
+### Phase 6 — Team collaboration (deferred)
+
+Opt-in collaboration layer **after** solo parity. Must not become a silent mail proxy: shared metadata/comments/drafts only with explicit team sync consent; mail bodies stay provider-direct where possible.
+
+Tracked: [#9](https://github.com/keithsimkin/intray-email-client/issues/9)
+
+- Shared Conversations, Team Comments, Shared Drafts
+- Team Snippets, Team Read Statuses, Team Reply Indicators
+- Team Scheduling (ties to calendar apps)
+
+### Phase 7 — Calendar & voice (deferred)
+
+Tracked: calendar [#10](https://github.com/keithsimkin/intray-email-client/issues/10) · voice [#11](https://github.com/keithsimkin/intray-email-client/issues/11)
+
+- Full calendar: Share Availability, booking links, Meet/Zoom/Teams, See Your Day/Week, Create Event / Instant Event
+- Prefer Apps/add-ons path ([#7](https://github.com/keithsimkin/intray-email-client/issues/7)) where it fits
+- Write with Voice (dictation → polished email)
+
+---
+
+## Superhuman parity matrix
+
+CRM / sales (HubSpot, Salesforce, Pipedrive, Smart Send, Recent Opens as sales tooling) is **out of core** — route via Apps/add-ons ([#7](https://github.com/keithsimkin/intray-email-client/issues/7)).
+
+| Superhuman area | Intray target | Wave |
+| --- | --- | --- |
+| Split Inbox (+ library) | Custom tabs + label-backed splits | Phase 2 |
+| Snippets | Persisted + compose insert | Phase 2 |
+| Remind Me / Auto Reminders / Waiting for Reply | Follow-up engine | Phase 2 |
+| Send Later / Undo Send / Snooze | Finish Send Later; deepen snooze sync later | Phase 2 |
+| Instant Open / Copy / Intro / Send | One-key flows | Phase 2 |
+| Read Statuses | Opt-in tracking | Phase 2 |
+| Unsubscribe / Block | Productize | Phase 2 |
+| Instant Reply / Write with AI / Auto Summarize | Local/BYO | Phase 3 |
+| Auto Labels / Custom / Auto Archive | Triage engine | Phase 3 |
+| Auto Drafts / Personalization | Local/BYO | Phase 3 |
+| Offline Support | First-class UX | Phase 5 |
+| Team collab suite | Opt-in sync; privacy constraints | Phase 6 · [#9](https://github.com/keithsimkin/intray-email-client/issues/9) |
+| Calendar & scheduling | Apps-first where possible | Phase 7 · [#10](https://github.com/keithsimkin/intray-email-client/issues/10) |
+| Voice compose | OS speech → AI polish | Phase 7 · [#11](https://github.com/keithsimkin/intray-email-client/issues/11) |
+| Enterprise admin (SSO, SCIM, coaching, billing) | Lifetime solo first | [#12](https://github.com/keithsimkin/intray-email-client/issues/12) |
+| CRM / sales integrations | Apps marketplace | Excluded from core ([#7](https://github.com/keithsimkin/intray-email-client/issues/7)) |
 
 ---
 
@@ -140,9 +200,10 @@ Mail providers (Gmail / Graph / IMAP)
 2. Scaffold `apps/desktop` (Electron + React + Bun) and `apps/web` (Next.js + Netlify).
 3. **UI-first:** polish Bloop-inspired four-pane shell with mock data before sync.
 4. Then DPAPI `safeStorage` + SQLite schema + Phase 1 provider sync.
+5. **Next build focus:** Phase 2 Superhuman speed core — Send Later, Snippets, Remind Me / follow-up, Instant Open, Read Statuses — then Phase 3 triage AI.
 
 ---
 
 ## Out of scope until later
 
-Mobile apps · pixel-perfect Bloop clone · Apple Intelligence parity · full provider-native UIs for every host · our-cloud AI or mail proxy
+Mobile apps · pixel-perfect Bloop clone · Apple Intelligence parity · full provider-native UIs for every host · our-cloud AI or mail proxy by default · **CRM/sales panels in core** (Apps instead) · enterprise SSO/SCIM until a team SKU exists

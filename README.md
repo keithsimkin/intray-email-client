@@ -291,7 +291,9 @@ cd apps/desktop
 bun run pack
 ```
 
-This runs `electron-vite build` then `electron-builder --win` (NSIS). Output lands in `apps/desktop/release/`.
+From the repo root, `bun run pack:desktop` builds the native mail store, then the app, then the installer. Output is `apps/desktop/release/Intray-Setup-0.1.0.exe`.
+
+The installer is an assisted NSIS setup: current user or all users, a chosen folder, Start menu and desktop shortcuts, and the GPL license. Uninstall leaves downloaded mail and keys in the user profile. The executable is unsigned until a code-signing certificate is added.
 
 App id: `app.intray.desktop` · Product name: **Intray**.
 
@@ -339,7 +341,7 @@ Desktop-only (`apps/desktop`):
 | `bun run dev` | `electron-vite dev` |
 | `bun run build` | `electron-vite build` |
 | `bun run preview` | Preview the built app |
-| `bun run pack` | Build + NSIS Windows installer |
+| `bun run pack` | Build + assisted NSIS Windows installer |
 
 ---
 

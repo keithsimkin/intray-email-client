@@ -1301,53 +1301,8 @@ export const messages: Message[] = [
   thread: m.thread.map((t) => withAvatar(t)),
 })) as Message[];
 
-export const smartRepliesById: Record<string, string[]> = {
-  "1": [
-    "Looks great, thanks Ava — I'll review 4–7 before standup.",
-    "Got it. Sending notes by 9:45.",
-    "Can we push 15m? Want one more pass on the narrative.",
-  ],
-  "2": [
-    "Great to meet you, Daniel — next week Tue/Wed work for me.",
-    "Would love the overview deck when you have it.",
-    "Happy to do 20 minutes Thursday afternoon.",
-  ],
-  "6": [
-    "I'm in — see you at 7.",
-    "Can we do 7:30? Coming from the office.",
-    "Yes! Want me to grab a table?",
-  ],
-  "11": [
-    "Perfect — thanks for the confirmation.",
-    "Can I check in a bit earlier on the 12th?",
-    "Got it. Saving the door code now.",
-  ],
-  "13": [
-    "Confirmed — Samira first, Theo second works for me.",
-    "I'd still keep Hana warm as backup.",
-    "Can we decide after Monday's final with Theo?",
-  ],
-  "14": [
-    "Thanks Mira — happy to try a private build.",
-    "Understood. I'll keep Archives excluded until Wednesday.",
-    "Remote session this week still works if helpful.",
-  ],
-};
-
-export const defaultSmartReplies = [
-  "Thanks — I'll take a look and get back to you.",
-  "Sounds good.",
-  "Can we revisit this tomorrow?",
-];
-
 export const meeting = {
   title: "Q4 roadmap review",
   when: "now",
 };
 
-export const askAiSeed = {
-  question: "When is dinner with Sam?",
-  answer:
-    "Saturday at 7:00 PM at the Thai place near the park — from Sam Patel’s email “Dinner on Saturday?”",
-  citationId: "6",
-};

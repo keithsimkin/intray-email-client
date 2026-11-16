@@ -1,8 +1,11 @@
 import type {
   AccountDto,
+  AccountReconnectInfo,
   AddImapAccountInput,
   AiCompleteRequest,
   AiCompleteResponse,
+  AiModelList,
+  AiProviderId,
   AiProviderStatus,
   AiSecretId,
   BadgePayload,
@@ -17,12 +20,40 @@ import type {
   MailMutateOptions,
   MessageDto,
   QueuedSendResult,
+  ReconnectAccountInput,
   SyncStatus,
 } from "../shared/types";
 import type { Account, Message } from "./data/mock";
 
 export function hasIntrayBridge(): boolean {
   return typeof window !== "undefined" && Boolean(window.intray);
+}
+
+/**
+ * When the desktop preload is missing (the Vite preview), talk to the local
+ * AI host on the dev server. Electron keeps using IPC.
+ */
+async function aiHost<T>(
+  path: string,
+  init?: { method?: string; body?: unknown },
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`/__intray/ai/${path}`, {
+      method: init?.method ?? "GET",
+      headers: { "Content-Type": "application/json" },
+      body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+    });
+  } catch {
+    throw new Error(
+      "The AI host isn’t running. Start the Intray dev server, then check the connection.",
+    );
+  }
+  const json = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) {
+    throw new Error(json.error || `AI host returned ${res.status}`);
+  }
+  return json;
 }
 
 export async function bridgeAccounts(): Promise<AccountDto[]> {
@@ -49,6 +80,24 @@ export async function bridgeAddImap(
     throw new Error("Intray bridge unavailable (run inside Electron).");
   }
   return window.intray.accounts.addImap(input);
+}
+
+export async function bridgeReconnectInfo(
+  accountId: string,
+): Promise<AccountReconnectInfo> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.reconnectInfo(accountId);
+}
+
+export async function bridgeReconnectAccount(
+  input: ReconnectAccountInput,
+): Promise<AccountDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.reconnect(input);
 }
 
 export async function bridgeOAuthStatus(): Promise<{ gmailConfigured: boolean }> {
@@ -126,15 +175,44 @@ export async function bridgeListContacts(): Promise<ContactDto[]> {
 export async function bridgeAiDetect(
   bridgePath?: string,
 ): Promise<AiProviderStatus[]> {
-  if (!hasIntrayBridge()) return [];
+  if (!hasIntrayBridge()) {
+    return aiHost<AiProviderStatus[]>("detect", {
+      method: "POST",
+      body: { bridgePath },
+    });
+  }
   return window.intray.ai.detect(bridgePath);
+}
+
+export async function bridgeAiModels(
+  provider: AiProviderId,
+  bridgePath?: string,
+): Promise<AiModelList> {
+  if (!hasIntrayBridge()) {
+    try {
+      return await aiHost<AiModelList>("models", {
+        method: "POST",
+        body: { provider, bridgePath },
+      });
+    } catch (error) {
+      return {
+        connected: false,
+        models: [],
+        detail:
+          error instanceof Error
+            ? error.message
+            : "Couldn’t reach the AI host. Check the connection.",
+      };
+    }
+  }
+  return window.intray.ai.models(provider, bridgePath);
 }
 
 export async function bridgeAiComplete(
   req: AiCompleteRequest,
 ): Promise<AiCompleteResponse> {
   if (!hasIntrayBridge()) {
-    throw new Error("Intray bridge unavailable (run inside Electron).");
+    return aiHost<AiCompleteResponse>("complete", { method: "POST", body: req });
   }
   return window.intray.ai.complete(req);
 }
@@ -143,13 +221,17 @@ export async function bridgeAiSecretsStatus(): Promise<
   Record<AiSecretId, boolean>
 > {
   if (!hasIntrayBridge()) {
-    return {
-      openai: false,
-      grok: false,
-      anthropic: false,
-      gemini: false,
-      ollama: false,
-    };
+    try {
+      return await aiHost<Record<AiSecretId, boolean>>("secrets");
+    } catch {
+      return {
+        openai: false,
+        grok: false,
+        anthropic: false,
+        gemini: false,
+        ollama: false,
+      };
+    }
   }
   return window.intray.ai.secretsStatus();
 }
@@ -158,7 +240,10 @@ export async function bridgeAiSetSecret(
   id: AiSecretId,
   value: string,
 ): Promise<void> {
-  if (!hasIntrayBridge()) return;
+  if (!hasIntrayBridge()) {
+    await aiHost("secrets", { method: "POST", body: { id, value } });
+    return;
+  }
   await window.intray.ai.setSecret(id, value);
 }
 

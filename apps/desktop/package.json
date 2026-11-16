@@ -8,7 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "pack": "electron-vite build && electron-builder --win",
+    "pack": "electron-vite build && electron-builder --win --x64 --publish never",
     "test": "bun test",
     "typecheck": "tsc -b --pretty false"
   },
@@ -35,27 +35,5 @@
     "electron-vite": "^4.0.0",
     "typescript": "~5.8.3",
     "vite": "^6.3.5"
-  },
-  "build": {
-    "appId": "app.intray.desktop",
-    "productName": "Intray",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "out/**/*",
-      "resources/**/*",
-      {
-        "from": "../../crates/intray-native",
-        "to": "node_modules/@intray/native",
-        "filter": ["index.js", "index.d.ts", "*.node"]
-      }
-    ],
-    "asarUnpack": ["**/*.node"],
-    "icon": "resources/icon.png",
-    "win": {
-      "target": ["nsis"],
-      "icon": "resources/icon.ico"
-    }
   }
 }

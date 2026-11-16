@@ -1,8 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  AccountReconnectInfo,
   AddImapAccountInput,
   AiCompleteRequest,
   AiCompleteResponse,
+  AiModelList,
+  AiProviderId,
   AiProviderStatus,
   AiSecretId,
   BadgePayload,
@@ -19,6 +22,7 @@ import type {
   MessageDto,
   AccountDto,
   QueuedSendResult,
+  ReconnectAccountInput,
   SyncStatus,
 } from "../shared/types";
 
@@ -65,6 +69,13 @@ const api = {
       ipcRenderer.invoke("accounts:addGmail") as Promise<AccountDto>,
     addImap: (input: AddImapAccountInput) =>
       ipcRenderer.invoke("accounts:addImap", input) as Promise<AccountDto>,
+    reconnectInfo: (accountId: string) =>
+      ipcRenderer.invoke(
+        "accounts:reconnectInfo",
+        accountId,
+      ) as Promise<AccountReconnectInfo>,
+    reconnect: (input: ReconnectAccountInput) =>
+      ipcRenderer.invoke("accounts:reconnect", input) as Promise<AccountDto>,
     remove: (accountId: string) =>
       ipcRenderer.invoke("accounts:remove", accountId) as Promise<boolean>,
     oauthStatus: () =>
@@ -135,6 +146,10 @@ const api = {
     detect: (bridgePath?: string) =>
       ipcRenderer.invoke("ai:detect", bridgePath) as Promise<
         AiProviderStatus[]
+      >,
+    models: (provider: AiProviderId, bridgePath?: string) =>
+      ipcRenderer.invoke("ai:models", provider, bridgePath) as Promise<
+        AiModelList
       >,
     complete: (req: AiCompleteRequest) =>
       ipcRenderer.invoke("ai:complete", req) as Promise<AiCompleteResponse>,
