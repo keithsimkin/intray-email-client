@@ -215,7 +215,14 @@ function backfillThreadBodies(
   heads.add(headId);
 
   const existing = threadBackfills.get(threadKey);
-  if (existing) return existing;
+  if (existing) {
+    // Ensure this head gets an update even if it joined after the shared
+    // task already snapshot the waiting set.
+    return existing.then(() => {
+      const dto = buildMessageDto(headId);
+      if (dto) broadcastMailUpdated(dto);
+    });
+  }
 
   const task = (async () => {
     const missing = rows.filter((r) => !getBody(r.id));
@@ -224,8 +231,7 @@ function backfillThreadBodies(
         await ensureBodyForRow(r, account);
       });
     }
-    const waiting = threadBackfillHeads.get(threadKey);
-    if (!waiting) return;
+    const waiting = [...(threadBackfillHeads.get(threadKey) ?? [])];
     for (const id of waiting) {
       const dto = buildMessageDto(id);
       if (dto) broadcastMailUpdated(dto);

@@ -4617,26 +4617,27 @@ export default function App() {
       q: q.trim() || undefined,
     });
     const messages = result.messages.map(messageDtoToUi);
-    // listMail returns metadata only — keep any bodies already hydrated in UI.
+    // listMail returns metadata only — keep hydrated bodies and renderer tags.
     setMail((prev) => {
       const prevById = new Map(prev.map((m) => [m.id, m]));
       return messages.map((m) => {
         const old = prevById.get(m.id);
         if (!old) return m;
-        const listHasBody = m.thread.some(
+        const withTag = { ...m, tag: m.tag ?? old.tag };
+        const listHasBody = withTag.thread.some(
           (t) =>
             Boolean(t.bodyHtml) ||
             Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
         );
-        if (listHasBody) return m;
+        if (listHasBody) return withTag;
         const oldHasBody = old.thread.some(
           (t) =>
             Boolean(t.bodyHtml) ||
             Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
         );
-        if (!oldHasBody) return m;
+        if (!oldHasBody) return withTag;
         return {
-          ...m,
+          ...withTag,
           thread: old.thread,
           linkCount: old.linkCount,
           attachmentCount: old.attachmentCount,

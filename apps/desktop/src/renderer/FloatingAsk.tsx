@@ -1028,7 +1028,7 @@ export function FloatingAsk({
             <button
               type="button"
               className="float-ask-icon"
-              onClick={collapse}
+              onClick={() => collapse({ restoreFocus: true })}
               aria-label="Close"
               title="Close · Esc"
             >
