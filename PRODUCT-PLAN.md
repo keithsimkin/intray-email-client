@@ -12,7 +12,7 @@ Inspired by [bloop.email](https://bloop.email/) (Mac-only). Goal: Windows-native
 | Decision | Default | Why |
 | --- | --- | --- |
 | **Name** | **Intray** | Short, Windows-tray-forward, not Bloop-adjacent; working name until domain secured |
-| **Stack** | **Electron + React + TypeScript + Bun** | Fastest path for tray/OAuth/IMAP/MCP; Chromium UI; Bun for installs & scripts |
+| **Stack** | **Electron + React + TypeScript + Bun**, with **Rust (`napi-rs`) for the mail store** | UI/IPC stay Electron for speed-to-ship; Discord-style incremental Rust for hot paths (SQLite/FTS first, then sync/MIME) |
 | **OS floor** | **Windows 10 22H2+** (Win11 tray/toast polish first) | Lifetime price needs broad reach; WebView2 evergreen |
 | **Price** | **7-day trial → $4.99 lifetime** (strike ~$19.99) | Match Bloop’s wedge; Lemon Squeezy / Paddle for keys |
 | **Providers (v1)** | **Gmail OAuth + Outlook/M365 OAuth + generic IMAP** | Covers majority; others via IMAP + app-password guides |
@@ -41,9 +41,12 @@ Mail providers (Gmail / Graph / IMAP)
 ┌─────────────────────────────────────┐
 │ Intray Desktop (Electron)           │
 │  React UI + Tray flyout             │
-│  Node sync · SQLite+FTS5            │
+│  Node sync / OAuth / IMAP / MCP     │
 │  DPAPI safeStorage · AI router      │
-│  Local MCP server                   │
+│         │                           │
+│         ▼ napi-rs                   │
+│  Rust mail store (@intray/native)   │
+│  SQLite WAL + FTS5                  │
 └─────────────────────────────────────┘
         │                    │
         ▼                    ▼
@@ -53,13 +56,16 @@ Mail providers (Gmail / Graph / IMAP)
   License API (key only — never mail)
 ```
 
+**Rust strategy (Discord-style, incremental):** keep Electron for UI/tray; move performance-critical stores into Rust via `@intray/native`. Phase 1 = SQLite + FTS5 (done). Next = MIME parse / sync helpers. A full native shell (Tauri/GPUI) is out of scope until the Rust core covers mail paths.
+
 **Hard privacy rules:** mail bodies/headers never leave the machine except to the user’s chosen provider or AI endpoint; crash/analytics off by default; license traffic is key-only.
 
 ### Desktop (`apps/desktop`)
 
 - Electron shell (electron-vite + Bun): frameless window + system tray flyout (hero surface)
 - React + TypeScript UI: Bloop-inspired dark four-pane shell (account rail · folders · list · reader); layouts **Panels** and **Wide List** in MVP
-- Main-process: IMAP (IDLE), Gmail API, Microsoft Graph; SQLite + FTS5; Electron `safeStorage` (Windows DPAPI); send queue; MCP — deferred while UI is the focus
+- Main-process: IMAP (IDLE), Gmail API, Microsoft Graph; Electron `safeStorage` (Windows DPAPI); send queue; MCP
+- Rust native addon (`crates/intray-native`): SQLite WAL + FTS5 mail cache loaded from main via napi-rs
 - Notifications: Win10/11 toasts + tray panel actions
 
 ### Marketing (`apps/web`)

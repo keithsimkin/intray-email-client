@@ -63,6 +63,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 - [Privacy model](#privacy-model)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [Key contributors](#key-contributors)
 - [Docs](#docs)
 - [License](#license)
 
@@ -74,6 +75,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 | --- | --- | --- |
 | **OS** | Windows 10 22H2+ | Windows 11 recommended for tray/toast polish |
 | **[Bun](https://bun.sh)** | 1.3+ | Package manager and script runner for this monorepo |
+| **[Rust](https://rustup.rs)** | stable (MSVC) | Builds `@intray/native` (mail SQLite store) |
 | **Git** | recent | Clone and contribute |
 | **Google Cloud project** | optional | Only needed for live Gmail OAuth |
 
@@ -99,16 +101,19 @@ This is a **Bun workspaces** monorepo:
 windows-unified-mail/          # repo root (package name: intray)
 ├── apps/
 │   ├── desktop/               # @intray/desktop — Electron + React mail client
-│   │   ├── src/main/          # Node main process (mail, DB, OAuth, MCP, tray)
+│   │   ├── src/main/          # Node main process (mail façade, OAuth, MCP, tray)
 │   │   ├── src/preload/       # contextBridge IPC surface
 │   │   ├── src/renderer/      # React UI
 │   │   ├── src/shared/        # shared types
 │   │   ├── resources/         # app / tray icons
 │   │   └── .env.example       # Gmail OAuth template
 │   └── web/                   # @intray/web — Next.js marketing site (Netlify)
+├── crates/
+│   └── intray-native/         # @intray/native — Rust SQLite + FTS5 (napi-rs)
 ├── assets/                    # brand mark, wordmark, icons
 ├── docs/                      # research brief + UI reference frames
 ├── PRODUCT-PLAN.md            # product + technical plan
+├── Cargo.toml                 # Rust workspace
 ├── netlify.toml               # web deploy config
 └── package.json               # workspace scripts
 ```
@@ -116,6 +121,7 @@ windows-unified-mail/          # repo root (package name: intray)
 | Package | Path | Role |
 | --- | --- | --- |
 | `@intray/desktop` | [`apps/desktop`](apps/desktop) | Desktop mail app (Electron + React + TypeScript) |
+| `@intray/native` | [`crates/intray-native`](crates/intray-native) | Rust mail store (SQLite WAL + FTS5) |
 | `@intray/web` | [`apps/web`](apps/web) | Marketing site (Next.js → Netlify) |
 
 ---
@@ -130,7 +136,8 @@ cd intray-email-client
 
 bun install
 
-# Desktop app (demo inbox until you add a real account)
+# Desktop app — builds the Rust mail store, then launches Electron
+# (demo inbox until you add a real account; requires rustup + MSVC)
 bun run dev:desktop
 
 # In another terminal — marketing site at http://localhost:3000
@@ -221,10 +228,23 @@ API keys are encrypted with DPAPI. Mail content is sent only to the AI provider 
 
 ### MCP server
 
-On launch, Intray starts a **localhost-only** MCP endpoint (default port **47821**):
+On launch, Intray can start a **localhost-only** MCP endpoint (default port **47821**):
 
 ```text
 http://127.0.0.1:47821/mcp
+```
+
+Every request must carry a **per-install bearer token** (except `/health`). The token is generated on first run, encrypted at rest with DPAPI, and shown only inside **Settings → AI & agents**. Paste the ready-made snippet into your client:
+
+```json
+{
+  "mcpServers": {
+    "intray": {
+      "url": "http://127.0.0.1:47821/mcp",
+      "headers": { "Authorization": "Bearer <your-token>" }
+    }
+  }
+}
 ```
 
 Built-in tools:
@@ -235,7 +255,9 @@ Built-in tools:
 | `read_thread` | Read a message/thread by id |
 | `list_accounts` | List connected accounts on this device |
 
-Toggle MCP under **Settings → AI & agents**. Point Cursor, Claude Desktop, Claude Code, or Codex at that URL when you want agents to read mail locally.
+Toggle MCP under **Settings → AI & agents**, and use **Rotate access token** to invalidate existing clients.
+
+Hardening: the listener binds to `127.0.0.1` only; requests with an `Origin` or `Sec-Fetch-Mode` header (i.e. browser pages) are rejected before auth; `Host` is validated; CORS is not granted; bodies are capped at 1 MB and tool arguments are clamped. If the default port is taken, Intray falls back to an ephemeral port and shows the new URL in Settings.
 
 ### Build a Windows installer
 
@@ -281,7 +303,8 @@ From the **repo root** (`package.json`):
 | `bun install` | Install all workspace dependencies |
 | `bun run dev:desktop` | Electron app in development |
 | `bun run dev:web` | Next.js marketing site |
-| `bun run build:desktop` | Build desktop renderer/main bundles |
+| `bun run build:native` | Build the Rust `@intray/native` napi addon |
+| `bun run build:desktop` | Build native + desktop renderer/main bundles |
 | `bun run build:web` | Production build of the marketing site |
 
 Desktop-only (`apps/desktop`):
@@ -304,20 +327,24 @@ Mail providers (Gmail API / IMAP+SMTP)
 ┌─────────────────────────────────────┐
 │ Intray Desktop (Electron)           │
 │  React UI + tray                    │
-│  Node sync · SQLite (sql.js)        │
+│  Node sync / OAuth / IMAP / MCP     │
 │  DPAPI safeStorage · AI router      │
-│  Local MCP server (:47821)          │
+│         │ napi-rs                   │
+│  Rust mail store · SQLite + FTS5    │
 └─────────────────────────────────────┘
         │                    │
         ▼                    ▼
   Ollama / BYO keys    Cursor / Claude / Codex
 ```
 
+Same approach Discord used before Project Phoenix: keep the Electron shell, move hot stores into Rust.
+
 **Process boundaries** (follow these when contributing):
 
 | Layer | Path | Responsibility |
 | --- | --- | --- |
-| **Main** | `apps/desktop/src/main/` | Windows, tray, OAuth, IMAP, DB, credentials, AI secrets, MCP, notifications |
+| **Main** | `apps/desktop/src/main/` | Windows, tray, OAuth, IMAP, typed DB façade, credentials, AI secrets, MCP, notifications |
+| **Native** | `crates/intray-native/` | SQLite WAL + FTS5 mail cache (`MailDb` via napi-rs) |
 | **Preload** | `apps/desktop/src/preload/` | Thin `contextBridge` — typed IPC only, no business logic |
 | **Renderer** | `apps/desktop/src/renderer/` | React UI |
 | **Shared** | `apps/desktop/src/shared/` | Types shared across processes |
@@ -330,13 +357,21 @@ Hard rules:
 
 ---
 
+See [SECURITY.md](SECURITY.md) for the threat model and how to report issues.
+
 ## Privacy model
 
 - Mail bodies and headers leave the machine only to **your** mail provider or **your** chosen AI endpoint.
 - App passwords and OAuth tokens are encrypted with **Windows DPAPI** (`Electron safeStorage`).
-- MCP listens on **127.0.0.1** only.
+- SMTP uses STARTTLS on submission ports (465 is implicit TLS) with TLS 1.2+; IMAP requires TLS.
+- Outbound mail is built by an RFC 5322 builder in the main process — the renderer never supplies raw headers.
+- Inbound HTML is sanitized in the main process. Remote images and third-party frames are blocked until you opt in per message; links open through a validated allowlist (`http`, `https`, `mailto`).
+- MCP listens on **127.0.0.1** only, requires a per-install bearer token, and rejects browser requests.
+- The app window blocks in-page navigation and denies permission requests it does not need.
 - Crash/analytics are off by default (product plan); do not add phone-home without an explicit, documented opt-in.
 - License checks (when added) are key-only — never mail content.
+
+See [`SECURITY.md`](SECURITY.md) for the threat model and how to report issues.
 
 ---
 
@@ -347,8 +382,11 @@ Hard rules:
 | `GMAIL_CLIENT_ID is not set` | Create `apps/desktop/.env` from `.env.example`, set the Desktop OAuth client ID, restart the app |
 | OAuth browser flow fails | Confirm Gmail API is enabled; client type is **Desktop app**; no conflicting `GMAIL_CLIENT_SECRET` unless you intentionally use a Web client |
 | App opens with only demo mail | Expected until an account is added — use **Add account** |
-| MCP tools unreachable | Check Settings → AI & agents that MCP is enabled; hit `http://127.0.0.1:47821/mcp` from the same machine |
+| MCP tools unreachable | Check Settings → AI & agents that MCP is enabled; use the URL and bearer token shown there |
+| MCP returns `401 Unauthorized` | The client is missing or has an old token — copy the current snippet from Settings, or rotate the token |
+| Remote images blocked | Expected default — choose **Load images** on that message |
 | `bun install` fails | Use Bun 1.3+; delete `node_modules` and retry from repo root |
+| Native addon missing / `Cannot find module @intray/native` | Install Rust (MSVC), then `bun run build:native` |
 | DPAPI / encryption errors | Run on a normal Windows user session (encryption needs OS secure storage) |
 
 ---
@@ -377,6 +415,20 @@ Please read **[CONTRIBUTING.md](CONTRIBUTING.md)** for project structure, coding
 
 Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screenshot for UI bugs.
 
+### Key contributors
+
+| Name | Role | Links |
+| --- | --- | --- |
+| [Keith Simkin](https://github.com/keithsimkin) | Creator / maintainer | [Twitter / X](https://x.com/Ctrlthenarative) (`@Ctrlthenarative`) |
+
+---
+
+### Key contributors
+
+| Name | Role | Links |
+| --- | --- | --- |
+| [Keith Simkin](https://github.com/keithsimkin) | Creator / maintainer | [Twitter / X](https://x.com/Ctrlthenarative) (`@Ctrlthenarative`) |
+
 ---
 
 ## Docs
@@ -386,6 +438,7 @@ Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screens
 | [PRODUCT-PLAN.md](PRODUCT-PLAN.md) | Product pillars, architecture, phased delivery |
 | [docs/BLOOP-RESEARCH-BRIEF.md](docs/BLOOP-RESEARCH-BRIEF.md) | Competitive / research brief |
 | [docs/ui-ref/](docs/ui-ref/) | UI reference frames and screenshots |
+| [SECURITY.md](SECURITY.md) | Threat model and vulnerability reporting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to develop and submit changes |
 | [apps/desktop/.env.example](apps/desktop/.env.example) | Gmail OAuth env template |
 
