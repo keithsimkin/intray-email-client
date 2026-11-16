@@ -21,7 +21,7 @@ Be respectful in issues, PRs, and review comments. Assume good intent; disagree 
 - **Bugs** — open an issue with OS version, Bun version, steps to reproduce, and screenshots when UI-related
 - **Features** — open an issue first for larger ideas so we can align with [PRODUCT-PLAN.md](PRODUCT-PLAN.md)
 - **Docs** — README, CONTRIBUTING, product plan clarifications, setup fixes
-- **Code** — desktop (`apps/desktop`) or marketing site (`apps/web`)
+- **Code** — desktop (`apps/desktop`), Rust mail store (`crates/intray-native`), or marketing site (`apps/web`)
 - **Design** — UI polish that matches the existing dark shell and brand tokens (see `assets/` and product plan)
 
 ---
@@ -32,6 +32,7 @@ Be respectful in issues, PRs, and review comments. Assume good intent; disagree 
 
 - Windows 10 22H2+ (Win11 preferred)
 - [Bun](https://bun.sh) 1.3+
+- [Rust](https://rustup.rs) stable (MSVC toolchain on Windows) — required to build `@intray/native`
 - Git
 - Optional: Google Cloud Desktop OAuth client for live Gmail
 
@@ -41,12 +42,13 @@ Be respectful in issues, PRs, and review comments. Assume good intent; disagree 
 git clone https://github.com/keithsimkin/intray-email-client.git
 cd intray-email-client
 bun install
+bun run build:native   # compiles the Rust SQLite addon
 ```
 
 ### Run apps
 
 ```powershell
-# Desktop (Electron)
+# Desktop (Electron) — builds native first, then electron-vite
 bun run dev:desktop
 
 # Marketing site (Next.js) — separate terminal
@@ -68,21 +70,26 @@ See [README → Connect Gmail](README.md#connect-gmail-oauth) for the full Cloud
 
 ```
 apps/desktop/src/
-  main/        Electron main: mail, DB, OAuth, IMAP, MCP, tray, secrets
+  main/        Electron main: mail façade, OAuth, IMAP, MCP, tray, secrets
   preload/     contextBridge — keep thin and typed
   renderer/    React UI
   shared/      Cross-process types
+
+crates/intray-native/
+  src/         Rust mail store (SQLite WAL + FTS5) exposed via napi-rs as @intray/native
 
 apps/web/src/
   app/         Next.js App Router pages
   components/  Landing sections and brand
 ```
 
-### Electron boundaries (important)
+### Electron + Rust boundaries (important)
 
 | Do | Don’t |
 | --- | --- |
 | Keep credentials and AI keys in **main** (`safeStorage` / DPAPI) | Pass secrets into the renderer, DOM, or logs |
+| Put persistence / search hot paths in **`crates/intray-native`** | Reintroduce in-process WASM SQLite (`sql.js`) for the mail cache |
+| Keep schema owned by Rust (`crates/intray-native/src/schema.rs`) | Drift a second live schema in TypeScript |
 | Add IPC via **preload** as a small typed surface | Enable `nodeIntegration` or weaken `contextIsolation` |
 | Put shared shapes in `src/shared/` | Duplicate drifting types in main and renderer |
 | Prefer privacy defaults (localhost MCP, no mail relay) | Add network calls that send mail to third parties without clear user opt-in |
