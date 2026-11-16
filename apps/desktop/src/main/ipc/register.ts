@@ -47,15 +47,41 @@ import {
   showDesktopNotification,
 } from "../notifications";
 import { getLaunchAtLogin, setLaunchAtLogin } from "../startup";
+import { openExternalSafely } from "../security";
 import {
   getMcpStatus,
   startMcpServer,
   stopMcpServer,
 } from "../mcp/server";
+import { rotateMcpToken } from "../mcp/auth";
 import { refreshTray } from "../tray";
 
 function isChromeTheme(value: unknown): value is ChromeTheme {
   return value === "dark" || value === "light";
+}
+
+const MAIL_ACTIONS = new Set<MailMutateAction>([
+  "archive",
+  "trash",
+  "spam",
+  "not-spam",
+  "delete-forever",
+  "read",
+  "unread",
+  "star",
+  "unstar",
+  "snooze",
+  "unsnooze",
+  "label",
+  "clear-label",
+  "move",
+]);
+
+function assertCanonicalId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+    throw new Error("Invalid identifier");
+  }
+  return value;
 }
 
 export function registerIpc(): void {
@@ -66,6 +92,10 @@ export function registerIpc(): void {
   }));
 
   ipcMain.handle("app:getLaunchAtLogin", () => getLaunchAtLogin());
+  ipcMain.handle("app:openExternal", (_e, url: unknown) => {
+    if (typeof url !== "string" || url.length > 4096) return false;
+    return openExternalSafely(url);
+  });
   ipcMain.handle(
     "app:setLaunchAtLogin",
     (_e, openAtLogin: boolean, openAsHidden?: boolean) =>
@@ -101,26 +131,33 @@ export function registerIpc(): void {
     addImapAccount(input),
   );
   ipcMain.handle("accounts:remove", (_e, accountId: string) => {
-    removeAccount(accountId);
+    removeAccount(assertCanonicalId(accountId));
     return true;
   });
   ipcMain.handle("accounts:oauthStatus", () => oauthStatus());
 
   ipcMain.handle("mail:list", (_e, query: MailListQuery) => listMail(query));
-  ipcMain.handle("mail:get", (_e, id: string) => getMail(id));
+  ipcMain.handle("mail:get", (_e, id: string) => getMail(assertCanonicalId(id)));
   ipcMain.handle(
     "mail:mutate",
-    (_e, id: string, action: MailMutateAction, options?: MailMutateOptions) =>
-      mutateMail(id, action, options ?? {}),
+    (_e, id: string, action: MailMutateAction, options?: MailMutateOptions) => {
+      if (!MAIL_ACTIONS.has(action)) throw new Error("Unknown mail action");
+      return mutateMail(assertCanonicalId(id), action, options ?? {});
+    },
   );
   ipcMain.handle("mail:send", (_e, draft: ComposeDraft) => sendMail(draft));
   ipcMain.handle(
     "mail:sendLater",
-    (_e, draft: ComposeDraft, delaySeconds: number) =>
-      enqueueDelayedSend(draft, delaySeconds),
+    (_e, draft: ComposeDraft, delaySeconds: number) => {
+      const delay = Number(delaySeconds);
+      if (!Number.isFinite(delay) || delay < 0) {
+        throw new Error("Invalid send delay");
+      }
+      return enqueueDelayedSend(draft, delay);
+    },
   );
   ipcMain.handle("mail:cancelSend", (_e, queueId: string) =>
-    cancelQueuedSend(queueId),
+    cancelQueuedSend(assertCanonicalId(queueId)),
   );
   ipcMain.handle("mail:sync", (_e, accountId?: string) => triggerSync(accountId));
 
@@ -157,6 +194,10 @@ export function registerIpc(): void {
   ipcMain.handle("mcp:start", () => startMcpServer());
   ipcMain.handle("mcp:stop", () => {
     stopMcpServer();
+    return getMcpStatus();
+  });
+  ipcMain.handle("mcp:rotateToken", () => {
+    rotateMcpToken();
     return getMcpStatus();
   });
 

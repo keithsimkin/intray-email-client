@@ -198,6 +198,16 @@ export type LaunchAtLoginState = {
   openAsHidden: boolean;
 };
 
+export type McpStatus = {
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  /** Bearer token required by the localhost MCP endpoint. */
+  token?: string;
+  /** Ready-to-paste MCP client config. */
+  config?: string;
+};
+
 /** Add an IMAP / app-password account (iCloud, Yahoo, Fastmail, Outlook, generic). */
 export type AddImapAccountInput = {
   provider: ProviderId;

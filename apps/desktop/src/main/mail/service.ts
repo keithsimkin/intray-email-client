@@ -27,6 +27,7 @@ import {
 import { saveCredentials, type ImapCredentials } from "../crypto/credentials";
 import {
   deleteMessageForever,
+  findMessageIdByRfc822,
   getMessageFull,
   modifyLabels,
   persistGmailTokens,
@@ -49,6 +50,7 @@ import {
 import {
   deleteImapMessageForever,
   fetchMessageSource,
+  findSentMessage,
   moveImapMessage,
   parsedToBodies,
   sendSmtp,
@@ -57,6 +59,8 @@ import {
 } from "../providers/imap/client";
 import { mailboxMetaFromRow } from "../providers/imap/map";
 import { presetFor } from "../providers/imap/presets";
+import { assertAddressList, buildMessageId, buildRawMessage } from "./mime";
+import { sanitizeEmailHtml } from "./sanitize";
 import {
   startAccountPolling,
   stopAccountPolling,
@@ -102,7 +106,7 @@ function rowToThreadMessage(
   body?: { text_plain: string | null; text_html: string | null },
 ): ThreadMessageDto {
   const text = body?.text_plain?.trim();
-  const html = body?.text_html?.trim();
+  const html = sanitizeEmailHtml(body?.text_html).trim();
   return {
     id: row.id,
     from: row.from_name,
@@ -267,18 +271,36 @@ export async function addGmailAccount(): Promise<AccountDto> {
     status: "idle",
     error: null,
     progress: null,
+    imap_cursor_json: null,
   });
   startAccountPolling(id);
   void syncAccount(id).catch(() => undefined);
   return accountToDto(row);
 }
 
+function assertHost(value: string, label: string): string {
+  const host = value.trim();
+  if (!/^[a-zA-Z0-9._-]{1,253}$/.test(host) && !/^\[[0-9a-fA-F:]+\]$/.test(host)) {
+    throw new Error(`Invalid ${label} hostname.`);
+  }
+  return host;
+}
+
+function assertPort(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(`Invalid ${label} port.`);
+  }
+  return value;
+}
+
 function resolveImapCreds(input: AddImapAccountInput): ImapCredentials {
   const preset = presetFor(input.provider);
-  const imapHost = (input.imapHost || preset?.imapHost || "").trim();
-  const smtpHost = (input.smtpHost || preset?.smtpHost || imapHost).trim();
-  if (!imapHost) throw new Error("IMAP host is required.");
-  if (!smtpHost) throw new Error("SMTP host is required.");
+  const rawImapHost = (input.imapHost || preset?.imapHost || "").trim();
+  if (!rawImapHost) throw new Error("IMAP host is required.");
+  const imapHost = assertHost(rawImapHost, "IMAP");
+  const rawSmtpHost = (input.smtpHost || preset?.smtpHost || imapHost).trim();
+  if (!rawSmtpHost) throw new Error("SMTP host is required.");
+  const smtpHost = assertHost(rawSmtpHost, "SMTP");
   return {
     provider: "imap",
     brand: input.provider,
@@ -286,9 +308,15 @@ function resolveImapCreds(input: AddImapAccountInput): ImapCredentials {
     username: input.username?.trim() || undefined,
     password: input.password,
     imapHost,
-    imapPort: input.imapPort ?? preset?.imapPort ?? 993,
+    imapPort: assertPort(
+      input.imapPort ?? preset?.imapPort ?? 993,
+      "IMAP",
+    ),
     smtpHost,
-    smtpPort: input.smtpPort ?? preset?.smtpPort ?? 587,
+    smtpPort: assertPort(
+      input.smtpPort ?? preset?.smtpPort ?? 587,
+      "SMTP",
+    ),
   };
 }
 
@@ -335,6 +363,7 @@ export async function addImapAccount(
     status: "idle",
     error: null,
     progress: null,
+    imap_cursor_json: null,
   });
   startAccountPolling(id);
   void syncAccount(id).catch(() => undefined);
@@ -722,98 +751,20 @@ export async function mutateMail(
   return getMail(messageId);
 }
 
-export async function sendMail(draft: ComposeDraft): Promise<MessageDto> {
-  const account = getAccountRow(draft.accountId);
-  if (!account) throw new Error("Account not found");
-  touchContactsFromDraft(draft);
+type SendOptions = { messageId?: string; retry?: boolean };
 
-  if (account.provider === "gmail") {
-    const attachments = draft.attachments ?? [];
-    let raw: string;
-    if (attachments.length === 0) {
-      const headers = [
-        `From: ${account.name} <${account.email}>`,
-        `To: ${draft.to.join(", ")}`,
-        draft.cc?.length ? `Cc: ${draft.cc.join(", ")}` : null,
-        draft.bcc?.length ? `Bcc: ${draft.bcc.join(", ")}` : null,
-        `Subject: ${draft.subject || "(no subject)"}`,
-        "MIME-Version: 1.0",
-        'Content-Type: text/plain; charset="UTF-8"',
-      ]
-        .filter(Boolean)
-        .join("\r\n");
-      raw = `${headers}\r\n\r\n${draft.bodyText}`;
-    } else {
-      const boundary = `intray_${Date.now().toString(36)}`;
-      const parts = [
-        `--${boundary}`,
-        'Content-Type: text/plain; charset="UTF-8"',
-        "Content-Transfer-Encoding: 7bit",
-        "",
-        draft.bodyText,
-      ];
-      for (const a of attachments) {
-        const safeName = a.filename.replace(/"/g, "");
-        const type = a.contentType || "application/octet-stream";
-        parts.push(
-          `--${boundary}`,
-          `Content-Type: ${type}; name="${safeName}"`,
-          "Content-Transfer-Encoding: base64",
-          `Content-Disposition: attachment; filename="${safeName}"`,
-          "",
-          a.contentBase64.replace(/(.{76})/g, "$1\r\n").trim(),
-        );
-      }
-      parts.push(`--${boundary}--`, "");
-      const headers = [
-        `From: ${account.name} <${account.email}>`,
-        `To: ${draft.to.join(", ")}`,
-        draft.cc?.length ? `Cc: ${draft.cc.join(", ")}` : null,
-        draft.bcc?.length ? `Bcc: ${draft.bcc.join(", ")}` : null,
-        `Subject: ${draft.subject || "(no subject)"}`,
-        "MIME-Version: 1.0",
-        `Content-Type: multipart/mixed; boundary="${boundary}"`,
-      ]
-        .filter(Boolean)
-        .join("\r\n");
-      raw = `${headers}\r\n\r\n${parts.join("\r\n")}`;
-    }
-    const sent = await sendRawMessage(draft.accountId, raw);
-    const full = await getMessageFull(draft.accountId, sent.id);
-    const row = gmailMessageToRow(draft.accountId, full);
-    upsertMessage(row);
-    const bodies = bodiesFromGmail(full);
-    upsertBody({
-      message_id: row.id,
-      text_plain: bodies.text ?? draft.bodyText,
-      text_html: bodies.html ?? null,
-      fetched_at: new Date().toISOString(),
-    });
-    const dto = await getMail(row.id);
-    if (!dto) throw new Error("Sent message missing from store");
-    return dto;
-  }
-
-  await sendSmtp(draft.accountId, {
-    fromName: account.name,
-    fromEmail: account.email,
-    to: draft.to,
-    cc: draft.cc,
-    bcc: draft.bcc,
-    subject: draft.subject,
-    bodyText: draft.bodyText,
-    attachments: draft.attachments,
-  });
-
-  // Optimistic sent row until next IMAP sync picks it up
+/** Local sent copy used until the provider sync indexes the real message. */
+function persistSentDraft(
+  account: AccountRow,
+  draft: ComposeDraft,
+  providerId: string,
+): MessageRow {
   const now = Date.now();
-  const pid = `local-sent:${now}`;
-  const hasAttachments = (draft.attachments?.length ?? 0) > 0;
   const row: MessageRow = {
-    id: `${draft.accountId}:${pid}`,
-    account_id: draft.accountId,
-    thread_id: pid,
-    provider_id: pid,
+    id: `${account.id}:${providerId}`,
+    account_id: account.id,
+    thread_id: providerId,
+    provider_id: providerId,
     folder: "sent",
     subject: draft.subject || "(no subject)",
     snippet: draft.bodyText.slice(0, 180),
@@ -832,7 +783,7 @@ export async function sendMail(draft: ComposeDraft): Promise<MessageDto> {
     unread: 0,
     important: 0,
     starred: 0,
-    has_attachment: hasAttachments ? 1 : 0,
+    has_attachment: (draft.attachments?.length ?? 0) > 0 ? 1 : 0,
     label_ids_json: "[]",
     ui_label_id: null,
     snooze_until_ms: null,
@@ -842,10 +793,128 @@ export async function sendMail(draft: ComposeDraft): Promise<MessageDto> {
   upsertBody({
     message_id: row.id,
     text_plain: draft.bodyText,
-    text_html: null,
+    text_html: draft.bodyHtml ?? null,
     fetched_at: new Date().toISOString(),
   });
-  void syncAccount(draft.accountId).catch(() => undefined);
+  return row;
+}
+
+async function storeGmailSent(
+  account: AccountRow,
+  draft: ComposeDraft,
+  gmailId: string,
+): Promise<MessageDto> {
+  // Once Gmail accepted the message, indexing failure must never surface as a
+  // send failure — the outbox would retry and duplicate the mail.
+  try {
+    const full = await getMessageFull(account.id, gmailId);
+    const row = gmailMessageToRow(account.id, full);
+    upsertMessage(row);
+    const bodies = bodiesFromGmail(full);
+    upsertBody({
+      message_id: row.id,
+      text_plain: bodies.text ?? draft.bodyText,
+      text_html: bodies.html ?? null,
+      fetched_at: new Date().toISOString(),
+    });
+    const dto = await getMail(row.id);
+    if (dto) return dto;
+  } catch {
+    /* fall back to the local sent copy */
+  }
+  const row = persistSentDraft(account, draft, gmailId);
+  const dto = await getMail(row.id);
+  if (!dto) throw new Error("Sent message missing from store");
+  return dto;
+}
+
+export async function sendMail(
+  draft: ComposeDraft,
+  opts: SendOptions = {},
+): Promise<MessageDto> {
+  const account = getAccountRow(draft.accountId);
+  if (!account) throw new Error("Account not found");
+
+  // Validate before touching the network: an invalid address is a permanent
+  // failure and must not sit in the retry queue forever.
+  const to = assertAddressList(draft.to ?? [], "To");
+  if (to.length === 0) throw new Error("Add at least one recipient.");
+  const cc = assertAddressList(draft.cc ?? [], "Cc");
+  const bcc = assertAddressList(draft.bcc ?? [], "Bcc");
+
+  // A compromised renderer should not be able to exhaust memory or attempt an
+  // oversized upload through the send IPC.
+  const attachments = draft.attachments ?? [];
+  if (attachments.length > 20) {
+    throw new Error("Too many attachments (max 20).");
+  }
+  let attachmentBytes = 0;
+  for (const a of attachments) {
+    attachmentBytes += Math.ceil((a.contentBase64?.length ?? 0) * 0.75);
+  }
+  if (attachmentBytes > 25 * 1024 * 1024) {
+    throw new Error("Attachments exceed the 25 MB limit.");
+  }
+
+  const safeDraft: ComposeDraft = { ...draft, to, cc, bcc };
+  touchContactsFromDraft(safeDraft);
+
+  const messageId = opts.messageId ?? buildMessageId(account.email);
+
+  if (account.provider === "gmail") {
+    // Idempotency: on a retry, check whether Gmail already has this Message-ID
+    // (e.g. the app crashed after the API accepted the send).
+    if (opts.retry) {
+      const existing = await findMessageIdByRfc822(account.id, messageId).catch(
+        () => null,
+      );
+      if (existing) return storeGmailSent(account, safeDraft, existing);
+    }
+
+    const built = buildRawMessage({
+      from: { name: account.name, email: account.email },
+      to,
+      cc,
+      bcc,
+      subject: draft.subject,
+      text: draft.bodyText,
+      html: draft.bodyHtml,
+      messageId,
+      attachments: draft.attachments?.map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        contentBase64: a.contentBase64,
+      })),
+    });
+    const sent = await sendRawMessage(account.id, built.raw);
+    return storeGmailSent(account, safeDraft, sent.id);
+  }
+
+  // Same idempotency idea for SMTP, using the Sent folder when the provider
+  // supports header search.
+  if (opts.retry && (await findSentMessage(account.id, messageId))) {
+    const providerId = `local-sent:${messageId.replace(/[<>\s]/g, "")}`;
+    const row = persistSentDraft(account, safeDraft, providerId);
+    const dto = await getMail(row.id);
+    if (!dto) throw new Error("Sent message missing from store");
+    return dto;
+  }
+
+  await sendSmtp(account.id, {
+    fromName: account.name,
+    fromEmail: account.email,
+    to,
+    cc,
+    bcc,
+    subject: draft.subject,
+    bodyText: draft.bodyText,
+    messageId,
+    attachments: draft.attachments,
+  });
+
+  const providerId = `local-sent:${messageId.replace(/[<>\s]/g, "")}`;
+  const row = persistSentDraft(account, safeDraft, providerId);
+  void syncAccount(account.id).catch(() => undefined);
   const dto = await getMail(row.id);
   if (!dto) throw new Error("Sent message missing from store");
   return dto;
