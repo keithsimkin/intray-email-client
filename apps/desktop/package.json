@@ -45,9 +45,10 @@
       "out/**/*",
       "resources/**/*"
     ],
+    "icon": "resources/icon.png",
     "win": {
       "target": ["nsis"],
-      "icon": "resources/icon.png"
+      "icon": "resources/icon.ico"
     }
   }
 }

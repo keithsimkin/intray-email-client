@@ -5,6 +5,7 @@ import {
   nativeImage,
   type NativeImage,
 } from "electron";
+import { loadAppIcon } from "./app-icon";
 
 export type DesktopNotifyPayload = {
   title: string;
@@ -72,10 +73,12 @@ export function showDesktopNotification(
 ): boolean {
   if (!Notification.isSupported()) return false;
 
+  const icon = loadAppIcon();
   const toast = new Notification({
     title: payload.title,
     body: payload.body,
     silent: payload.silent ?? false,
+    ...(icon ? { icon } : {}),
   });
 
   toast.on("click", () => {
