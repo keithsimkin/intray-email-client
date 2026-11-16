@@ -1,0 +1,28 @@
+{
+  "name": "@intray/native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rust mail store for Intray (napi-rs + SQLite)",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "intray-native",
+    "targets": ["x86_64-pc-windows-msvc"]
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "postbuild": "node -e \"const fs=require('fs');const p='index.d.ts';let t=fs.readFileSync(p,'utf8');if(!t.includes('export type JsonValue')){t='export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }\\nexport type JsonParams = JsonValue[]\\n\\n'+t;fs.writeFileSync(p,t)}\""
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "devDependencies": {
+    "@napi-rs/cli": "^3.4.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

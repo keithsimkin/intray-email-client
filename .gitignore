@@ -6,9 +6,12 @@ dist/
 out/
 release/
 target/
+*.node
 *.log
 .DS_Store
 .env
 .env.*
 !.env.example
 *.local
+# napi-rs generated loader is committed after first build for convenience;
+# rebuild with `bun run build:native` if missing.
