@@ -97,7 +97,7 @@ export function OpenAiBrand({ size = 22 }: { size?: number }) {
   );
 }
 
-/** Real brand marks for shortcut packs (Gmail / Superhuman / Outlook). */
+/** Real brand marks for shortcut packs (Gmail / Superhuman / Outlook / Custom). */
 export function PackLogo({
   id,
   size = 22,
@@ -111,14 +111,16 @@ export function PackLogo({
     case "outlook":
       return <ImgBrand src={brandImages.outlook} alt="Outlook" size={size} />;
     case "superhuman":
-      // Superhuman isn’t in Simple Icons; use the official stacked-plane mark.
+      // Superhuman isn’t in Simple Icons; stacked-plane mark in brand violet
+      // so it doesn’t read as a broken mono glyph next to color logos.
       return (
         <svg
+          className="pack-logo-superhuman"
           role="img"
           viewBox="0 0 24 24"
           width={size}
           height={size}
-          style={{ flexShrink: 0, display: "block", color: "currentColor" }}
+          style={{ flexShrink: 0, display: "block" }}
           fill="none"
           stroke="currentColor"
           strokeWidth={2}
@@ -130,6 +132,27 @@ export function PackLogo({
           <path d="M16 12l4 3l-8 7l-8-7l4-3" />
           <path d="M12 3l-8 6l8 6l8-6l-8-6" />
           <path d="M12 15h8" />
+        </svg>
+      );
+    case "custom":
+      return (
+        <svg
+          className="pack-logo-custom"
+          role="img"
+          viewBox="0 0 24 24"
+          width={size}
+          height={size}
+          style={{ flexShrink: 0, display: "block" }}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <title>Custom</title>
+          <rect x="2" y="6" width="20" height="12" rx="2" />
+          <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
         </svg>
       );
   }

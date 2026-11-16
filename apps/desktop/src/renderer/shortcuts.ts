@@ -1,6 +1,6 @@
 /** Shortcut packs inspired by Gmail, Superhuman, and Outlook power-user habits. */
 
-export type ShortcutPackId = "gmail" | "superhuman" | "outlook";
+export type ShortcutPackId = "gmail" | "superhuman" | "outlook" | "custom";
 
 export type ShortcutAction =
   | "compose"
@@ -422,6 +422,8 @@ const packs: Record<ShortcutPackId, PackBinding[]> = {
   gmail: gmailBindings,
   superhuman: superhumanBindings,
   outlook: outlookBindings,
+  // Fallback baseline for unmapped actions — Custom is driven by overrides.
+  custom: superhumanBindings,
 };
 
 export const packMeta: Record<
@@ -439,6 +441,10 @@ export const packMeta: Record<
   outlook: {
     name: "Outlook",
     blurb: "Ctrl chords · Delete trash · Ctrl+R reply · Ctrl+Q read",
+  },
+  custom: {
+    name: "Custom",
+    blurb: "Your remaps — click a key below to change any binding",
   },
 };
 
@@ -467,9 +473,11 @@ const labels: Record<ShortcutAction, { label: string; group: ShortcutDef["group"
 };
 
 function defaultKeysFor(pack: ShortcutPackId, action: ShortcutAction): string | null {
-  if (action === "askAi") return pack === "superhuman" ? "Ctrl+K" : "Ctrl+/";
+  if (action === "askAi")
+    return pack === "superhuman" || pack === "custom" ? "Ctrl+K" : "Ctrl+/";
   if (action === "compose") return "Ctrl+N";
-  if (action === "replyAll" && pack === "superhuman") return "Enter";
+  if (action === "replyAll" && (pack === "superhuman" || pack === "custom"))
+    return "Enter";
   for (const b of packs[pack]) {
     if (b.action !== action) continue;
     if (b.keys === "Ctrl+E" && b.action === "search") continue;
@@ -488,14 +496,14 @@ export function listShortcuts(
     if (seen.has(b.action)) continue;
     // skip dead outlook search binding
     if (b.keys === "Ctrl+E" && b.action === "search") continue;
-    if (b.action === "replyAll" && pack === "superhuman") {
+    if (b.action === "replyAll" && (pack === "superhuman" || pack === "custom")) {
       const custom = overrides.replyAll;
       out.push({
         action: "replyAll",
         label: "Reply all (when reading)",
         group: "Compose",
         keys: custom ?? "Enter",
-        customized: Boolean(custom),
+        customized: pack === "custom" || Boolean(custom),
       });
       seen.add(b.action);
       continue;
@@ -507,7 +515,7 @@ export function listShortcuts(
       label: meta.label,
       group: meta.group,
       keys: custom ?? b.keys,
-      customized: Boolean(custom),
+      customized: pack === "custom" || Boolean(custom),
     });
     seen.add(b.action);
   }
@@ -522,11 +530,24 @@ export function listShortcuts(
       label: action === "compose" ? "Compose (global)" : "Ask AI",
       group: meta.group,
       keys: custom ?? packDefault,
-      customized: Boolean(custom),
+      customized: pack === "custom" || Boolean(custom),
     });
     seen.add(action);
   }
   return out;
+}
+
+/** Snapshot the effective map so Custom starts from what you already use. */
+export function seedCustomOverrides(
+  pack: ShortcutPackId,
+  overrides: ShortcutOverrides = {},
+): ShortcutOverrides {
+  const base = pack === "custom" ? "superhuman" : pack;
+  const seeded: ShortcutOverrides = { ...overrides };
+  for (const row of listShortcuts(base, overrides)) {
+    seeded[row.action] = row.keys;
+  }
+  return seeded;
 }
 
 /** Build a display binding from a key event (e.g. "Ctrl+E", "J"). */
@@ -680,7 +701,9 @@ export function resolveShortcut(
   if (
     !overrides.askAi &&
     (e.ctrlKey || e.metaKey) &&
-    (e.key === "/" || (pack === "superhuman" && e.key.toLowerCase() === "k"))
+    (e.key === "/" ||
+      ((pack === "superhuman" || pack === "custom") &&
+        e.key.toLowerCase() === "k"))
   ) {
     return { type: "action", action: "askAi" };
   }

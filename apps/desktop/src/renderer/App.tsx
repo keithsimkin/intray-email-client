@@ -36,6 +36,7 @@ import {
   MoreHorizontal,
   Paperclip,
   Plus,
+  Puzzle,
   RefreshCw,
   Reply,
   ReplyAll,
@@ -46,6 +47,7 @@ import {
   Square,
   Star,
   Tag,
+  Blocks,
   Trash2,
   AlertCircle,
   ShieldAlert,
@@ -805,12 +807,14 @@ function AccountRail({
   onSelect,
   onAdd,
   onSettings,
+  onComingSoon,
 }: {
   accounts: Account[];
   activeId: string;
   onSelect: (id: string) => void;
   onAdd: () => void;
   onSettings: () => void;
+  onComingSoon: (feature: string) => void;
 }) {
   return (
     <aside className="rail">
@@ -883,6 +887,26 @@ function AccountRail({
       <div className="rail-spacer" />
       <div className="rail-section">
         <span className="rail-label">App</span>
+        <button
+          type="button"
+          className="rail-btn rail-soon"
+          aria-label="Apps — coming soon"
+          title="Apps — coming soon"
+          onClick={() => onComingSoon("Apps")}
+        >
+          <Blocks size={16} strokeWidth={1.75} />
+          <span className="rail-soon-badge">Soon</span>
+        </button>
+        <button
+          type="button"
+          className="rail-btn rail-soon"
+          aria-label="Add-ons — coming soon"
+          title="Add-ons — coming soon"
+          onClick={() => onComingSoon("Add-ons")}
+        >
+          <Puzzle size={16} strokeWidth={1.75} />
+          <span className="rail-soon-badge">Soon</span>
+        </button>
         <button
           type="button"
           className="rail-btn"
@@ -4586,8 +4610,19 @@ export default function App() {
   }, [prefs.theme]);
 
   useEffect(() => {
+    // Keep <html data-theme> in sync so portaled menus/popovers inherit tokens.
+    document.documentElement.setAttribute("data-theme", theme);
     void bridgeSetChromeTheme(theme);
+    return () => {
+      document.documentElement.removeAttribute("data-theme");
+    };
   }, [theme]);
+
+  useEffect(() => {
+    const accent = accentColors[prefs.accent];
+    document.documentElement.style.setProperty("--blue", accent);
+    document.documentElement.style.setProperty("--blue-soft", `${accent}33`);
+  }, [prefs.accent]);
 
   useEffect(() => {
     if (!prefs.unifiedInbox && accountId === UNIFIED_ID) {
@@ -5615,6 +5650,9 @@ export default function App() {
           }}
           onAdd={() => setAddAccountOpen(true)}
           onSettings={() => setSettingsOpen(true)}
+          onComingSoon={(feature) =>
+            showToast(`${feature} are coming soon — on the roadmap`)
+          }
         />
         <Sidebar
           account={account}
@@ -5880,6 +5918,13 @@ export default function App() {
           onAddAccount={() => {
             setSettingsOpen(false);
             setAddAccountOpen(true);
+          }}
+          onRemoveAccount={(id) => {
+            setAccounts((prev) => prev.filter((a) => a.id !== id));
+            setAccountId((cur) => (cur === id ? UNIFIED_ID : cur));
+            if (live) {
+              void loadLiveWorkspace().then(() => undefined);
+            }
           }}
           onClose={() => setSettingsOpen(false)}
         />

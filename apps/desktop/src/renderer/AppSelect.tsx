@@ -4,8 +4,10 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 
 export type AppSelectOption<T extends string = string> = {
@@ -27,6 +29,14 @@ type Props<T extends string> = {
   trailing?: ReactNode;
 };
 
+type MenuPos = {
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+  openUp: boolean;
+};
+
 export function AppSelect<T extends string>({
   value,
   options,
@@ -38,7 +48,9 @@ export function AppSelect<T extends string>({
 }: Props<T>) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
   const selected = options.find((o) => o.id === value) ?? options[0];
@@ -55,7 +67,9 @@ export function AppSelect<T extends string>({
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (rootRef.current?.contains(t) || listRef.current?.contains(t)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -67,6 +81,46 @@ export function AppSelect<T extends string>({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuPos(null);
+      return;
+    }
+    const place = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const gap = 6;
+      const estimated = Math.min(260, options.length * 40 + 16);
+      const spaceBelow = window.innerHeight - rect.bottom - gap - 8;
+      const spaceAbove = rect.top - gap - 8;
+      const openUp = spaceBelow < estimated && spaceAbove > spaceBelow;
+      const maxHeight = Math.max(
+        120,
+        Math.min(260, openUp ? spaceAbove : spaceBelow),
+      );
+      const width = Math.max(rect.width, compact ? 180 : 160);
+      let left = rect.left;
+      if (left + width > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - width - 8);
+      }
+      setMenuPos({
+        top: openUp ? rect.top - gap : rect.bottom + gap,
+        left,
+        width,
+        maxHeight,
+        openUp,
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, options.length, compact]);
 
   useLayoutEffect(() => {
     if (!open || !listRef.current) return;
@@ -89,12 +143,96 @@ export function AppSelect<T extends string>({
     setOpen(false);
   };
 
+  const menuStyle: CSSProperties | undefined = menuPos
+    ? {
+        position: "fixed",
+        top: menuPos.openUp ? undefined : menuPos.top,
+        bottom: menuPos.openUp
+          ? window.innerHeight - menuPos.top
+          : undefined,
+        left: menuPos.left,
+        width: menuPos.width,
+        minWidth: menuPos.width,
+        maxHeight: menuPos.maxHeight,
+        right: "auto",
+        zIndex: 200,
+      }
+    : undefined;
+
+  const menu =
+    open && menuPos
+      ? createPortal(
+          <div
+            ref={listRef}
+            id={listId}
+            className="app-select-menu app-select-menu-portal"
+            role="listbox"
+            aria-label={ariaLabel}
+            style={menuStyle}
+          >
+            {options.map((o, i) => {
+              const isActive = i === active;
+              const isSelected = o.id === value;
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="option"
+                  data-idx={i}
+                  aria-selected={isSelected}
+                  className={`app-select-option${isActive ? " active" : ""}${isSelected ? " selected" : ""}`}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => pick(o.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setActive((n) => Math.min(n + 1, options.length - 1));
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setActive((n) => Math.max(n - 1, 0));
+                    } else if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      pick(options[active]?.id ?? o.id);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      setOpen(false);
+                    }
+                  }}
+                >
+                  {o.leading ? (
+                    <span className="app-select-leading">{o.leading}</span>
+                  ) : null}
+                  <span className="app-select-copy">
+                    <span className="app-select-label">{o.label}</span>
+                    {o.detail ? (
+                      <span className="app-select-detail">{o.detail}</span>
+                    ) : null}
+                  </span>
+                  {isSelected ? (
+                    <Check
+                      size={14}
+                      strokeWidth={2.25}
+                      className="app-select-check"
+                      aria-hidden
+                    />
+                  ) : (
+                    <span className="app-select-check-spacer" aria-hidden />
+                  )}
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )
+      : null;
+
   return (
     <div
       ref={rootRef}
       className={`app-select${compact ? " compact" : ""}${open ? " open" : ""}${className ? ` ${className}` : ""}`}
     >
       <button
+        ref={triggerRef}
         type="button"
         className="app-select-trigger"
         aria-label={ariaLabel}
@@ -121,67 +259,7 @@ export function AppSelect<T extends string>({
         <ChevronDown size={14} strokeWidth={1.75} className="app-select-caret" />
       </button>
       {trailing}
-      {open && (
-        <div
-          ref={listRef}
-          id={listId}
-          className="app-select-menu"
-          role="listbox"
-          aria-label={ariaLabel}
-        >
-          {options.map((o, i) => {
-            const isActive = i === active;
-            const isSelected = o.id === value;
-            return (
-              <button
-                key={o.id}
-                type="button"
-                role="option"
-                data-idx={i}
-                aria-selected={isSelected}
-                className={`app-select-option${isActive ? " active" : ""}${isSelected ? " selected" : ""}`}
-                onMouseEnter={() => setActive(i)}
-                onClick={() => pick(o.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowDown") {
-                    e.preventDefault();
-                    setActive((n) => Math.min(n + 1, options.length - 1));
-                  } else if (e.key === "ArrowUp") {
-                    e.preventDefault();
-                    setActive((n) => Math.max(n - 1, 0));
-                  } else if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    pick(options[active]?.id ?? o.id);
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    setOpen(false);
-                  }
-                }}
-              >
-                {o.leading ? (
-                  <span className="app-select-leading">{o.leading}</span>
-                ) : null}
-                <span className="app-select-copy">
-                  <span className="app-select-label">{o.label}</span>
-                  {o.detail ? (
-                    <span className="app-select-detail">{o.detail}</span>
-                  ) : null}
-                </span>
-                {isSelected ? (
-                  <Check
-                    size={14}
-                    strokeWidth={2.25}
-                    className="app-select-check"
-                    aria-hidden
-                  />
-                ) : (
-                  <span className="app-select-check-spacer" aria-hidden />
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {menu}
     </div>
   );
 }

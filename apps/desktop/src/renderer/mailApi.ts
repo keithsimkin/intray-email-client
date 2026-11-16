@@ -56,6 +56,11 @@ export async function bridgeOAuthStatus(): Promise<{ gmailConfigured: boolean }>
   return window.intray.accounts.oauthStatus();
 }
 
+export async function bridgeRemoveAccount(accountId: string): Promise<boolean> {
+  if (!hasIntrayBridge()) return false;
+  return window.intray.accounts.remove(accountId);
+}
+
 export async function bridgeListMail(
   query: MailListQuery,
 ): Promise<MailListResult> {

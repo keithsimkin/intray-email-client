@@ -300,7 +300,7 @@ export function AddAccountModal({
                   />
                 </label>
                 <label className="add-field">
-                  <span>Password</span>
+                  <span>App password</span>
                   <div className="add-field-password">
                     <input
                       type={showPassword ? "text" : "password"}
@@ -308,7 +308,7 @@ export function AddAccountModal({
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, password: e.target.value }))
                       }
-                      placeholder="App password"
+                      placeholder="App-specific password"
                       autoComplete="current-password"
                     />
                     <button
@@ -326,6 +326,12 @@ export function AddAccountModal({
                       )}
                     </button>
                   </div>
+                  <span className="add-field-hint">
+                    Not your everyday login password. With 2FA on, create an
+                    app-specific password in {provider.shortName} security
+                    settings, then paste it here. Stored on this PC only
+                    (DPAPI).
+                  </span>
                 </label>
                 <label className="add-field">
                   <span>Display name</span>
