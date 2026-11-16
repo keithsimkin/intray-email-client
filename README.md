@@ -63,6 +63,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 - [Privacy model](#privacy-model)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [Key contributors](#key-contributors)
 - [Docs](#docs)
 - [License](#license)
 
@@ -330,6 +331,8 @@ Hard rules:
 
 ---
 
+See [SECURITY.md](SECURITY.md) for the threat model and how to report issues.
+
 ## Privacy model
 
 - Mail bodies and headers leave the machine only to **your** mail provider or **your** chosen AI endpoint.
@@ -379,6 +382,14 @@ Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screens
 
 ---
 
+### Key contributors
+
+| Name | Role | Links |
+| --- | --- | --- |
+| [Keith Simkin](https://github.com/keithsimkin) | Creator / maintainer | [Twitter / X](https://x.com/Ctrlthenarative) (`@Ctrlthenarative`) |
+
+---
+
 ## Docs
 
 | Document | Contents |
@@ -386,6 +397,7 @@ Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screens
 | [PRODUCT-PLAN.md](PRODUCT-PLAN.md) | Product pillars, architecture, phased delivery |
 | [docs/BLOOP-RESEARCH-BRIEF.md](docs/BLOOP-RESEARCH-BRIEF.md) | Competitive / research brief |
 | [docs/ui-ref/](docs/ui-ref/) | UI reference frames and screenshots |
+| [SECURITY.md](SECURITY.md) | Threat model and vulnerability reporting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to develop and submit changes |
 | [apps/desktop/.env.example](apps/desktop/.env.example) | Gmail OAuth env template |
 
