@@ -8,6 +8,14 @@ export type ProviderId =
   | "fastmail"
   | "yahoo";
 
+/** Linked send-as address on a mailbox (e.g. iCloud custom domain). */
+export type AccountIdentityDto = {
+  id: string;
+  email: string;
+  name: string;
+  primary: boolean;
+};
+
 export type AccountDto = {
   id: string;
   label: string;
@@ -20,6 +28,8 @@ export type AccountDto = {
   provider: ProviderId;
   /** True when credentials are missing or sync/auth has failed. */
   loggedOut?: boolean;
+  /** Primary + linked addresses you can send as from this mailbox. */
+  identities?: AccountIdentityDto[];
 };
 
 export type RecipientDto = {
@@ -60,6 +70,8 @@ export type MessageDto = {
   folder: string;
   tag?: { label: string; color: string };
   hasAttachment?: boolean;
+  /** Links stored with the bodies. List responses omit HTML and send this instead. */
+  linkCount?: number;
   thread: ThreadMessageDto[];
 };
 
@@ -213,6 +225,8 @@ export type ComposeAttachment = {
 
 export type ComposeDraft = {
   accountId: string;
+  /** Send-as address; must be a linked identity (or the account primary). */
+  fromEmail?: string;
   to: string[];
   cc?: string[];
   bcc?: string[];
@@ -221,6 +235,14 @@ export type ComposeDraft = {
   bodyHtml?: string;
   replyToMessageId?: string;
   attachments?: ComposeAttachment[];
+};
+
+/** Add a linked send-as address under an existing mailbox. */
+export type AddAccountIdentityInput = {
+  accountId: string;
+  email: string;
+  /** Optional From display name; defaults to the account name. */
+  name?: string;
 };
 
 export type SyncStatus = {

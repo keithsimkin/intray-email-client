@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AccountReconnectInfo,
+  AddAccountIdentityInput,
   AddImapAccountInput,
   AiCompleteRequest,
   AiCompleteResponse,
@@ -111,6 +112,17 @@ const api = {
       ipcRenderer.invoke(
         "accounts:clearAvatar",
         accountId,
+      ) as Promise<AccountDto>,
+    addIdentity: (input: AddAccountIdentityInput) =>
+      ipcRenderer.invoke(
+        "accounts:addIdentity",
+        input,
+      ) as Promise<AccountDto>,
+    removeIdentity: (accountId: string, identityId: string) =>
+      ipcRenderer.invoke(
+        "accounts:removeIdentity",
+        accountId,
+        identityId,
       ) as Promise<AccountDto>,
     oauthStatus: () =>
       ipcRenderer.invoke("accounts:oauthStatus") as Promise<{

@@ -23,6 +23,8 @@ export type BadgePayload = {
 };
 
 let lastBadge = 0;
+let appliedBadgeKey = "";
+const overlayCache = new Map<string, NativeImage | null>();
 
 function overlayForCount(count: number, mode: BadgePayload["mode"]): NativeImage | null {
   if (mode === "off" || count <= 0) return null;
@@ -31,6 +33,8 @@ function overlayForCount(count: number, mode: BadgePayload["mode"]): NativeImage
   // Tiny PNG badge drawn via data URL — Electron paints this on the taskbar icon.
   const label =
     mode === "dot" ? "" : count > 99 ? "99+" : String(count);
+  const cacheKey = `${mode}:${label}`;
+  if (overlayCache.has(cacheKey)) return overlayCache.get(cacheKey) ?? null;
   const fontSize = label.length > 2 ? 8 : label.length > 1 ? 9 : 10;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
   <circle cx="8" cy="8" r="8" fill="#C4453D"/>
@@ -43,7 +47,9 @@ function overlayForCount(count: number, mode: BadgePayload["mode"]): NativeImage
   const img = nativeImage.createFromDataURL(
     `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
   );
-  return img.isEmpty() ? null : img;
+  const overlay = img.isEmpty() ? null : img;
+  overlayCache.set(cacheKey, overlay);
+  return overlay;
 }
 
 export function setAppBadge(
@@ -51,11 +57,17 @@ export function setAppBadge(
   payload: BadgePayload,
 ): void {
   const count = Math.max(0, Math.floor(payload.count));
+  const key = `${payload.mode}:${count}`;
+  if (key === appliedBadgeKey) {
+    lastBadge = count;
+    return;
+  }
   lastBadge = count;
 
   if (process.platform === "win32") {
     const win = getMainWindow();
     if (!win) return;
+    appliedBadgeKey = key;
     const overlay = overlayForCount(count, payload.mode);
     win.setOverlayIcon(
       overlay,
@@ -65,6 +77,7 @@ export function setAppBadge(
   }
 
   if (typeof app.setBadgeCount === "function") {
+    appliedBadgeKey = key;
     app.setBadgeCount(payload.mode === "off" ? 0 : count);
   }
 }

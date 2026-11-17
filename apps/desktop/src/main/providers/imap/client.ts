@@ -36,6 +36,11 @@ export type ImapEnvelope = {
   /** Gmail X-GM-THRID. */
   gmThrId?: string;
   gmLabels?: string[];
+  /**
+   * Flag/label refresh only: no BODYSTRUCTURE or source window was fetched, so
+   * snippet and attachment state must not be overwritten from this envelope.
+   */
+  partial?: boolean;
 };
 
 export type ImapMailboxSlice = {
@@ -43,6 +48,8 @@ export type ImapMailboxSlice = {
   uidValidity: number;
   uidNext: number;
   highestUid: number;
+  /** True when the cursor was already current, so nothing was fetched. */
+  unchanged?: boolean;
 };
 
 /** Never fetch an unbounded backlog in one connection. */
@@ -74,7 +81,7 @@ function addrs(
   return out;
 }
 
-function connectionOptions(creds: ImapCredentials) {
+export function imapConnectionOptions(creds: ImapCredentials) {
   return {
     host: creds.imapHost,
     port: creds.imapPort,
@@ -196,7 +203,7 @@ async function connectLane(
     return { client: entry.client, creds };
   }
   await disposeLaneClient(entry);
-  const client = new ImapFlow(connectionOptions(creds));
+  const client = new ImapFlow(imapConnectionOptions(creds));
   await client.connect();
   entry.client = client;
   entry.creds = creds;
@@ -309,7 +316,7 @@ function rethrowImapError(creds: ImapCredentials, error: unknown): never {
 
 /** Verify credentials by connecting and selecting INBOX. */
 export async function verifyImapLogin(creds: ImapCredentials): Promise<void> {
-  const client = new ImapFlow(connectionOptions(creds));
+  const client = new ImapFlow(imapConnectionOptions(creds));
   try {
     await client.connect();
     const lock = await client.getMailboxLock("INBOX");
@@ -364,6 +371,7 @@ function envelopeFromFetch(
   mailbox: string,
   uidValidity: number,
   gmail: { enabled: boolean; role: MailboxRole } | undefined,
+  partial = false,
 ): ImapEnvelope {
   const env = msg.envelope;
   const fromAddr = env?.from?.[0];
@@ -426,7 +434,7 @@ function envelopeFromFetch(
     fromEmail,
     to: to.filter((t) => t.email),
     cc: cc.filter((t) => t.email),
-    snippet: snippetSource || subject,
+    snippet: snippetSource || (partial ? "" : subject),
     hasAttachment,
     folder: placement?.folder ?? normalizeFolderPath(mailbox),
     mailboxPath: mailbox,
@@ -435,6 +443,7 @@ function envelopeFromFetch(
     gmMsgId: gmail?.enabled && msg.emailId ? String(msg.emailId) : undefined,
     gmThrId: gmail?.enabled && msg.threadId ? String(msg.threadId) : undefined,
     gmLabels: gmail?.enabled ? labels : undefined,
+    ...(partial ? { partial: true } : {}),
   };
 }
 
@@ -485,20 +494,27 @@ export async function listRecentEnvelopes(
         opts?.sinceUid != null &&
         opts.sinceUidValidity === meta.uidValidity &&
         meta.uidNext > opts.sinceUid + 1;
+      const cursorCurrent =
+        opts?.sinceUid != null && opts.sinceUidValidity === meta.uidValidity;
+      const refresh = gmail ? (opts?.refreshRecent ?? 0) : 0;
 
-      let range: string;
-      if (incremental) {
-        const start = Math.max(
-          opts!.sinceUid! + 1,
-          meta.uidNext - MAX_INCREMENTAL_MESSAGES,
-        );
-        range = `${start}:*`;
-      } else {
-        const from = Math.max(1, meta.exists - limit + 1);
-        range = `${from}:${meta.exists}`;
+      // The common quiet-mailbox case: nothing new has been assigned a UID
+      // since the last pass. Re-fetching the last N envelopes here (with a 4KB
+      // source window each) was the main reason an idle Intray kept the CPU
+      // busy every 30 seconds.
+      if (cursorCurrent && !incremental && refresh === 0) {
+        return {
+          envelopes: [],
+          uidValidity: meta.uidValidity,
+          uidNext: meta.uidNext,
+          highestUid: opts!.sinceUid!,
+          unchanged: true,
+        };
       }
 
-      const query = {
+      // Full envelopes (source + BODYSTRUCTURE) are only needed for UIDs we
+      // have not stored yet: they seed the list snippet and attachment flag.
+      const fullQuery = {
         uid: true,
         flags: true,
         envelope: true,
@@ -506,31 +522,62 @@ export async function listRecentEnvelopes(
         source: { start: 0, maxLength: 4096 },
         ...(gmail ? { labels: true, threadId: true } : {}),
       };
+      // Flag/label-only pass for the recent Gmail window (archive, star, read).
+      const lightQuery = {
+        uid: true,
+        flags: true,
+        envelope: true,
+        ...(gmail ? { labels: true, threadId: true } : {}),
+      };
 
       const byUid = new Map<number, ImapEnvelope>();
-      const collect = async (fetchRange: string, byUidRange: boolean) => {
+      const collect = async (
+        fetchRange: string,
+        byUidRange: boolean,
+        query: typeof fullQuery | typeof lightQuery,
+        partial: boolean,
+      ) => {
         for await (const msg of client.fetch(fetchRange, query, {
           uid: byUidRange,
         })) {
+          // A flag-only pass must not replace the full envelope already
+          // collected for the same UID in this round.
+          const existing = byUid.get(msg.uid);
+          if (existing && partial && !existing.partial) continue;
           byUid.set(
             msg.uid,
-            envelopeFromFetch(msg, mailbox, meta.uidValidity, gmail),
+            envelopeFromFetch(
+              msg,
+              mailbox,
+              meta.uidValidity,
+              gmail,
+              partial,
+            ),
           );
         }
       };
 
-      await collect(range, incremental);
-      const refresh = opts?.refreshRecent ?? 0;
-      if (gmail && incremental && refresh > 0) {
+      if (!cursorCurrent) {
+        // No usable cursor (first sync, or UIDVALIDITY changed): recent window.
+        const from = Math.max(1, meta.exists - limit + 1);
+        await collect(`${from}:${meta.exists}`, false, fullQuery, false);
+      } else if (incremental) {
+        const start = Math.max(
+          opts!.sinceUid! + 1,
+          meta.uidNext - MAX_INCREMENTAL_MESSAGES,
+        );
+        await collect(`${start}:*`, true, fullQuery, false);
+      }
+
+      if (refresh > 0 && cursorCurrent) {
         const from = Math.max(1, meta.exists - refresh + 1);
-        await collect(`${from}:${meta.exists}`, false);
+        await collect(`${from}:${meta.exists}`, false, lightQuery, true);
       }
 
       const out = [...byUid.values()].sort((a, b) => a.uid - b.uid);
       const fetchedMax = out.reduce((max, env) => Math.max(max, env.uid), 0);
-      const highestUid = incremental
-        ? Math.max(fetchedMax, opts?.sinceUid ?? 0)
-        : fetchedMax || (opts?.sinceUid ?? 0);
+      // Never let a partial (flag/label) pass move the cursor backwards.
+      const highestUid = Math.max(fetchedMax, opts?.sinceUid ?? 0);
 
       return {
         envelopes: out,
@@ -828,6 +875,7 @@ export async function sendSmtp(
     bcc?: string[];
     subject: string;
     bodyText: string;
+    bodyHtml?: string;
     messageId?: string;
     attachments?: {
       filename: string;
@@ -869,6 +917,7 @@ export async function sendSmtp(
       bcc: draft.bcc?.join(", "),
       subject: draft.subject || "(no subject)",
       text: draft.bodyText,
+      html: draft.bodyHtml?.trim() ? draft.bodyHtml : undefined,
       messageId: draft.messageId?.replace(/^<|>$/g, ""),
       attachments: draft.attachments?.map((a) => ({
         filename: a.filename.replace(/[\r\n"]/g, ""),

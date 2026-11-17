@@ -104,6 +104,7 @@ import {
 import { AppSelect } from "./AppSelect";
 import { useUndoStack } from "./useUndoStack";
 import {
+  buildSignedBodies,
   looksLikeHtml,
   sanitizeSignatureHtml,
 } from "./signatures";
@@ -164,6 +165,7 @@ import {
 import {
   notifyMailOpened,
   notifyMeeting,
+  badgeCountForMode,
   notifySnoozeReturn,
   syncTaskbarBadge,
 } from "./notify";
@@ -257,10 +259,54 @@ function ownEmailSet(accounts: Account[]): Set<string> {
     if (a.id === UNIFIED_ID) continue;
     const email = a.email?.trim().toLowerCase();
     if (email) set.add(email);
+    for (const identity of a.identities ?? []) {
+      const linked = identity.email?.trim().toLowerCase();
+      if (linked) set.add(linked);
+    }
   }
   // Keep seed addresses so mock / offline still marks "You" correctly.
   for (const email of seedOwnEmails) set.add(email);
   return set;
+}
+
+/** One selectable From row per linked address (same mailbox may appear twice). */
+type SendIdentityOption = {
+  key: string;
+  accountId: string;
+  email: string;
+  name: string;
+  label: string;
+  color: string;
+  loggedOut?: boolean;
+};
+
+function sendIdentityKey(accountId: string, email: string): string {
+  return `${accountId}::${email.trim().toLowerCase()}`;
+}
+
+function sendIdentitiesForAccounts(accounts: Account[]): SendIdentityOption[] {
+  const out: SendIdentityOption[] = [];
+  for (const a of accounts) {
+    if (a.id === UNIFIED_ID) continue;
+    const list =
+      a.identities && a.identities.length > 0
+        ? a.identities
+        : [{ id: "primary", email: a.email, name: a.name, primary: true }];
+    for (const identity of list) {
+      const email = identity.email.trim();
+      if (!email) continue;
+      out.push({
+        key: sendIdentityKey(a.id, email),
+        accountId: a.id,
+        email,
+        name: identity.name?.trim() || a.name,
+        label: a.label,
+        color: a.color,
+        loggedOut: a.loggedOut,
+      });
+    }
+  }
+  return out;
 }
 
 function isOwnRecipient(r: Recipient, own: Set<string> = seedOwnEmails) {
@@ -291,12 +337,18 @@ function buildReplyRecipients(
   own: Set<string>,
 ): { to: Recipient[]; cc: Recipient[] } {
   const latest = message.thread[message.thread.length - 1];
+  const rawEmail = (latest?.email ?? message.email).trim();
+  const rawName = (latest?.from ?? message.from).trim();
+  // Some payloads only put the address in `from`; still seed a usable To.
+  const senderEmail =
+    rawEmail ||
+    (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawName) ? rawName : "");
   const sender: Recipient = {
-    name: latest?.from ?? message.from,
-    email: (latest?.email ?? message.email).trim(),
+    name: rawName || senderEmail.split("@")[0] || "Unknown",
+    email: senderEmail,
   };
   const isOwn = (email: string) => own.has(email.trim().toLowerCase());
-  const fromSelf = isOwn(sender.email);
+  const fromSelf = Boolean(sender.email) && isOwn(sender.email);
   const originalTo = (latest?.to ?? []).filter((r) => r.email.trim());
   const originalCc = (latest?.cc ?? []).filter((r) => r.email.trim());
 
@@ -2224,14 +2276,6 @@ function HtmlBody({
   allowRemote: boolean;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
-  const shellRef = useRef<HTMLDivElement>(null);
-  const [userHeight, setUserHeight] = useState<number | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const naturalHeight = useRef(160);
-
-  useEffect(() => {
-    setUserHeight(null);
-  }, [html]);
 
   useEffect(() => {
     const frame = ref.current;
@@ -2295,13 +2339,9 @@ function HtmlBody({
     };
 
     const resize = () => {
-      const h = measureHeight();
-      naturalHeight.current = Math.min(Math.max(h + 12, 80), 2400);
-      if (userHeight == null) {
-        frame.style.height = `${Math.min(naturalHeight.current, 900)}px`;
-      } else {
-        frame.style.height = `${Math.max(naturalHeight.current, userHeight)}px`;
-      }
+      // Always size to full content so the reader pane scrolls instead of
+      // clipping the message behind a manual resize handle.
+      frame.style.height = `${Math.max(measureHeight() + 12, 80)}px`;
     };
     resize();
     const raf = window.requestAnimationFrame(() => resize());
@@ -2314,37 +2354,11 @@ function HtmlBody({
       ob.disconnect();
       doc.removeEventListener("click", onClick);
     };
-  }, [html, forceDark, allowRemote, userHeight]);
-
-  useEffect(() => {
-    if (!dragging) return;
-    const onMove = (e: PointerEvent) => {
-      const shell = shellRef.current;
-      if (!shell) return;
-      const top = shell.getBoundingClientRect().top;
-      const next = Math.min(Math.max(e.clientY - top, 120), 1200);
-      setUserHeight(next);
-    };
-    const onUp = () => setDragging(false);
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, [dragging]);
+  }, [html, forceDark, allowRemote]);
 
   return (
     <div className="html-frame-wrap">
-      <div
-        ref={shellRef}
-        className={`html-shell${userHeight != null ? " resized" : ""}`}
-        style={
-          userHeight != null
-            ? ({ ["--html-shell-height" as string]: `${userHeight}px` } as CSSProperties)
-            : undefined
-        }
-      >
+      <div className="html-shell">
         <iframe
           ref={ref}
           className="html-frame"
@@ -2353,22 +2367,6 @@ function HtmlBody({
           referrerPolicy="no-referrer"
         />
       </div>
-      <button
-        type="button"
-        className={`html-resize-handle${dragging ? " dragging" : ""}`}
-        aria-label="Drag to resize message height"
-        title="Drag to resize"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          const shell = shellRef.current;
-          const start =
-            userHeight ??
-            shell?.getBoundingClientRect().height ??
-            Math.min(naturalHeight.current, 900);
-          setUserHeight(start);
-          setDragging(true);
-        }}
-      />
     </div>
   );
 }
@@ -2670,30 +2668,61 @@ function ReadingPane({
   replyIntent?: { key: number; mode: ReplyMode };
 }) {
   const sendable = useMemo(
-    () => accounts.filter((a) => a.id !== UNIFIED_ID),
+    () => sendIdentitiesForAccounts(accounts),
     [accounts],
   );
   const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
-  const defaultReplyFromId = useMemo(() => {
-    const signedIn = sendable.filter((a) => !a.loggedOut);
-    const pick = (id: string | undefined) => {
-      if (!id) return undefined;
-      const hit = sendable.find((a) => a.id === id);
-      if (!hit) return undefined;
-      if (!hit.loggedOut) return hit.id;
-      return signedIn[0]?.id ?? hit.id;
+  const defaultReplyFromKey = useMemo(() => {
+    const signedIn = sendable.filter((s) => !s.loggedOut);
+    const scopeFor = (accountId: string | undefined) => {
+      if (!accountId) return signedIn;
+      const scoped = signedIn.filter((s) => s.accountId === accountId);
+      return scoped.length ? scoped : signedIn;
     };
+    const mailboxId =
+      message?.accountId ??
+      (account.id !== UNIFIED_ID ? account.id : undefined);
+    const scoped = scopeFor(mailboxId);
+
+    // Prefer the linked address this message was delivered to (custom domain).
+    if (message) {
+      const latest = message.thread[message.thread.length - 1] ?? message;
+      const deliveredTo = new Set(
+        [...(latest.to ?? []), ...(latest.cc ?? [])]
+          .map((r) => r.email.trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const match = scoped.find((s) =>
+        deliveredTo.has(s.email.trim().toLowerCase()),
+      );
+      if (match) return match.key;
+    }
+
+    const primary =
+      scoped.find((s) => {
+        const acct = accounts.find((a) => a.id === s.accountId);
+        return (
+          acct &&
+          s.email.trim().toLowerCase() === acct.email.trim().toLowerCase()
+        );
+      }) ?? scoped[0];
     return (
-      pick(message?.accountId) ??
-      pick(account.id !== UNIFIED_ID ? account.id : undefined) ??
-      signedIn[0]?.id ??
-      sendable[0]?.id ??
-      account.id
+      primary?.key ??
+      signedIn[0]?.key ??
+      sendable[0]?.key ??
+      sendIdentityKey(account.id, account.email)
     );
-  }, [message?.accountId, account.id, sendable]);
+  }, [
+    message,
+    account.id,
+    account.email,
+    accounts,
+    sendable,
+  ]);
 
   const [draft, setDraft] = useState("");
-  const [fromId, setFromId] = useState(defaultReplyFromId);
+  const [fromKey, setFromKey] = useState(defaultReplyFromKey);
+  const replyFromTouchedRef = useRef(false);
   const [toMentions, setToMentions] = useState<Recipient[]>([]);
   const [ccMentions, setCcMentions] = useState<Recipient[]>([]);
   const [bccMentions, setBccMentions] = useState<Recipient[]>([]);
@@ -2705,11 +2734,20 @@ function ReadingPane({
     "idle" | "sending" | "sent" | "failed"
   >("idle");
   const replyFrom =
-    sendable.find((a) => a.id === fromId) ??
-    sendable.find((a) => a.id === defaultReplyFromId) ??
-    sendable[0] ??
-    account;
+    sendable.find((s) => s.key === fromKey) ??
+    sendable.find((s) => s.key === defaultReplyFromKey) ??
+    sendable[0] ?? {
+      key: sendIdentityKey(account.id, account.email),
+      accountId: account.id,
+      email: account.email,
+      name: account.name,
+      label: account.label,
+      color: account.color,
+      loggedOut: account.loggedOut,
+    };
   const replyFromLoggedOut = Boolean(replyFrom.loggedOut);
+  const replyHasMultipleFrom =
+    sendable.filter((s) => s.accountId === replyFrom.accountId).length > 1;
   const [aiReplies, setAiReplies] = useState<string[]>([]);
   const [replyNote, setReplyNote] = useState<string | null>(null);
   const [unsubState, setUnsubState] = useState<
@@ -2872,8 +2910,9 @@ function ReadingPane({
   };
 
   useEffect(() => {
+    replyFromTouchedRef.current = false;
     setDraft("");
-    setFromId(defaultReplyFromId);
+    setFromKey(defaultReplyFromKey);
     setBccMentions([]);
     setShowBcc(false);
     setRecipientsOpen(false);
@@ -2882,10 +2921,15 @@ function ReadingPane({
     setMenu(null);
     setUnsubState("idle");
     setReplySendPhase("idle");
-    // Re-seed only when the open message / From account changes — not when the
-    // accounts list refreshes mid-draft.
+    // Re-seed only when the open message changes — not when accounts refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message?.id, defaultReplyFromId]);
+  }, [message?.id]);
+
+  // Keep From in sync with linked addresses / delivered-to match until the user picks one.
+  useEffect(() => {
+    if (replyFromTouchedRef.current) return;
+    setFromKey(defaultReplyFromKey);
+  }, [defaultReplyFromKey]);
 
   useEffect(() => {
     if (ccMentions.length) setShowCc(true);
@@ -2914,6 +2958,16 @@ function ReadingPane({
       onToast("Add at least one To recipient");
       return;
     }
+    if (
+      !replyFrom.accountId ||
+      replyFrom.accountId === UNIFIED_ID ||
+      !replyFrom.email?.includes("@")
+    ) {
+      setRecipientsOpen(true);
+      setReplySendPhase("failed");
+      onToast("Pick a From address before sending");
+      return;
+    }
     if (replyFromLoggedOut) {
       setReplySendPhase("failed");
       onToast("This account is logged out — reconnect in Settings");
@@ -2923,7 +2977,8 @@ function ReadingPane({
     try {
       if (live) {
         const dto = await bridgeSendMail({
-          accountId: replyFrom.id,
+          accountId: replyFrom.accountId,
+          fromEmail: replyFrom.email,
           to: toMentions.map((c) => c.email),
           cc: ccMentions.map((c) => c.email),
           bcc: bccMentions.map((c) => c.email),
@@ -2945,10 +3000,11 @@ function ReadingPane({
       setShowBcc(false);
       setRecipientsOpen(false);
       replyHistory.clear();
-      onToast("Reply sent");
+      onToast(`Reply sent as ${replyFrom.email}`);
       window.setTimeout(() => setReplySendPhase("idle"), 1200);
     } catch (e) {
       setReplySendPhase("failed");
+      setRecipientsOpen(true);
       onToast(e instanceof Error ? e.message : "Failed to send");
     }
   };
@@ -3273,8 +3329,25 @@ function ReadingPane({
           className={`reply-box${recipientsOpen ? " recipients-open" : ""}`}
           onFocusCapture={() => setRecipientsOpen(true)}
           onBlur={(e) => {
-            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-            if (!draft.trim()) setRecipientsOpen(false);
+            const box = e.currentTarget;
+            const related = e.relatedTarget as Node | null;
+            // AppSelect menus portal to document.body; treating that blur as
+            // "left the reply box" was collapsing From/To before you could use them.
+            const focusStaysInReplyUi = (node: Node | null) => {
+              if (!node) return false;
+              if (box.contains(node)) return true;
+              return (
+                node instanceof Element &&
+                Boolean(node.closest(".app-select-menu-portal"))
+              );
+            };
+            if (focusStaysInReplyUi(related)) return;
+            window.requestAnimationFrame(() => {
+              if (focusStaysInReplyUi(document.activeElement)) return;
+              // Keep the bar open when To is empty — user still needs to address it.
+              if (toMentions.length === 0) return;
+              if (!draft.trim()) setRecipientsOpen(false);
+            });
           }}
           onKeyDown={(e) => {
             if (!(e.ctrlKey || e.metaKey)) return;
@@ -3294,137 +3367,152 @@ function ReadingPane({
             }
           }}
         >
-          {recipientsOpen ? (
+          {recipientsOpen || replyHasMultipleFrom ? (
             <div className="reply-recipients">
               <div className="reply-meta-bar">
                 <div className="reply-from-compact">
                   <span className="reply-from-prefix">From</span>
                   <AppSelect
                     compact
-                    ariaLabel="Send reply from account"
-                    value={replyFrom.id}
-                    onChange={(id) => {
-                      setFromId(id);
+                    ariaLabel="Send reply from address"
+                    value={replyFrom.key}
+                    onChange={(key) => {
+                      replyFromTouchedRef.current = true;
+                      setFromKey(key);
                       setReplySendPhase("idle");
                     }}
-                    options={sendable.map((a) => ({
-                      id: a.id,
-                      label: a.name,
-                      detail: a.loggedOut ? `${a.email} · Logged out` : a.email,
+                    options={sendable.map((s) => ({
+                      id: s.key,
+                      label: s.name,
+                      detail: s.loggedOut
+                        ? `${s.email} · Logged out`
+                        : s.email,
                       leading: (
                         <span
                           className="account-chip"
                           style={{
                             background: "transparent",
-                            color: a.color,
-                            borderColor: a.color,
-                            opacity: a.loggedOut ? 0.55 : 1,
+                            color: s.color,
+                            borderColor: s.color,
+                            opacity: s.loggedOut ? 0.55 : 1,
                           }}
                         >
-                          {a.label}
+                          {s.label}
                         </span>
                       ),
                     }))}
                   />
                 </div>
-                <div className="reply-meta-toggles">
-                  <button
-                    type="button"
-                    className={`reply-meta-toggle${showCc ? " active" : ""}`}
-                    aria-pressed={showCc}
-                    onClick={() => setShowCc((v) => !v)}
-                  >
-                    Cc
-                    {ccMentions.length > 0 ? (
-                      <span className="reply-meta-count">{ccMentions.length}</span>
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    className={`reply-meta-toggle${showBcc ? " active" : ""}`}
-                    aria-pressed={showBcc}
-                    onClick={() => setShowBcc((v) => !v)}
-                  >
-                    Bcc
-                    {bccMentions.length > 0 ? (
-                      <span className="reply-meta-count">{bccMentions.length}</span>
-                    ) : null}
-                  </button>
-                </div>
+                {recipientsOpen ? (
+                  <div className="reply-meta-toggles">
+                    <button
+                      type="button"
+                      className={`reply-meta-toggle${showCc ? " active" : ""}`}
+                      aria-pressed={showCc}
+                      onClick={() => setShowCc((v) => !v)}
+                    >
+                      Cc
+                      {ccMentions.length > 0 ? (
+                        <span className="reply-meta-count">
+                          {ccMentions.length}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      className={`reply-meta-toggle${showBcc ? " active" : ""}`}
+                      aria-pressed={showBcc}
+                      onClick={() => setShowBcc((v) => !v)}
+                    >
+                      Bcc
+                      {bccMentions.length > 0 ? (
+                        <span className="reply-meta-count">
+                          {bccMentions.length}
+                        </span>
+                      ) : null}
+                    </button>
+                  </div>
+                ) : null}
               </div>
-              <RecipientChips
-                label="To"
-                people={toMentions}
-                excludeEmails={replyExcludeEmails}
-                onRemove={(email) =>
-                  setToTracked(
-                    toMentions.filter(
-                      (p) => p.email.toLowerCase() !== email.toLowerCase(),
-                    ),
-                  )
-                }
-                onAdd={(r) => {
-                  if (
-                    replyExcludeEmails.some(
-                      (e) => e.toLowerCase() === r.email.toLowerCase(),
-                    )
-                  ) {
-                    return;
-                  }
-                  setToTracked([...toMentions, r]);
-                }}
-                placeholder="To email…"
-              />
-              {showCc && (
-                <RecipientChips
-                  label="Cc"
-                  people={ccMentions}
-                  excludeEmails={replyExcludeEmails}
-                  onRemove={(email) =>
-                    setCcTracked(
-                      ccMentions.filter(
-                        (p) => p.email.toLowerCase() !== email.toLowerCase(),
-                      ),
-                    )
-                  }
-                  onAdd={(r) => {
-                    if (
-                      replyExcludeEmails.some(
-                        (e) => e.toLowerCase() === r.email.toLowerCase(),
+              {recipientsOpen ? (
+                <>
+                  <RecipientChips
+                    label="To"
+                    people={toMentions}
+                    excludeEmails={replyExcludeEmails}
+                    onRemove={(email) =>
+                      setToTracked(
+                        toMentions.filter(
+                          (p) => p.email.toLowerCase() !== email.toLowerCase(),
+                        ),
                       )
-                    ) {
-                      return;
                     }
-                    setCcTracked([...ccMentions, r]);
-                  }}
-                  placeholder="Cc email…"
-                />
-              )}
-              {showBcc && (
-                <RecipientChips
-                  label="Bcc"
-                  people={bccMentions}
-                  excludeEmails={replyExcludeEmails}
-                  onRemove={(email) =>
-                    setBccTracked(
-                      bccMentions.filter(
-                        (p) => p.email.toLowerCase() !== email.toLowerCase(),
-                      ),
-                    )
-                  }
-                  onAdd={(r) => {
-                    if (
-                      replyExcludeEmails.some(
-                        (e) => e.toLowerCase() === r.email.toLowerCase(),
-                      )
-                    ) {
-                      return;
-                    }
-                    setBccTracked([...bccMentions, r]);
-                  }}
-                  placeholder="Bcc email…"
-                />
-              )}
+                    onAdd={(r) => {
+                      if (
+                        replyExcludeEmails.some(
+                          (e) => e.toLowerCase() === r.email.toLowerCase(),
+                        )
+                      ) {
+                        return false;
+                      }
+                      setToTracked([...toMentions, r]);
+                    }}
+                    placeholder="To email…"
+                  />
+                  {showCc && (
+                    <RecipientChips
+                      label="Cc"
+                      people={ccMentions}
+                      excludeEmails={replyExcludeEmails}
+                      onRemove={(email) =>
+                        setCcTracked(
+                          ccMentions.filter(
+                            (p) =>
+                              p.email.toLowerCase() !== email.toLowerCase(),
+                          ),
+                        )
+                      }
+                      onAdd={(r) => {
+                        if (
+                          replyExcludeEmails.some(
+                            (e) => e.toLowerCase() === r.email.toLowerCase(),
+                          )
+                        ) {
+                          return false;
+                        }
+                        setCcTracked([...ccMentions, r]);
+                      }}
+                      placeholder="Cc email…"
+                    />
+                  )}
+                  {showBcc && (
+                    <RecipientChips
+                      label="Bcc"
+                      people={bccMentions}
+                      excludeEmails={replyExcludeEmails}
+                      onRemove={(email) =>
+                        setBccTracked(
+                          bccMentions.filter(
+                            (p) =>
+                              p.email.toLowerCase() !== email.toLowerCase(),
+                          ),
+                        )
+                      }
+                      onAdd={(r) => {
+                        if (
+                          replyExcludeEmails.some(
+                            (e) => e.toLowerCase() === r.email.toLowerCase(),
+                          )
+                        ) {
+                          return false;
+                        }
+                        setBccTracked([...bccMentions, r]);
+                      }}
+                      placeholder="Bcc email…"
+                    />
+                  )}
+                </>
+              ) : null}
             </div>
           ) : null}
           <div className="reply-input-stack">
@@ -3706,18 +3794,28 @@ function ComposeModal({
   onSent?: (message: Message) => void;
   onQueued?: (queueId: string, seconds: number) => void;
 }) {
-  const sendable = accounts.filter((a) => a.id !== UNIFIED_ID);
-  const signedIn = sendable.filter((a) => !a.loggedOut);
+  const sendable = sendIdentitiesForAccounts(accounts);
+  const signedIn = sendable.filter((s) => !s.loggedOut);
   const defaultFrom =
     account.id !== UNIFIED_ID && !account.loggedOut
-      ? account
-      : (signedIn.find((a) => a.id === account.id) ??
-        signedIn.find((a) => a.id === "work") ??
+      ? (sendable.find((s) => s.accountId === account.id) ??
         signedIn[0] ??
-        sendable[0] ??
-        account);
-  const [fromId, setFromId] = useState(defaultFrom.id);
-  const from = sendable.find((a) => a.id === fromId) ?? defaultFrom;
+        sendable[0])
+      : (signedIn.find((s) => s.accountId === account.id) ??
+        signedIn.find((s) => s.accountId === "work") ??
+        signedIn[0] ??
+        sendable[0]);
+  const fallbackFrom: SendIdentityOption = defaultFrom ?? {
+    key: sendIdentityKey(account.id, account.email),
+    accountId: account.id,
+    email: account.email,
+    name: account.name,
+    label: account.label,
+    color: account.color,
+    loggedOut: account.loggedOut,
+  };
+  const [fromKey, setFromKey] = useState(fallbackFrom.key);
+  const from = sendable.find((s) => s.key === fromKey) ?? fallbackFrom;
   const fromLoggedOut = Boolean(from.loggedOut);
   const [to, setTo] = useState<Recipient[]>(() => initialTo ?? []);
   const [cc, setCc] = useState<Recipient[]>([]);
@@ -3803,7 +3901,7 @@ function ComposeModal({
     return true;
   };
 
-  const signature = signatureForAccount(prefs, from.id);
+  const signature = signatureForAccount(prefs, from.accountId);
   const signatureHtml = looksLikeHtml(signature);
   const sigLines = signatureHtml
     ? []
@@ -3871,9 +3969,7 @@ function ComposeModal({
     setSendPhase("sending");
     setSendError(null);
     try {
-      const bodyText = signature.trim()
-        ? `${body.replace(/\s+$/, "")}${body.trim() ? "\n\n" : ""}--\n${signature}`
-        : body;
+      const { bodyText, bodyHtml } = buildSignedBodies(body, signature);
       const track = prefs.trackOpens;
       let message: Message;
 
@@ -3890,12 +3986,14 @@ function ComposeModal({
               )
             : undefined;
         const draftPayload = {
-          accountId: from.id,
+          accountId: from.accountId,
+          fromEmail: from.email,
           to: to.map((r) => r.email),
           cc: cc.length ? cc.map((r) => r.email) : undefined,
           bcc: bcc.length ? bcc.map((r) => r.email) : undefined,
           subject,
           bodyText,
+          bodyHtml,
           attachments: encoded,
         };
         const delay = prefs.undoSendSeconds;
@@ -3915,7 +4013,7 @@ function ComposeModal({
         const preview = body.trim().slice(0, 120) || "(no subject)";
         message = {
           id,
-          accountId: from.id,
+          accountId: from.accountId,
           from: to[0]!.name || to[0]!.email,
           initials: (to[0]!.name || to[0]!.email).slice(0, 2).toUpperCase(),
           avatarColor: from.color,
@@ -3938,6 +4036,7 @@ function ComposeModal({
               time: "Just now",
               to: [...to],
               body: bodyText.split(/\n+/).filter(Boolean),
+              bodyHtml,
             },
           ],
         };
@@ -3967,7 +4066,7 @@ function ComposeModal({
     if (
       composeExclude.some((e) => e.toLowerCase() === r.email.toLowerCase())
     ) {
-      return;
+      return false;
     }
     setToTracked([...to, r]);
   };
@@ -3976,7 +4075,7 @@ function ComposeModal({
     if (
       composeExclude.some((e) => e.toLowerCase() === r.email.toLowerCase())
     ) {
-      return;
+      return false;
     }
     setCcTracked([...cc, r]);
   };
@@ -3985,7 +4084,7 @@ function ComposeModal({
     if (
       composeExclude.some((e) => e.toLowerCase() === r.email.toLowerCase())
     ) {
-      return;
+      return false;
     }
     setBccTracked([...bcc, r]);
   };
@@ -4034,28 +4133,28 @@ function ComposeModal({
               <span className="reply-from-prefix">From</span>
               <AppSelect
                 compact
-                ariaLabel="Send from account"
-                value={from.id}
-                onChange={(id) => {
-                  setFromId(id);
+                ariaLabel="Send from address"
+                value={from.key}
+                onChange={(key) => {
+                  setFromKey(key);
                   setSendPhase("idle");
                   setSendError(null);
                 }}
-                options={sendable.map((a) => ({
-                  id: a.id,
-                  label: a.name,
-                  detail: a.loggedOut ? `${a.email} · Logged out` : a.email,
+                options={sendable.map((s) => ({
+                  id: s.key,
+                  label: s.name,
+                  detail: s.loggedOut ? `${s.email} · Logged out` : s.email,
                   leading: (
                     <span
                       className="account-chip"
                       style={{
                         background: "transparent",
-                        color: a.color,
-                        borderColor: a.color,
-                        opacity: a.loggedOut ? 0.55 : 1,
+                        color: s.color,
+                        borderColor: s.color,
+                        opacity: s.loggedOut ? 0.55 : 1,
                       }}
                     >
-                      {a.label}
+                      {s.label}
                     </span>
                   ),
                 }))}
@@ -4652,8 +4751,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const idleRefreshTimer = useRef<number | null>(null);
   useEffect(() => {
-    return bridgeOnSyncProgress((status) => {
+    const off = bridgeOnSyncProgress((status) => {
       setSyncStatus(status);
       setSyncing(status.state === "syncing");
       if (
@@ -4668,7 +4768,16 @@ export default function App() {
         );
       }
       if (status.state === "idle" && live) {
-        void refreshLiveMail();
+        // One list refresh for a burst of per-account idle events, and none
+        // while the window is hidden. Opening the window catches up below.
+        if (idleRefreshTimer.current != null) {
+          window.clearTimeout(idleRefreshTimer.current);
+        }
+        idleRefreshTimer.current = window.setTimeout(() => {
+          idleRefreshTimer.current = null;
+          if (document.visibilityState === "hidden") return;
+          void refreshLiveMail();
+        }, 1200);
         void bridgeAccounts().then((real) => {
           setAccounts((prev) => {
             const mapped = real.map(accountDtoToUi);
@@ -4687,6 +4796,24 @@ export default function App() {
         });
       }
     });
+    return () => {
+      off();
+      if (idleRefreshTimer.current != null) {
+        window.clearTimeout(idleRefreshTimer.current);
+        idleRefreshTimer.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, accountId, folderId, filter, searchQuery]);
+
+  useEffect(() => {
+    if (!live) return;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshLiveMail();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, accountId, folderId, filter, searchQuery]);
 
@@ -4972,8 +5099,8 @@ export default function App() {
       }
       showToast("Asking your provider for a label…");
       void aiLabelMessages(prefs, [target], labels)
-        .then((assigned) => {
-          const lab = assigned[0];
+        .then((result) => {
+          const lab = result.assigned[0];
           if (!lab) {
             showToast("No matching label for this email");
             return;
@@ -5465,11 +5592,24 @@ export default function App() {
   };
 
   const autoLabeledRef = useRef<Set<string>>(new Set());
+  const autoLabelBusy = useRef(false);
+  const [autoLabelPass, setAutoLabelPass] = useState(0);
+  const unlabeledKey = mail
+    .filter(
+      (m) =>
+        m.folder === "inbox" && !m.tag && !autoLabeledRef.current.has(m.id),
+    )
+    .map((m) => m.id)
+    .sort()
+    .slice(0, 8)
+    .join("\n");
+  const labelKey = labels.map((l) => `${l.id}:${l.name}`).join("|");
   useEffect(() => {
     if (!prefs.aiAutoLabel || prefs.aiBridge === "none") {
       autoLabeledRef.current = new Set();
       return;
     }
+    if (!labels.length || autoLabelBusy.current) return;
     const pending = mail
       .filter(
         (m) =>
@@ -5479,42 +5619,52 @@ export default function App() {
     if (!pending.length) return;
     const inFlight = pending.map((message) => message.id);
     for (const id of inFlight) autoLabeledRef.current.add(id);
-    let cancelled = false;
+    autoLabelBusy.current = true;
+    let advance = false;
     void aiLabelMessages(prefs, pending, labels)
-      .then((assigned) => {
-        if (cancelled || !assigned.length) return;
-        const byId = new Map(assigned.map((item) => [item.messageId, item]));
-        setMail((prev) =>
-          prev.map((m) => {
-            const lab = byId.get(m.id);
-            if (!lab || m.tag) return m;
-            return { ...m, tag: { label: lab.name, color: lab.color } };
-          }),
-        );
-        showToast(
-          `AI labeled ${assigned.length} email${assigned.length === 1 ? "" : "s"}`,
-        );
+      .then((result) => {
+        // NONE and unparsed ids stay marked so a bad reply cannot spin.
+        advance = true;
+        if (result.assigned.length) {
+          const byId = new Map(
+            result.assigned.map((item) => [item.messageId, item]),
+          );
+          setMail((prev) =>
+            prev.map((m) => {
+              const lab = byId.get(m.id);
+              if (!lab || m.tag) return m;
+              return { ...m, tag: { label: lab.name, color: lab.color } };
+            }),
+          );
+          if (live) {
+            for (const lab of result.assigned) {
+              void bridgeMutateMail(lab.messageId, "label", { detail: lab.id });
+            }
+          }
+          showToast(
+            `AI labeled ${result.assigned.length} email${result.assigned.length === 1 ? "" : "s"}`,
+          );
+        }
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
-        // Allow a later effect pass to retry failed IDs.
         for (const id of inFlight) autoLabeledRef.current.delete(id);
         showToast(
           error instanceof Error ? error.message : "Auto-label failed",
         );
+      })
+      .finally(() => {
+        autoLabelBusy.current = false;
+        if (advance) setAutoLabelPass((n) => n + 1);
       });
-    return () => {
-      cancelled = true;
-      // Body hydration can re-run this effect; release so labels can retry.
-      for (const id of inFlight) autoLabeledRef.current.delete(id);
-    };
   }, [
     prefs.aiAutoLabel,
     prefs.aiBridge,
     prefs.aiBridgePath,
     prefs.aiModelHint,
-    mail,
-    labels,
+    unlabeledKey,
+    labelKey,
+    autoLabelPass,
+    live,
   ]);
 
   const undoLast = () => {
@@ -5591,10 +5741,16 @@ export default function App() {
   }, [live, liveFolderCounts, localFolderCounts, mail, accountId]);
 
   const inboxBadgeCount = folderCounts.inbox ?? 0;
+  const taskbarCount = badgeCountForMode(prefs.taskbarBadge, mail);
 
   useEffect(() => {
-    void syncTaskbarBadge(prefs, mail);
-  }, [prefs, mail]);
+    const handle = window.setTimeout(() => {
+      void syncTaskbarBadge(prefs, mail);
+    }, 500);
+    return () => window.clearTimeout(handle);
+    // Body hydration changes `mail` constantly. The icon only cares about the count.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskbarCount, prefs.taskbarBadge]);
 
   useEffect(() => {
     return bridgeOnNotifyOpen(({ messageId, folderId }) => {
@@ -6351,9 +6507,9 @@ export default function App() {
                 a.id === account.id
                   ? {
                       ...a,
-                      name: account.name,
-                      label: account.label,
-                      color: account.color,
+                      ...account,
+                      // Keep rail unread from the live sync tally.
+                      unread: a.unread,
                     }
                   : a,
               ),

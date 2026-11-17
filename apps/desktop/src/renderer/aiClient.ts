@@ -98,8 +98,12 @@ export async function aiLabelMessages(
   prefs: Preferences,
   messages: Message[],
   labels: { id: string; name: string; color: string }[],
-): Promise<{ messageId: string; id: string; name: string; color: string }[]> {
-  if (!messages.length || !labels.length) return [];
+): Promise<{
+  assigned: { messageId: string; id: string; name: string; color: string }[];
+  /** Ids the model named, including NONE. Ids it skipped are omitted. */
+  decidedIds: string[];
+}> {
+  if (!messages.length || !labels.length) return { assigned: [], decidedIds: [] };
   const catalog = labels.map((label) => label.name).join(", ");
   const lines = messages
     .map(
@@ -120,16 +124,19 @@ No other text.
 ${lines}`,
   });
   const assigned: { messageId: string; id: string; name: string; color: string }[] = [];
+  const decidedIds: string[] = [];
   for (const line of result.text.split(/\n+/)) {
     const match = /^(\S+)\s+(.+)$/.exec(line.trim());
     if (!match) continue;
+    const message = messages.find((item) => item.id === match[1]);
+    if (!message || decidedIds.includes(message.id)) continue;
+    decidedIds.push(message.id);
     const name = match[2]!.replace(/^["']|["']$/g, "").trim();
     if (!name || /^none$/i.test(name)) continue;
     const label = labels.find(
       (item) => item.name.toLowerCase() === name.toLowerCase(),
     );
-    const message = messages.find((item) => item.id === match[1]);
-    if (!label || !message) continue;
+    if (!label) continue;
     assigned.push({
       messageId: message.id,
       id: label.id,
@@ -137,7 +144,7 @@ ${lines}`,
       color: label.color,
     });
   }
-  return assigned;
+  return { assigned, decidedIds };
 }
 
 export async function aiCatchMeUp(

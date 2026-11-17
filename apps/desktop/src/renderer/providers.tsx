@@ -76,7 +76,7 @@ export const mailProviders: MailProvider[] = [
     imapHost: "imap.mail.me.com",
     imapPort: 993,
     guide:
-      "Generate an app-specific password at appleid.apple.com → Sign-In and Security. Use your full iCloud email.",
+      "Generate an app-specific password at appleid.apple.com → Sign-In and Security. Use your full iCloud email. After sign-in, add custom domain addresses under Settings → Accounts → Linked addresses.",
   },
   {
     id: "yahoo",

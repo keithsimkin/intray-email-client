@@ -88,6 +88,7 @@ export type MessageRow = {
   ui_label_id: string | null;
   snooze_until_ms: number | null;
   internal_date: string | null;
+  link_count?: number;
 };
 
 export type LabelRow = {
@@ -188,6 +189,67 @@ export function deleteAccount(id: string): void {
   run("DELETE FROM accounts WHERE id = ?", [id]);
 }
 
+export type AccountIdentityRow = {
+  id: string;
+  account_id: string;
+  email: string;
+  name: string;
+  is_primary: number;
+  created_at: string;
+};
+
+export function listIdentityRows(accountId?: string): AccountIdentityRow[] {
+  if (accountId) {
+    return all<AccountIdentityRow>(
+      `SELECT * FROM account_identities
+       WHERE account_id = ?
+       ORDER BY is_primary DESC, created_at ASC`,
+      [accountId],
+    );
+  }
+  return all<AccountIdentityRow>(
+    `SELECT * FROM account_identities
+     ORDER BY account_id ASC, is_primary DESC, created_at ASC`,
+  );
+}
+
+export function getIdentityByEmail(
+  email: string,
+): AccountIdentityRow | undefined {
+  return get<AccountIdentityRow>(
+    `SELECT * FROM account_identities WHERE lower(email) = lower(?)`,
+    [email.trim()],
+  );
+}
+
+export function upsertIdentity(row: AccountIdentityRow): void {
+  run(
+    `INSERT INTO account_identities (id, account_id, email, name, is_primary, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       account_id=excluded.account_id,
+       email=excluded.email,
+       name=excluded.name,
+       is_primary=excluded.is_primary`,
+    [
+      row.id,
+      row.account_id,
+      row.email,
+      row.name,
+      row.is_primary,
+      row.created_at,
+    ],
+  );
+}
+
+export function deleteIdentity(id: string): void {
+  run("DELETE FROM account_identities WHERE id = ?", [id]);
+}
+
+export function deleteIdentitiesForAccount(accountId: string): void {
+  run("DELETE FROM account_identities WHERE account_id = ?", [accountId]);
+}
+
 export function setCredentialPayload(
   accountId: string,
   payloadB64: string,
@@ -237,15 +299,44 @@ export function upsertSyncState(row: SyncStateRow): void {
   );
 }
 
-export function upsertMessage(row: MessageRow): void {
-  const existing = get<{
-    ui_label_id: string | null;
-    snooze_until_ms: number | null;
-    folder: string;
-  }>(
-    "SELECT ui_label_id, snooze_until_ms, folder FROM messages WHERE account_id = ? AND provider_id = ?",
+export function upsertMessage(
+  row: MessageRow,
+  opts?: { flagsOnly?: boolean },
+): boolean {
+  const existing = get<MessageRow>(
+    "SELECT * FROM messages WHERE account_id = ? AND provider_id = ?",
     [row.account_id, row.provider_id],
   );
+
+  // Gmail recent-window passes only carry flags/labels: never overwrite the
+  // snippet or attachment state they did not fetch.
+  if (opts?.flagsOnly) {
+    if (!existing) return false;
+    if (
+      existing.folder === row.folder &&
+      existing.unread === row.unread &&
+      existing.important === row.important &&
+      existing.starred === row.starred &&
+      existing.label_ids_json === row.label_ids_json
+    ) {
+      return false;
+    }
+    run(
+      `UPDATE messages
+       SET folder = ?, unread = ?, important = ?, starred = ?, label_ids_json = ?
+       WHERE id = ?`,
+      [
+        row.folder,
+        row.unread,
+        row.important,
+        row.starred,
+        row.label_ids_json,
+        existing.id,
+      ],
+    );
+    return true;
+  }
+
   // Preserve local-only fields across provider syncs.
   const uiLabel =
     row.ui_label_id !== undefined && row.ui_label_id !== null
@@ -259,6 +350,33 @@ export function upsertMessage(row: MessageRow): void {
     existing?.folder === "snoozed" && snooze != null
       ? "snoozed"
       : row.folder;
+
+  // A 30s poll re-reads envelopes that have not changed. Writing and
+  // re-indexing them every time was pure disk work: bail out when the stored
+  // row already matches.
+  if (
+    existing &&
+    existing.id === row.id &&
+    existing.thread_id === row.thread_id &&
+    existing.folder === folder &&
+    existing.subject === row.subject &&
+    existing.snippet === row.snippet &&
+    existing.from_name === row.from_name &&
+    existing.from_email === row.from_email &&
+    existing.to_json === row.to_json &&
+    existing.cc_json === row.cc_json &&
+    existing.date_ms === row.date_ms &&
+    existing.unread === row.unread &&
+    existing.important === row.important &&
+    existing.starred === row.starred &&
+    existing.has_attachment === row.has_attachment &&
+    existing.label_ids_json === row.label_ids_json &&
+    existing.ui_label_id === uiLabel &&
+    existing.snooze_until_ms === snooze &&
+    existing.internal_date === row.internal_date
+  ) {
+    return false;
+  }
 
   run(
     `INSERT INTO messages (
@@ -309,15 +427,26 @@ export function upsertMessage(row: MessageRow): void {
     ],
   );
 
-  const body = getBody(row.id)?.text_plain ?? "";
-  getDb().upsertFts(
-    row.id,
-    row.subject,
-    row.snippet,
-    row.from_name,
-    row.from_email,
-    body,
-  );
+  // FTS only needs refreshing when the searchable header text changed; the
+  // body is indexed by upsertBody/updateFtsBody.
+  const headerChanged =
+    !existing ||
+    existing.subject !== row.subject ||
+    existing.snippet !== row.snippet ||
+    existing.from_name !== row.from_name ||
+    existing.from_email !== row.from_email;
+  if (headerChanged) {
+    const body = getBody(existing?.id ?? row.id)?.text_plain ?? "";
+    getDb().upsertFts(
+      row.id,
+      row.subject,
+      row.snippet,
+      row.from_name,
+      row.from_email,
+      body,
+    );
+  }
+  return true;
 }
 
 /** Index body text into the Rust FTS5 table for search. */
@@ -456,8 +585,24 @@ export function upsertBody(row: BodyRow): void {
        fetched_at=excluded.fetched_at`,
     [row.message_id, row.text_plain, row.text_html, row.fetched_at],
   );
+  setMessageLinkCount(row.message_id, countLinks(row.text_html));
   updateFtsBody(row.message_id, row.text_plain ?? "");
 }
+
+/** Same shape as the renderer used to scan for, so list and AI agree. */
+export function countLinks(html: string | null | undefined): number {
+  if (!html) return 0;
+  const matches = html.match(/href\s*=/gi);
+  return matches ? matches.length : 0;
+}
+
+export function setMessageLinkCount(messageId: string, count: number): void {
+  run(
+    "UPDATE messages SET link_count = ? WHERE id = ? AND link_count <> ?",
+    [count, messageId, count],
+  );
+}
+
 
 export function getBody(messageId: string): BodyRow | undefined {
   return get<BodyRow>("SELECT * FROM bodies WHERE message_id = ?", [
@@ -836,4 +981,83 @@ export function deleteMessageById(id: string): void {
     /* fts row may not exist */
   }
   run("DELETE FROM messages WHERE id = ?", [id]);
+}
+
+function getMeta(key: string): string | undefined {
+  return get<{ value: string }>("SELECT value FROM meta WHERE key = ?", [key])
+    ?.value;
+}
+
+function setMeta(key: string, value: string): void {
+  run(
+    `INSERT INTO meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    [key, value],
+  );
+}
+
+/**
+ * One-time backfill for link counts on rows whose bodies predate the column.
+ * Without it, `has:links` and the link chip would stay empty for old mail.
+ */
+export function backfillLinkCounts(): void {
+  if (getMeta("link_count_backfill") === "1") return;
+  const rows = all<{ message_id: string; text_html: string | null }>(
+    `SELECT b.message_id, b.text_html
+     FROM bodies b
+     INNER JOIN messages m ON m.id = b.message_id
+     WHERE IFNULL(m.link_count, 0) = 0 AND b.text_html IS NOT NULL`,
+  );
+  for (const row of rows) {
+    const links = countLinks(row.text_html);
+    if (links > 0) setMessageLinkCount(row.message_id, links);
+  }
+  setMeta("link_count_backfill", "1");
+}
+
+/**
+ * Body text is a cache: the provider can always hand it back. Drop old bodies
+ * outside the newest page per account so the file stops growing forever.
+ */
+export function pruneBodyCache(opts?: {
+  olderThanMs?: number;
+  keepNewestPerAccount?: number;
+}): number {
+  const olderThanMs = opts?.olderThanMs ?? 180 * 24 * 60 * 60 * 1000;
+  const keep = opts?.keepNewestPerAccount ?? 400;
+  const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+  const before =
+    get<{ c: number }>("SELECT COUNT(*) AS c FROM bodies")?.c ?? 0;
+  run(
+    `DELETE FROM bodies
+     WHERE fetched_at < ?
+       AND message_id NOT IN (
+         SELECT id FROM (
+           SELECT m.id,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY m.account_id ORDER BY m.date_ms DESC
+                  ) AS rank
+           FROM messages m
+         ) WHERE rank <= ?
+       )`,
+    [cutoff, keep],
+  );
+  const after = get<{ c: number }>("SELECT COUNT(*) AS c FROM bodies")?.c ?? 0;
+  return Math.max(0, before - after);
+}
+
+/**
+ * Cheap startup upkeep: planner stats, bounded cache prune, and a vacuum only
+ * when enough free pages have accumulated to be worth the rewrite.
+ */
+export function runDbMaintenance(): void {
+  try {
+    const pruned = pruneBodyCache();
+    getDb().optimize();
+    if (pruned > 0 || (getDb().freelistCount() ?? 0) > 200) {
+      getDb().vacuum();
+    }
+  } catch (error) {
+    console.warn("db maintenance skipped", error);
+  }
 }

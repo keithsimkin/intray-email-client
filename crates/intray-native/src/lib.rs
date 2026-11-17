@@ -57,7 +57,7 @@ impl MailDb {
   pub fn run(&self, sql: String, params: Option<JsonParams>) -> Result<()> {
     let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
     let params = params.unwrap_or_default();
-    let mut stmt = conn.prepare(&sql).map_err(sql_err)?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(sql_err)?;
     stmt
       .execute(params_from_iter(json_params_to_sql(&params)?))
       .map_err(sql_err)?;
@@ -68,7 +68,7 @@ impl MailDb {
   pub fn get(&self, sql: String, params: Option<JsonParams>) -> Result<Option<JsonValue>> {
     let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
     let params = params.unwrap_or_default();
-    let mut stmt = conn.prepare(&sql).map_err(sql_err)?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(sql_err)?;
     let row = stmt
       .query_row(params_from_iter(json_params_to_sql(&params)?), |row| {
         row_to_json(row)
@@ -82,7 +82,7 @@ impl MailDb {
   pub fn all(&self, sql: String, params: Option<JsonParams>) -> Result<Vec<JsonValue>> {
     let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
     let params = params.unwrap_or_default();
-    let mut stmt = conn.prepare(&sql).map_err(sql_err)?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(sql_err)?;
     let rows = stmt
       .query_map(params_from_iter(json_params_to_sql(&params)?), |row| {
         row_to_json(row)
@@ -109,24 +109,24 @@ impl MailDb {
   ) -> Result<()> {
     let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
     conn
-      .execute(
-        "DELETE FROM messages_fts WHERE message_id = ?1",
-        [&message_id],
-      )
+      .prepare_cached("DELETE FROM messages_fts WHERE message_id = ?1")
+      .map_err(sql_err)?
+      .execute([&message_id])
       .map_err(sql_err)?;
     conn
-      .execute(
+      .prepare_cached(
         "INSERT INTO messages_fts (message_id, subject, snippet, from_name, from_email, body)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        (
-          message_id,
-          subject,
-          snippet,
-          from_name,
-          from_email,
-          body.unwrap_or_default(),
-        ),
       )
+      .map_err(sql_err)?
+      .execute((
+        message_id,
+        subject,
+        snippet,
+        from_name,
+        from_email,
+        body.unwrap_or_default(),
+      ))
       .map_err(sql_err)?;
     Ok(())
   }
@@ -140,6 +140,34 @@ impl MailDb {
         [&message_id],
       )
       .map_err(sql_err)?;
+    Ok(())
+  }
+
+  /// Cheap periodic upkeep: refresh SQLite's planner statistics. Safe to run on
+  /// every launch; it is a no-op when nothing has changed.
+  #[napi]
+  pub fn optimize(&self) -> Result<()> {
+    let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
+    conn.execute_batch("PRAGMA optimize;").map_err(sql_err)?;
+    Ok(())
+  }
+
+  /// Free pages still reserved by the file after prunes.
+  #[napi]
+  pub fn freelist_count(&self) -> Result<i64> {
+    let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
+    let pages: i64 = conn
+      .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+      .map_err(sql_err)?;
+    Ok(pages)
+  }
+
+  /// Rebuild the file so pruned rows actually give disk space back. Only worth
+  /// running after a large prune; the caller checks `freelist_count` first.
+  #[napi]
+  pub fn vacuum(&self) -> Result<()> {
+    let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
+    conn.execute_batch("VACUUM;").map_err(sql_err)?;
     Ok(())
   }
 

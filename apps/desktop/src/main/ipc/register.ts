@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import type {
+  AddAccountIdentityInput,
   AddImapAccountInput,
   AiCompleteRequest,
   AiProviderId,
@@ -25,6 +26,7 @@ import {
 } from "../chrome-theme";
 import { getSyncState, listAccountRows } from "../db";
 import {
+  addAccountIdentity,
   addGmailAccount,
   addImapAccount,
   createLabelDto,
@@ -40,6 +42,7 @@ import {
   oauthStatus,
   reconnectAccount,
   removeAccount,
+  removeAccountIdentity,
   sendMail,
   triggerSync,
   chooseAccountAvatar,
@@ -175,6 +178,22 @@ export function registerIpc(): void {
   );
   ipcMain.handle("accounts:clearAvatar", (_e, accountId: string) =>
     clearAccountAvatar(assertCanonicalId(accountId)),
+  );
+  ipcMain.handle(
+    "accounts:addIdentity",
+    (_e, input: AddAccountIdentityInput) =>
+      addAccountIdentity({
+        ...input,
+        accountId: assertCanonicalId(input.accountId),
+      }),
+  );
+  ipcMain.handle(
+    "accounts:removeIdentity",
+    (_e, accountId: string, identityId: string) =>
+      removeAccountIdentity(
+        assertCanonicalId(accountId),
+        assertCanonicalId(identityId),
+      ),
   );
   ipcMain.handle("accounts:oauthStatus", () => oauthStatus());
 

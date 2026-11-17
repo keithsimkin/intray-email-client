@@ -12,6 +12,63 @@ export function sanitizeSignatureHtml(html: string) {
     .replace(/javascript:/gi, "");
 }
 
+export function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Convert compose plain text into a simple HTML body fragment. */
+export function plainTextToHtml(text: string) {
+  return escapeHtml(text).replace(/\r\n|\r|\n/g, "<br>\n");
+}
+
+/** Best-effort plain-text fallback for an HTML signature. */
+export function htmlToPlainText(html: string) {
+  return html
+    .replace(/\r\n|\r|\n/g, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Attach a signature for send. HTML signatures go out as multipart
+ * (text + html); plain signatures stay text-only.
+ */
+export function buildSignedBodies(
+  body: string,
+  signature: string,
+): { bodyText: string; bodyHtml?: string } {
+  const sig = signature.trim();
+  if (!sig) return { bodyText: body };
+
+  if (looksLikeHtml(sig)) {
+    const plainSig = htmlToPlainText(sig);
+    const bodyText = `${body.replace(/\s+$/, "")}${body.trim() ? "\n\n" : ""}--\n${plainSig}`;
+    const bodyHtml = `<div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1a1a1a;">${plainTextToHtml(body) || "<br>"}</div>
+<div style="margin:16px 0 8px;color:#8a8f98;">--</div>
+${sanitizeSignatureHtml(sig)}`;
+    return { bodyText, bodyHtml };
+  }
+
+  return {
+    bodyText: `${body.replace(/\s+$/, "")}${body.trim() ? "\n\n" : ""}--\n${sig}`,
+  };
+}
+
 /** Email-safe designed signature card for an account. */
 export function designedSignatureHtml(account: Account) {
   const accent = account.color === "#ededed" ? "#5b8def" : account.color;
@@ -32,14 +89,6 @@ export function designedSignatureHtml(account: Account) {
     </td>
   </tr>
 </table>`;
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 export function defaultAccountSignatures(

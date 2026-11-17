@@ -5,6 +5,9 @@
  * `crates/intray-native/src/schema.rs`
  *
  * Keep this file in sync when changing tables so docs/reviews stay accurate.
+ *
+ * Tables: meta, accounts, credentials, account_identities, sync_state,
+ * messages, bodies, labels, send_queue, secrets, contacts, messages_fts.
  */
 
 export const SCHEMA_OWNER = "crates/intray-native/src/schema.rs";

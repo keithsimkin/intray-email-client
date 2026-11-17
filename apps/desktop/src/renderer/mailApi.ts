@@ -1,6 +1,7 @@
 import type {
   AccountDto,
   AccountReconnectInfo,
+  AddAccountIdentityInput,
   AddImapAccountInput,
   AiCompleteRequest,
   AiCompleteResponse,
@@ -145,6 +146,25 @@ export async function bridgeClearAccountAvatar(
     throw new Error("Intray bridge unavailable (run inside Electron).");
   }
   return window.intray.accounts.clearAvatar(accountId);
+}
+
+export async function bridgeAddAccountIdentity(
+  input: AddAccountIdentityInput,
+): Promise<AccountDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.addIdentity(input);
+}
+
+export async function bridgeRemoveAccountIdentity(
+  accountId: string,
+  identityId: string,
+): Promise<AccountDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.removeIdentity(accountId, identityId);
 }
 
 export async function bridgeListMail(
@@ -438,6 +458,12 @@ export function accountDtoToUi(a: AccountDto): Account {
     unread: a.unread,
     provider: a.provider,
     loggedOut: a.loggedOut,
+    identities: a.identities?.map((i) => ({
+      id: i.id,
+      email: i.email,
+      name: i.name,
+      primary: i.primary,
+    })),
   };
 }
 
@@ -461,7 +487,9 @@ function countLinksInThread(thread: MessageDto["thread"]): number {
 
 export function messageDtoToUi(m: MessageDto): Message {
   const attachmentCount = m.thread.filter((t) => t.attachment).length;
-  const linkCount = countLinksInThread(m.thread);
+  // List payloads omit HTML. Scan only when a body is actually present.
+  const hasBodyHtml = m.thread.some((t) => t.bodyHtml);
+  const linkCount = hasBodyHtml ? countLinksInThread(m.thread) : (m.linkCount ?? 0);
   return {
     id: m.id,
     accountId: m.accountId,

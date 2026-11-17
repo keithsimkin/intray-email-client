@@ -221,7 +221,8 @@ export function RecipientChips({
   people: Recipient[];
   onRemove: (email: string) => void;
   /** When set, shows a field to type an email address */
-  onAdd?: (recipient: Recipient) => void;
+  /** Return false to keep the typed draft (e.g. duplicate / excluded). */
+  onAdd?: (recipient: Recipient) => boolean | void;
   placeholder?: string;
   /** Use an external label (compose From/Subject alignment) */
   hideLabel?: boolean;
@@ -261,7 +262,7 @@ export function RecipientChips({
 
   const pick = (contact: Contact) => {
     if (!onAdd) return;
-    onAdd({ name: contact.name, email: contact.email });
+    if (onAdd({ name: contact.name, email: contact.email }) === false) return;
     clearTextHistory();
     setDraft("");
     setActive(0);
@@ -275,7 +276,7 @@ export function RecipientChips({
     }
     const parsed = parseRecipientInput(draft);
     if (!parsed) return;
-    onAdd(parsed);
+    if (onAdd(parsed) === false) return;
     clearTextHistory();
     setDraft("");
   };

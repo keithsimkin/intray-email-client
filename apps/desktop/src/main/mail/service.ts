@@ -9,14 +9,17 @@ import {
 } from "../avatars";
 import {
   deleteAccount,
+  deleteIdentity,
   deleteMessageById,
   getAccountRow,
   getBody,
+  getIdentityByEmail,
   getLabel,
   getMessageRow,
   countMessagesByFolder,
   listAccountRows,
   listContacts,
+  listIdentityRows,
   listLabels,
   listMessageRows,
   listThreadMessages,
@@ -27,10 +30,12 @@ import {
   upsertAccount,
   upsertBody,
   upsertContact,
+  upsertIdentity,
   upsertLabel,
   upsertMessage,
   getSyncState,
   upsertSyncState,
+  type AccountIdentityRow,
   type AccountRow,
   type MessageRow,
 } from "../db";
@@ -88,9 +93,12 @@ import {
   stopAccountPolling,
   syncAccount,
 } from "../sync/engine";
+import { startMailWatch, stopMailWatch } from "../sync/watch";
 import type {
   AccountDto,
+  AccountIdentityDto,
   AccountReconnectInfo,
+  AddAccountIdentityInput,
   AddImapAccountInput,
   ComposeDraft,
   ContactDto,
@@ -344,6 +352,59 @@ export function isAuthFailure(error?: string | null): boolean {
   );
 }
 
+function identityToDto(row: AccountIdentityRow): AccountIdentityDto {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    primary: row.is_primary === 1,
+  };
+}
+
+/** Ensure the account's login email exists as the primary send-as identity. */
+function ensurePrimaryIdentity(row: AccountRow): AccountIdentityRow {
+  const email = row.email.trim().toLowerCase();
+  const existing = listIdentityRows(row.id);
+  const primary = existing.find((i) => i.is_primary === 1);
+  if (primary) {
+    if (primary.email.toLowerCase() !== email || primary.name !== row.name) {
+      const next: AccountIdentityRow = {
+        ...primary,
+        email,
+        name: row.name,
+      };
+      upsertIdentity(next);
+      return next;
+    }
+    return primary;
+  }
+  const byEmail = existing.find((i) => i.email.toLowerCase() === email);
+  if (byEmail) {
+    const next: AccountIdentityRow = {
+      ...byEmail,
+      name: row.name,
+      is_primary: 1,
+    };
+    upsertIdentity(next);
+    return next;
+  }
+  const created: AccountIdentityRow = {
+    id: `id-${randomUUID().slice(0, 12)}`,
+    account_id: row.id,
+    email,
+    name: row.name,
+    is_primary: 1,
+    created_at: new Date().toISOString(),
+  };
+  upsertIdentity(created);
+  return created;
+}
+
+function identitiesForAccount(row: AccountRow): AccountIdentityDto[] {
+  ensurePrimaryIdentity(row);
+  return listIdentityRows(row.id).map(identityToDto);
+}
+
 function accountToDto(row: AccountRow): AccountDto {
   const creds = loadCredentials(row.id);
   const sync = getSyncState(row.id);
@@ -360,7 +421,84 @@ function accountToDto(row: AccountRow): AccountDto {
     unread: row.unread,
     provider: row.provider as AccountDto["provider"],
     loggedOut,
+    identities: identitiesForAccount(row),
   };
+}
+
+/** Resolve From for send: draft override must be a linked identity on the account. */
+function resolveSendFrom(
+  account: AccountRow,
+  draft: ComposeDraft,
+): { fromName: string; fromEmail: string } {
+  const identities = identitiesForAccount(account);
+  const requested = draft.fromEmail?.trim().toLowerCase();
+  if (!requested || requested === account.email.toLowerCase()) {
+    return { fromName: account.name, fromEmail: account.email };
+  }
+  const hit = identities.find((i) => i.email.toLowerCase() === requested);
+  if (!hit) {
+    throw new Error(
+      `"${draft.fromEmail}" is not a linked address on ${account.email}. Add it in Settings → Accounts.`,
+    );
+  }
+  return {
+    fromName: hit.name?.trim() || account.name,
+    fromEmail: hit.email,
+  };
+}
+
+export function addAccountIdentity(
+  input: AddAccountIdentityInput,
+): AccountDto {
+  const account = getAccountRow(input.accountId);
+  if (!account) throw new Error("Account not found.");
+  const email = input.email.trim().toLowerCase();
+  if (!email.includes("@") || email.includes(" ")) {
+    throw new Error("Enter a valid email address.");
+  }
+  ensurePrimaryIdentity(account);
+  if (email === account.email.toLowerCase()) {
+    throw new Error("That is already this account’s primary address.");
+  }
+  const taken = getIdentityByEmail(email);
+  if (taken) {
+    if (taken.account_id === account.id) {
+      throw new Error("That address is already linked to this account.");
+    }
+    throw new Error("That address is already linked to another account.");
+  }
+  const otherAccount = listAccountRows().find(
+    (a) => a.email.toLowerCase() === email,
+  );
+  if (otherAccount) {
+    throw new Error("That address is already added as its own account.");
+  }
+  const name = input.name?.trim() || account.name;
+  upsertIdentity({
+    id: `id-${randomUUID().slice(0, 12)}`,
+    account_id: account.id,
+    email,
+    name,
+    is_primary: 0,
+    created_at: new Date().toISOString(),
+  });
+  return accountToDto(account);
+}
+
+export function removeAccountIdentity(
+  accountId: string,
+  identityId: string,
+): AccountDto {
+  const account = getAccountRow(accountId);
+  if (!account) throw new Error("Account not found.");
+  const rows = listIdentityRows(accountId);
+  const row = rows.find((r) => r.id === identityId);
+  if (!row) throw new Error("Linked address not found.");
+  if (row.is_primary === 1) {
+    throw new Error("The primary address can’t be removed.");
+  }
+  deleteIdentity(identityId);
+  return accountToDto(account);
 }
 
 function parseRecipients(json: string): RecipientDto[] {
@@ -393,12 +531,19 @@ function rowToThreadMessage(
   };
 }
 
+function threadLinkCount(rows: MessageRow[]): number {
+  let n = 0;
+  for (const row of rows) n += row.link_count ?? 0;
+  return n;
+}
+
 function rowsToMessageDto(
   head: MessageRow,
   threadRows: MessageRow[],
-  bodies: Map<string, { text_plain: string | null; text_html: string | null }>,
+  bodies?: Map<string, { text_plain: string | null; text_html: string | null }>,
 ): MessageDto {
   const label = head.ui_label_id ? getLabel(head.ui_label_id) : undefined;
+  const links = threadLinkCount(threadRows);
   return {
     id: head.id,
     accountId: head.account_id,
@@ -424,7 +569,8 @@ function rowsToMessageDto(
     folder: head.folder,
     tag: label ? { label: label.name, color: label.color } : undefined,
     hasAttachment: head.has_attachment === 1,
-    thread: threadRows.map((r) => rowToThreadMessage(r, bodies.get(r.id))),
+    linkCount: links > 0 ? links : undefined,
+    thread: threadRows.map((r) => rowToThreadMessage(r, bodies?.get(r.id))),
   };
 }
 
@@ -555,6 +701,7 @@ export async function addGmailAccount(): Promise<AccountDto> {
     imap_cursor_json: null,
   });
   startAccountPolling(id);
+  startMailWatch(id);
   void syncAccount(id).catch(() => undefined);
   return accountToDto({ ...row, avatar_url: avatarUrl ?? row.avatar_url });
 }
@@ -681,6 +828,7 @@ export async function addImapAccount(
     imap_cursor_json: null,
   });
   startAccountPolling(id);
+  startMailWatch(id);
   void syncAccount(id).catch(() => undefined);
   return accountToDto({ ...row, avatar_url: avatarUrl ?? row.avatar_url });
 }
@@ -697,6 +845,7 @@ function clearAuthErrorAndResume(accountId: string): void {
     imap_cursor_json: sync?.imap_cursor_json ?? null,
   });
   startAccountPolling(accountId);
+  startMailWatch(accountId);
   void syncAccount(accountId).catch(() => undefined);
 }
 
@@ -796,6 +945,7 @@ export async function reconnectAccount(
 
 export function removeAccount(accountId: string): void {
   stopAccountPolling(accountId);
+  stopMailWatch(accountId);
   closeImapConnections(accountId);
   deleteAccount(accountId);
 }
@@ -900,6 +1050,28 @@ export async function clearAccountAvatar(
   return accountToDto(getAccountRow(accountId) ?? { ...row, avatar_url: null });
 }
 
+/** One warm-up per folder view. Later refreshes must not re-download bodies. */
+const warmedListKeys = new Set<string>();
+
+function listHeadDtos(
+  heads: MessageRow[],
+  warmMissing: boolean,
+): MessageDto[] {
+  const missing: string[] = [];
+  const messages = heads.map((head) => {
+    const thread = listThreadMessages(head.account_id, head.thread_id);
+    const rows = thread.length ? thread : [head];
+    if (warmMissing) {
+      const primary = rows[rows.length - 1] ?? head;
+      if (!getBody(primary.id)) missing.push(primary.id);
+    }
+    // Metadata only. Bodies ride getMail / mail:updated for the open thread.
+    return rowsToMessageDto(head, rows);
+  });
+  if (missing.length) prefetchMailBodies(missing);
+  return messages;
+}
+
 export function listMail(query: MailListQuery): MailListResult {
   const limit = Math.min(query.limit ?? 50, 100);
   const beforeDateMs = query.cursor ? Number(query.cursor) : undefined;
@@ -917,14 +1089,11 @@ export function listMail(query: MailListQuery): MailListResult {
       seen.add(key);
       heads.push(r);
     }
-    const messages = heads.map((h) => {
-      const thread = listThreadMessages(h.account_id, h.thread_id);
-      const bodies = new Map(
-        thread.map((t) => [t.id, getBody(t.id) ?? { text_plain: null, text_html: null, fetched_at: "" }]),
-      );
-      return rowsToMessageDto(h, thread.length ? thread : [h], bodies);
-    });
-    return { messages, nextCursor: null, total: messages.length };
+    return {
+      messages: listHeadDtos(heads, false),
+      nextCursor: null,
+      total: heads.length,
+    };
   }
 
   const { rows, total } = listMessageRows({
@@ -945,29 +1114,16 @@ export function listMail(query: MailListQuery): MailListResult {
     if (heads.length >= limit) break;
   }
 
-  const messages = heads.map((h) => {
-    const thread = listThreadMessages(h.account_id, h.thread_id);
-    const bodies = new Map(
-      thread.map((t) => {
-        const b = getBody(t.id);
-        return [t.id, b ?? { text_plain: null, text_html: null, fetched_at: "" }] as const;
-      }),
-    );
-    return rowsToMessageDto(h, thread.length ? thread : [h], bodies);
-  });
+  const warmKey = `${query.accountId ?? "all"}:${query.folder ?? "inbox"}:${query.filter ?? "all"}`;
+  let warm = false;
+  if (heads.length && !warmedListKeys.has(warmKey)) {
+    warmedListKeys.add(warmKey);
+    warm = true;
+  }
+  const messages = listHeadDtos(heads, warm);
 
   const nextCursor =
     heads.length > 0 ? String(heads[heads.length - 1].date_ms) : null;
-
-  // Warm bodies for the visible page so open rarely waits on the provider.
-  const missingHeads = heads
-    .filter((h) => {
-      const thread = listThreadMessages(h.account_id, h.thread_id);
-      const primary = thread[thread.length - 1] ?? h;
-      return !getBody(primary.id);
-    })
-    .map((h) => h.id);
-  if (missingHeads.length) prefetchMailBodies(missingHeads);
 
   return { messages, nextCursor, total };
 }
@@ -1230,8 +1386,12 @@ function persistSentDraft(
   account: AccountRow,
   draft: ComposeDraft,
   providerId: string,
+  from?: { fromName: string; fromEmail: string },
 ): MessageRow {
   const now = Date.now();
+  const resolved = from ?? resolveSendFrom(account, draft);
+  const fromName = resolved.fromName;
+  const fromEmail = resolved.fromEmail;
   const row: MessageRow = {
     id: `${account.id}:${providerId}`,
     account_id: account.id,
@@ -1240,8 +1400,8 @@ function persistSentDraft(
     folder: "sent",
     subject: draft.subject || "(no subject)",
     snippet: draft.bodyText.slice(0, 180),
-    from_name: account.name,
-    from_email: account.email,
+    from_name: fromName,
+    from_email: fromEmail,
     to_json: JSON.stringify(
       draft.to.map((email) => ({ name: email.split("@")[0], email })),
     ),
@@ -1331,7 +1491,8 @@ export async function sendMail(
   const safeDraft: ComposeDraft = { ...draft, to, cc, bcc };
   touchContactsFromDraft(safeDraft);
 
-  const messageId = opts.messageId ?? buildMessageId(account.email);
+  const from = resolveSendFrom(account, safeDraft);
+  const messageId = opts.messageId ?? buildMessageId(from.fromEmail);
 
   if (!usesImap(account)) {
     // Idempotency: on a retry, check whether Gmail already has this Message-ID
@@ -1344,7 +1505,7 @@ export async function sendMail(
     }
 
     const built = buildRawMessage({
-      from: { name: account.name, email: account.email },
+      from: { name: from.fromName, email: from.fromEmail },
       to,
       cc,
       bcc,
@@ -1366,26 +1527,27 @@ export async function sendMail(
   // supports header search.
   if (opts.retry && (await findSentMessage(account.id, messageId))) {
     const providerId = `local-sent:${messageId.replace(/[<>\s]/g, "")}`;
-    const row = persistSentDraft(account, safeDraft, providerId);
+    const row = persistSentDraft(account, safeDraft, providerId, from);
     const dto = await getMail(row.id);
     if (!dto) throw new Error("Sent message missing from store");
     return dto;
   }
 
   await sendSmtp(account.id, {
-    fromName: account.name,
-    fromEmail: account.email,
+    fromName: from.fromName,
+    fromEmail: from.fromEmail,
     to,
     cc,
     bcc,
     subject: draft.subject,
     bodyText: draft.bodyText,
+    bodyHtml: draft.bodyHtml,
     messageId,
     attachments: draft.attachments,
   });
 
   const providerId = `local-sent:${messageId.replace(/[<>\s]/g, "")}`;
-  const row = persistSentDraft(account, safeDraft, providerId);
+  const row = persistSentDraft(account, safeDraft, providerId, from);
   void syncAccount(account.id).catch(() => undefined);
   const dto = await getMail(row.id);
   if (!dto) throw new Error("Sent message missing from store");
