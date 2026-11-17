@@ -165,13 +165,13 @@ export const accounts: Account[] = [
 ];
 
 export const folders: Folder[] = [
-  { id: "inbox", name: "Inbox", count: 28, icon: "inbox" },
-  { id: "snoozed", name: "Snoozed", count: 1, icon: "clock" },
-  { id: "drafts", name: "Drafts", count: 2, icon: "file" },
+  { id: "inbox", name: "Inbox", icon: "inbox" },
+  { id: "snoozed", name: "Snoozed", icon: "clock" },
+  { id: "drafts", name: "Drafts", icon: "file" },
   { id: "sent", name: "Sent", icon: "send" },
   { id: "archive", name: "Archive", icon: "archive" },
-  { id: "junk", name: "Junk", count: 1, icon: "alert" },
-  { id: "trash", name: "Trash", count: 1, icon: "trash" },
+  { id: "junk", name: "Junk", icon: "alert" },
+  { id: "trash", name: "Trash", icon: "trash" },
 ];
 
 export const customFolders = ["Clients", "Acme", "Receipts"];

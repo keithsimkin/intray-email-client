@@ -1,7 +1,12 @@
 appId: app.intray.desktop
 productName: Intray
-# This environment looks like CI to electron-builder. Never upload a release.
-publish: null
+# Stamps app-update.yml so electron-updater can poll GitHub Releases.
+# Local/CI packs still use `--publish never` and never upload.
+publish:
+  provider: github
+  owner: keithsimkin
+  repo: intray-email-client
+  releaseType: release
 copyright: Copyright © 2026 Intray contributors
 artifactName: Intray-Setup-${version}.${ext}
 compression: normal

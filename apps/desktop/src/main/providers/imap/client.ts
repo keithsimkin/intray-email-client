@@ -4,6 +4,7 @@ import nodemailer from "nodemailer";
 import { loadCredentials, type ImapCredentials } from "../../crypto/credentials";
 import {
   explainGmailImapError,
+  explainImapAuthError,
   isGmailImapTarget,
   placementForGmail,
   type ListedMailbox,
@@ -91,23 +92,206 @@ function connectionOptions(creds: ImapCredentials) {
   };
 }
 
-export async function withImap<T>(
+/** Keep sockets warm — reconnecting TLS for every body open was a major stall. */
+const IMAP_IDLE_MS = 90_000;
+
+type ImapLaneName = "interactive" | "bulk";
+
+type ImapLane = {
+  client: ImapFlow | null;
+  creds: ImapCredentials | null;
+  /** Serializes commands on this socket (IMAP is not freely concurrent). */
+  tail: Promise<void>;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+};
+
+const imapLanes = new Map<string, ImapLane>();
+
+function laneKey(accountId: string, lane: ImapLaneName): string {
+  return `${accountId}:${lane}`;
+}
+
+function getLane(accountId: string, lane: ImapLaneName): ImapLane {
+  const key = laneKey(accountId, lane);
+  let entry = imapLanes.get(key);
+  if (!entry) {
+    entry = {
+      client: null,
+      creds: null,
+      tail: Promise.resolve(),
+      idleTimer: null,
+    };
+    imapLanes.set(key, entry);
+  }
+  return entry;
+}
+
+function sameImapCreds(a: ImapCredentials, b: ImapCredentials): boolean {
+  return (
+    a.imapHost === b.imapHost &&
+    a.imapPort === b.imapPort &&
+    a.email === b.email &&
+    a.username === b.username &&
+    a.password === b.password
+  );
+}
+
+async function disposeLaneClient(entry: ImapLane): Promise<void> {
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+  }
+  const client = entry.client;
+  entry.client = null;
+  entry.creds = null;
+  if (!client) return;
+  try {
+    await client.logout();
+  } catch {
+    try {
+      client.close();
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+function scheduleLaneIdle(key: string, entry: ImapLane): void {
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = setTimeout(() => {
+    entry.tail = entry.tail
+      .then(async () => {
+        await disposeLaneClient(entry);
+        if (!entry.client) imapLanes.delete(key);
+      })
+      .catch(() => undefined);
+  }, IMAP_IDLE_MS);
+}
+
+function armLaneLifecycle(entry: ImapLane, client: ImapFlow): void {
+  const drop = () => {
+    if (entry.client === client) {
+      entry.client = null;
+      entry.creds = null;
+    }
+  };
+  client.on("error", drop);
+  client.on("close", drop);
+}
+
+async function connectLane(
+  entry: ImapLane,
   accountId: string,
-  fn: (client: ImapFlow, creds: ImapCredentials) => Promise<T>,
-): Promise<T> {
+): Promise<{ client: ImapFlow; creds: ImapCredentials }> {
   const creds = loadCredentials(accountId);
   if (!creds || creds.provider !== "imap") {
     throw new Error("IMAP credentials missing");
   }
+  if (
+    entry.client &&
+    entry.creds &&
+    entry.client.usable &&
+    sameImapCreds(entry.creds, creds)
+  ) {
+    return { client: entry.client, creds };
+  }
+  await disposeLaneClient(entry);
   const client = new ImapFlow(connectionOptions(creds));
   await client.connect();
-  try {
-    return await fn(client, creds);
-  } finally {
+  entry.client = client;
+  entry.creds = creds;
+  armLaneLifecycle(entry, client);
+  return { client, creds };
+}
+
+function isTransientImapError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /not available|connection|closed|timeout|timed out|socket|ECONN|ETIMEDOUT|EPIPE|ended|reset|unavailable|logout|not connected/i.test(
+    msg,
+  );
+}
+
+async function withImapLane<T>(
+  accountId: string,
+  lane: ImapLaneName,
+  fn: (client: ImapFlow, creds: ImapCredentials) => Promise<T>,
+): Promise<T> {
+  const key = laneKey(accountId, lane);
+  const entry = getLane(accountId, lane);
+  let result!: T;
+  let failure: unknown;
+
+  const run = entry.tail.then(async () => {
+    if (entry.idleTimer) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = null;
+    }
     try {
-      await client.logout();
-    } catch {
-      client.close();
+      let { client, creds } = await connectLane(entry, accountId);
+      try {
+        result = await fn(client, creds);
+      } catch (error) {
+        if (!isTransientImapError(error)) throw error;
+        await disposeLaneClient(entry);
+        ({ client, creds } = await connectLane(entry, accountId));
+        result = await fn(client, creds);
+      }
+    } catch (error) {
+      failure = error;
+    } finally {
+      scheduleLaneIdle(key, entry);
+    }
+  });
+
+  entry.tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  await run;
+  if (failure) throw failure;
+  return result;
+}
+
+/** Sync / bulk mailbox walks — kept off the interactive open path. */
+export async function withImap<T>(
+  accountId: string,
+  fn: (client: ImapFlow, creds: ImapCredentials) => Promise<T>,
+): Promise<T> {
+  return withImapLane(accountId, "bulk", fn);
+}
+
+/** Body opens and user-driven reads — dedicated warm connection. */
+export async function withImapInteractive<T>(
+  accountId: string,
+  fn: (client: ImapFlow, creds: ImapCredentials) => Promise<T>,
+): Promise<T> {
+  return withImapLane(accountId, "interactive", fn);
+}
+
+/** Drop pooled sockets (account removed, auth changed, hung fetch). */
+export function closeImapConnections(
+  accountId?: string,
+  lane?: ImapLaneName,
+): void {
+  for (const [key, entry] of [...imapLanes.entries()]) {
+    if (accountId && !key.startsWith(`${accountId}:`)) continue;
+    if (lane && !key.endsWith(`:${lane}`)) continue;
+    if (entry.idleTimer) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = null;
+    }
+    const client = entry.client;
+    entry.client = null;
+    entry.creds = null;
+    // Reset the queue immediately so a hung fetch cannot block the next open.
+    entry.tail = Promise.resolve();
+    imapLanes.delete(key);
+    if (client) {
+      try {
+        client.close();
+      } catch {
+        /* already closed */
+      }
     }
   }
 }
@@ -116,8 +300,11 @@ function rethrowImapError(creds: ImapCredentials, error: unknown): never {
   if (isGmailImapTarget(creds)) {
     const explained = explainGmailImapError(error);
     if (explained) throw new Error(explained);
+  } else {
+    const explained = explainImapAuthError(error);
+    if (explained) throw new Error(explained);
   }
-  throw error;
+  throw error instanceof Error ? error : new Error(String(error));
 }
 
 /** Verify credentials by connecting and selecting INBOX. */
@@ -361,8 +548,12 @@ export async function fetchMessageSource(
   accountId: string,
   mailbox: string,
   uid: number,
+  opts?: { lane?: ImapLaneName },
 ): Promise<ParsedMail> {
-  return withImap(accountId, async (client) => {
+  // Interactive = reader opens; bulk = background prefetch (must not block opens).
+  const run =
+    opts?.lane === "bulk" ? withImap : withImapInteractive;
+  return run(accountId, async (client) => {
     const lock = await client.getMailboxLock(mailbox);
     try {
       const msg = await client.fetchOne(

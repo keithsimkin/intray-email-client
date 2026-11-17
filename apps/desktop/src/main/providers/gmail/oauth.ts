@@ -36,7 +36,7 @@ export function gmailOAuthConfigured(): boolean {
 
 export async function runGmailOAuth(): Promise<{
   tokens: GmailTokens;
-  profile: { email: string; name: string };
+  profile: { email: string; name: string; picture?: string };
 }> {
   const { clientId, clientSecret } = getGmailClientConfig();
   if (!clientId) {
@@ -150,9 +150,9 @@ export async function refreshGmailTokens(
   };
 }
 
-async function fetchGmailProfile(
+export async function fetchGmailProfile(
   accessToken: string,
-): Promise<{ email: string; name: string }> {
+): Promise<{ email: string; name: string; picture?: string }> {
   const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
     headers: { Authorization: `Bearer ${accessToken}` },
     signal: AbortSignal.timeout(30_000),
@@ -170,9 +170,18 @@ async function fetchGmailProfile(
     const gp = (await g.json()) as { emailAddress: string };
     return { email: gp.emailAddress, name: gp.emailAddress.split("@")[0] };
   }
-  const json = (await res.json()) as { email: string; name?: string };
+  const json = (await res.json()) as {
+    email: string;
+    name?: string;
+    picture?: string;
+  };
+  const picture =
+    typeof json.picture === "string" && json.picture.startsWith("http")
+      ? json.picture
+      : undefined;
   return {
     email: json.email,
     name: json.name?.trim() || json.email.split("@")[0],
+    picture,
   };
 }

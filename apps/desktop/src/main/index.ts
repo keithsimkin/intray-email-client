@@ -14,6 +14,8 @@ import { ensureQueueLoop, stopQueueLoop } from "./mail/queue";
 import { startMcpServer, stopMcpServer } from "./mcp/server";
 import { startPollingAll, stopAllPolling } from "./sync/engine";
 import { createTray } from "./tray";
+import { refreshMissingAvatars } from "./avatars";
+import { startAppUpdater } from "./updater";
 
 loadDesktopEnv();
 
@@ -110,6 +112,10 @@ app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
   await initDb();
   registerIpc();
+  // Wire updater before the window can invoke check-for-updates IPC.
+  startAppUpdater();
+  // Resolve Gravatar / Google photos for linked accounts + frequent senders.
+  refreshMissingAvatars();
   ensureDefaultLaunchAtLogin();
   ensureQueueLoop();
 

@@ -1,4 +1,6 @@
 import { BrowserWindow } from "electron";
+import { noteSender } from "../avatars";
+import { accountUsesImap, isGmailImapAccount } from "../crypto/credentials";
 import {
   deleteMessageByProviderId,
   getAccountRow,
@@ -6,6 +8,7 @@ import {
   recountUnread,
   upsertMessage,
   upsertSyncState,
+  type MessageRow,
 } from "../db";
 import {
   getMessageMeta,
@@ -14,7 +17,6 @@ import {
   listMessageIds,
 } from "../providers/gmail/client";
 import { gmailMessageToRow } from "../providers/gmail/map";
-import { accountUsesImap, isGmailImapAccount } from "../crypto/credentials";
 import { listImapMailboxes, listRecentEnvelopes } from "../providers/imap/client";
 import { imapEnvelopeToRow } from "../providers/imap/map";
 import {
@@ -23,6 +25,11 @@ import {
   GMAIL_FALLBACK_SYNC_MAILBOXES,
   type SyncMailbox,
 } from "../../shared/gmailImap";
+
+function rememberSender(row: MessageRow): void {
+  if (!row.from_email) return;
+  noteSender(row.from_email, row.from_name);
+}
 
 const INITIAL_PAGE_SIZE = 50;
 const INITIAL_MAX_MESSAGES = 200;
@@ -139,7 +146,9 @@ async function ingestGmailIds(
   await mapLimit(ids, EMAIL_CONCURRENCY, async ({ id }) => {
     try {
       const meta = await getMessageMeta(accountId, id);
-      upsertMessage(gmailMessageToRow(accountId, meta));
+      const row = gmailMessageToRow(accountId, meta);
+      upsertMessage(row);
+      rememberSender(row);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       // Messages deleted between list and fetch are expected; auth/quota
@@ -356,7 +365,9 @@ async function syncImap(accountId: string): Promise<void> {
         refreshRecent: gmail ? (box.role === "all" ? 80 : 20) : 0,
       });
       for (const env of slice.envelopes) {
-        upsertMessage(imapEnvelopeToRow(accountId, env));
+        const row = imapEnvelopeToRow(accountId, env);
+        upsertMessage(row);
+        rememberSender(row);
         total += 1;
       }
       cursor[box.path] = {

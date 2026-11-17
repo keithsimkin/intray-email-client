@@ -261,15 +261,22 @@ export function Onboarding({
 
             <label className="onboarding-toggle">
               <div>
-                <strong>Important notifications</strong>
-                <span>Toast when Important mail arrives</span>
+                <strong>Reminder notifications</strong>
+                <span>Snooze wakes, read receipts, and meetings</span>
               </div>
               <input
                 type="checkbox"
-                checked={prefs.notifyMode !== "off"}
+                checked={
+                  prefs.notifyDesktop &&
+                  (prefs.notifySnooze || prefs.notifyOpens || prefs.notifyMeetings)
+                }
                 onChange={(e) => {
+                  const on = e.target.checked;
                   patch({
-                    notifyMode: e.target.checked ? "important" : "off",
+                    notifyDesktop: on,
+                    notifySnooze: on,
+                    notifyOpens: on,
+                    notifyMeetings: on,
                   });
                 }}
               />

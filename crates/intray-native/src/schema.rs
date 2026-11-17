@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   name TEXT NOT NULL,
   label TEXT NOT NULL,
   color TEXT NOT NULL,
+  avatar_url TEXT,
   unread INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   email TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL DEFAULT '',
   color TEXT NOT NULL DEFAULT '#8a8f98',
+  avatar_url TEXT,
   last_seen_ms INTEGER NOT NULL DEFAULT 0,
   frequency INTEGER NOT NULL DEFAULT 1
 );
@@ -136,6 +138,8 @@ pub const MIGRATIONS_SQL: &[&str] = &[
   "ALTER TABLE send_queue ADD COLUMN last_error TEXT",
   "ALTER TABLE send_queue ADD COLUMN message_id TEXT",
   "ALTER TABLE send_queue ADD COLUMN locked_until_ms INTEGER",
+  "ALTER TABLE accounts ADD COLUMN avatar_url TEXT",
+  "ALTER TABLE contacts ADD COLUMN avatar_url TEXT",
 ];
 
 pub const POST_MIGRATION_INDEXES_SQL: &[&str] = &[

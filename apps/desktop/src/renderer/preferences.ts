@@ -7,8 +7,6 @@ export type LayoutId = "panels" | "wide" | "stack";
 export type ReadingWidth = "narrow" | "medium" | "wide";
 export type BadgeMode = "count" | "dot" | "important" | "off";
 export type NotifyMode = "all" | "important" | "off";
-/** When remote http(s) images in HTML mail may load. */
-export type RemoteImagePolicy = "always" | "never" | "trusted";
 export type AiBridgeId =
   | "openai"
   | "grok"
@@ -58,6 +56,10 @@ export type Preferences = {
   notifyShowPreview: boolean;
   /** New mail toasts */
   notifyNewMail: boolean;
+  /** Snooze wake reminders */
+  notifySnooze: boolean;
+  /** Open / read-receipt toasts for tracked sends */
+  notifyOpens: boolean;
   /** Meeting / calendar reminders */
   notifyMeetings: boolean;
   /** Sync / send failure toasts */
@@ -104,10 +106,8 @@ export type Preferences = {
   mcpAutoLaunch: boolean;
 
   // Privacy
-  /** Always / never / only senders listed in trustedImageSenders */
-  remoteImagePolicy: RemoteImagePolicy;
-  /** Full addresses or domains (e.g. ava@northwind.io, @northwind.io, northwind.io) */
-  trustedImageSenders: string[];
+  /** When on, HTML mail loads remote http(s) images. Off blocks trackers. */
+  downloadRemoteImages: boolean;
   analytics: boolean;
   crashReports: boolean;
   lockWithWindowsHello: boolean;
@@ -143,7 +143,9 @@ export const defaultPreferences: Preferences = {
   notifyMode: "important",
   notifyShowSender: true,
   notifyShowPreview: true,
-  notifyNewMail: true,
+  notifyNewMail: false,
+  notifySnooze: true,
+  notifyOpens: true,
   notifyMeetings: true,
   notifyErrors: true,
   taskbarBadge: "count",
@@ -219,8 +221,7 @@ export const defaultPreferences: Preferences = {
   mcpEnabled: true,
   mcpAutoLaunch: true,
 
-  remoteImagePolicy: "never",
-  trustedImageSenders: [],
+  downloadRemoteImages: false,
   analytics: false,
   crashReports: false,
   lockWithWindowsHello: false,
@@ -325,34 +326,6 @@ export const aiBridgeMeta: Record<AiBridgeId, AiBridgeMeta> = {
   },
 };
 
-/** True when sender email matches a trusted entry (address or domain). */
-export function isTrustedImageSender(
-  email: string,
-  trusted: readonly string[],
-): boolean {
-  const normalized = email.trim().toLowerCase();
-  if (!normalized || !trusted.length) return false;
-  const at = normalized.lastIndexOf("@");
-  const domain = at >= 0 ? normalized.slice(at + 1) : "";
-  return trusted.some((entry) => {
-    const t = entry.trim().toLowerCase();
-    if (!t) return false;
-    if (t.startsWith("@")) return Boolean(domain) && domain === t.slice(1);
-    if (t.includes("@")) return normalized === t;
-    return Boolean(domain) && domain === t;
-  });
-}
-
-export function allowRemoteImagesForSender(
-  policy: RemoteImagePolicy,
-  senderEmail: string,
-  trusted: readonly string[],
-): boolean {
-  if (policy === "always") return true;
-  if (policy === "never") return false;
-  return isTrustedImageSender(senderEmail, trusted);
-}
-
 export function loadPreferences(): Preferences {
   try {
     const raw =
@@ -361,6 +334,10 @@ export function loadPreferences(): Preferences {
     const saved = JSON.parse(raw) as Partial<Preferences> & {
       aiBridge?: string;
       blockRemoteImages?: boolean;
+      remoteImages?: string;
+      remoteImagePolicy?: string;
+      downloadRemoteImages?: boolean;
+      trustedImageSenders?: unknown;
     };
     const parsed = {
       ...defaultPreferences,
@@ -373,16 +350,13 @@ export function loadPreferences(): Preferences {
         ...defaultPreferences.shortcutOverrides,
         ...(saved.shortcutOverrides ?? {}),
       },
-      trustedImageSenders: Array.isArray(saved.trustedImageSenders)
-        ? saved.trustedImageSenders
-            .map((s) => String(s).trim())
-            .filter(Boolean)
-        : defaultPreferences.trustedImageSenders,
     } as Preferences & {
       aiBridge?: string;
       layout?: string;
       blockRemoteImages?: boolean;
+      remoteImages?: string;
       remoteImagePolicy?: string;
+      trustedImageSenders?: unknown;
     };
     // CASA was removed — migrate saved preference to Cursor.
     if ((parsed.aiBridge as string) === "casa") {
@@ -396,17 +370,48 @@ export function loadPreferences(): Preferences {
     if (!packs.has(parsed.shortcutPack as string)) {
       parsed.shortcutPack = defaultPreferences.shortcutPack;
     }
-    // Migrate legacy boolean → three-way policy.
-    const policies = new Set(["always", "never", "trusted"]);
-    if (!policies.has(parsed.remoteImagePolicy as string)) {
-      if (typeof saved.blockRemoteImages === "boolean") {
-        parsed.remoteImagePolicy = saved.blockRemoteImages ? "never" : "always";
+    // Migrate legacy image keys → simple on/off.
+    if (typeof saved.downloadRemoteImages !== "boolean") {
+      if (saved.remoteImagePolicy === "always" || saved.remoteImages === "always") {
+        parsed.downloadRemoteImages = true;
+      } else if (
+        saved.remoteImagePolicy === "never" ||
+        saved.remoteImages === "never" ||
+        saved.blockRemoteImages === true
+      ) {
+        parsed.downloadRemoteImages = false;
+      } else if (
+        saved.remoteImagePolicy === "trusted" ||
+        saved.remoteImages === "trusted" ||
+        saved.blockRemoteImages === false
+      ) {
+        // Old "trusted" / unblocked → on (closest match to prior intent).
+        parsed.downloadRemoteImages = true;
       } else {
-        parsed.remoteImagePolicy = defaultPreferences.remoteImagePolicy;
+        parsed.downloadRemoteImages = defaultPreferences.downloadRemoteImages;
       }
     }
     delete parsed.blockRemoteImages;
-    return parsed;
+    delete parsed.remoteImages;
+    delete parsed.remoteImagePolicy;
+    delete parsed.trustedImageSenders;
+    if (typeof parsed.downloadRemoteImages !== "boolean") {
+      parsed.downloadRemoteImages = defaultPreferences.downloadRemoteImages;
+    }
+    // Notifications shifted from inbox arrivals → snooze / read reminders.
+    if (
+      (saved as { notifySnooze?: unknown }).notifySnooze === undefined &&
+      (saved as { notifyOpens?: unknown }).notifyOpens === undefined
+    ) {
+      parsed.notifyNewMail = false;
+      parsed.notifySnooze = true;
+      parsed.notifyOpens = true;
+    }
+    return {
+      ...defaultPreferences,
+      ...parsed,
+      downloadRemoteImages: parsed.downloadRemoteImages,
+    };
   } catch {
     return { ...defaultPreferences };
   }

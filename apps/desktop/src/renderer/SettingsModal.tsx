@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bell,
   Bot,
+  Download,
+  ExternalLink,
   FileText,
+  ImagePlus,
+  Info,
   KeyRound,
   Keyboard,
   LayoutGrid,
@@ -18,25 +22,41 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { AiModelList, AiProviderStatus, AiSecretId, McpStatus } from "../shared/types";
+import type {
+  AiModelList,
+  AiProviderStatus,
+  AiSecretId,
+  AppUpdateStatus,
+  McpStatus,
+} from "../shared/types";
 import { AppSelect } from "./AppSelect";
 import { PackLogo } from "./BrandIcon";
 import { BridgeLogo, bridgePickerOrder } from "./bridgeLogos";
 import { UNIFIED_ID, type Account } from "./data/mock";
 import {
+  accountDtoToUi,
   bridgeAiDetect,
   bridgeAiModels,
   bridgeAiSecretsStatus,
   bridgeAiSetSecret,
+  bridgeAppInfo,
+  bridgeCheckForUpdates,
+  bridgeChooseAccountAvatar,
+  bridgeClearAccountAvatar,
+  bridgeInstallUpdate,
   bridgeLaunchAtLogin,
   bridgeMcpStart,
   bridgeMcpStatus,
   bridgeMcpStop,
   bridgeMcpRotateToken,
   bridgeNotifyShow,
+  bridgeOnUpdateStatus,
+  bridgeOpenReleases,
   bridgeRemoveAccount,
   bridgeSetLaunchAtLogin,
   bridgeSync,
+  bridgeUpdateAccount,
+  bridgeUpdateStatus,
   hasIntrayBridge,
 } from "./mailApi";
 import { ProviderLogo, providerById, type ProviderId } from "./providers";
@@ -47,7 +67,6 @@ import {
   type AccentId,
   type AiBridgeId,
   type Preferences,
-  type RemoteImagePolicy,
 } from "./preferences";
 import {
   designedSignatureHtml,
@@ -78,6 +97,50 @@ function Toggle({
       aria-checked={on}
       onClick={() => onChange(!on)}
     />
+  );
+}
+
+function AccountFace({
+  name,
+  initials,
+  color,
+  avatarUrl,
+  large = false,
+}: {
+  name: string;
+  initials: string;
+  color: string;
+  avatarUrl?: string;
+  large?: boolean;
+}) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(false);
+  }, [avatarUrl]);
+  const faceClass = large
+    ? "account-avatar-preview"
+    : "account-bridge-face";
+
+  if (avatarUrl && !broken) {
+    return (
+      <img
+        className={faceClass}
+        src={avatarUrl}
+        alt=""
+        title={name}
+        draggable={false}
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+  return (
+    <span
+      className={`${faceClass} fallback`}
+      style={{ background: color }}
+      title={name}
+    >
+      {initials}
+    </span>
   );
 }
 
@@ -162,7 +225,8 @@ type TabId =
   | "ai"
   | "shortcuts"
   | "accounts"
-  | "privacy";
+  | "privacy"
+  | "about";
 
 const SETTINGS_TABS: {
   id: TabId;
@@ -178,7 +242,38 @@ const SETTINGS_TABS: {
   { id: "shortcuts", label: "Shortcuts", Icon: Keyboard, group: "System" },
   { id: "accounts", label: "Accounts", Icon: Layers, group: "System" },
   { id: "privacy", label: "Privacy", Icon: Shield, group: "System" },
+  { id: "about", label: "About", Icon: Info, group: "System" },
 ];
+
+function updateStatusCopy(status: AppUpdateStatus): string {
+  switch (status.state) {
+    case "checking":
+      return "Checking GitHub Releases…";
+    case "available":
+      return status.availableVersion
+        ? `Version ${status.availableVersion} is available — downloading…`
+        : "An update is available — downloading…";
+    case "downloading":
+      return typeof status.downloadPercent === "number"
+        ? `Downloading update… ${status.downloadPercent}%`
+        : "Downloading update…";
+    case "ready":
+      return status.availableVersion
+        ? `Intray ${status.availableVersion} is ready. Restart to install.`
+        : "Update ready. Restart to install.";
+    case "not-available":
+      return "You’re on the latest release.";
+    case "error":
+      return status.error || "Couldn’t check for updates.";
+    case "disabled":
+      return (
+        status.detail ||
+        "Updates apply to installed builds only (not electron-vite dev)."
+      );
+    default:
+      return "Intray checks GitHub Releases for new versions automatically.";
+  }
+}
 
 function linkedAccounts(accounts: Account[]) {
   return accounts.filter((a) => a.id !== UNIFIED_ID);
@@ -186,6 +281,28 @@ function linkedAccounts(accounts: Account[]) {
 
 function accountProviderId(account: Account): ProviderId {
   return account.provider ?? "imap";
+}
+
+const ACCOUNT_COLORS = [
+  "#ea4335",
+  "#f5a524",
+  "#f5d042",
+  "#3dd68c",
+  "#5b8def",
+  "#8b7cf6",
+  "#46c5e8",
+  "#ff5c5c",
+  "#0a7cff",
+  "#6001d2",
+  "#3693F3",
+  "#8a8f98",
+];
+
+function normalizeHexColor(value: string): string | null {
+  const raw = value.trim();
+  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+  if (!/^#[0-9a-fA-F]{6}$/.test(withHash)) return null;
+  return withHash.toLowerCase();
 }
 
 function credentialGuide(account: Account) {
@@ -229,6 +346,7 @@ export function SettingsModal({
   onAddAccount,
   onReconnectAccount,
   onRemoveAccount,
+  onUpdateAccount,
   onClose,
 }: {
   prefs: Preferences;
@@ -237,6 +355,7 @@ export function SettingsModal({
   onAddAccount: () => void;
   onReconnectAccount?: (account: Account) => void;
   onRemoveAccount?: (accountId: string) => void;
+  onUpdateAccount?: (account: Account) => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
@@ -253,7 +372,9 @@ export function SettingsModal({
   );
   const [accountBusy, setAccountBusy] = useState<string | null>(null);
   const [accountNote, setAccountNote] = useState<string | null>(null);
-  const [trustedDraft, setTrustedDraft] = useState("");
+  const [accountNameDraft, setAccountNameDraft] = useState("");
+  const [accountLabelDraft, setAccountLabelDraft] = useState("");
+  const [accountColorDraft, setAccountColorDraft] = useState("#8a8f98");
   const navSearchRef = useRef<HTMLInputElement>(null);
   const [secretStatus, setSecretStatus] = useState<Record<AiSecretId, boolean>>({
     openai: false,
@@ -278,11 +399,35 @@ export function SettingsModal({
     port: null,
     url: null,
   });
+  const [appVersion, setAppVersion] = useState("…");
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
+    state: "idle",
+    currentVersion: "…",
+    packaged: false,
+  });
 
   useEffect(() => {
     void bridgeLaunchAtLogin().then((s) => {
       setLaunchAtLogin(s.openAtLogin);
     });
+  }, []);
+
+  useEffect(() => {
+    let cancel = false;
+    void bridgeAppInfo().then((info) => {
+      if (!cancel) setAppVersion(info.version);
+    });
+    void bridgeUpdateStatus().then((status) => {
+      if (!cancel) setUpdateStatus(status);
+    });
+    const stop = bridgeOnUpdateStatus((status) => {
+      if (!cancel) setUpdateStatus(status);
+    });
+    return () => {
+      cancel = true;
+      stop();
+    };
   }, []);
 
   useEffect(() => {
@@ -356,9 +501,114 @@ export function SettingsModal({
     }
   }, [mailAccounts, selectedAccountId]);
 
+  const selectedMailAccount = useMemo(
+    () =>
+      mailAccounts.find((a) => a.id === selectedAccountId) ??
+      mailAccounts[0] ??
+      null,
+    [mailAccounts, selectedAccountId],
+  );
+
+  useEffect(() => {
+    if (!selectedMailAccount) {
+      setAccountNameDraft("");
+      setAccountLabelDraft("");
+      setAccountColorDraft("#8a8f98");
+      return;
+    }
+    setAccountNameDraft(selectedMailAccount.name);
+    setAccountLabelDraft(selectedMailAccount.label);
+    setAccountColorDraft(
+      normalizeHexColor(selectedMailAccount.color) ?? "#8a8f98",
+    );
+  }, [selectedMailAccount?.id]);
+
   useEffect(() => {
     if (tab !== "accounts") setAccountNote(null);
   }, [tab]);
+
+  async function saveAccountAppearance(patch: {
+    name?: string;
+    label?: string;
+    color?: string;
+  }) {
+    const selected = selectedMailAccount;
+    if (!selected) return;
+    const name = (patch.name ?? accountNameDraft).trim();
+    const label = (patch.label ?? accountLabelDraft).trim();
+    const color =
+      normalizeHexColor(patch.color ?? accountColorDraft) ??
+      selected.color;
+    if (!name) {
+      setAccountNote("Display name can’t be empty.");
+      setAccountNameDraft(selected.name);
+      return;
+    }
+    if (!normalizeHexColor(color)) {
+      setAccountNote("Pick a hex color like #ea4335.");
+      setAccountColorDraft(
+        normalizeHexColor(selected.color) ?? "#8a8f98",
+      );
+      return;
+    }
+    const nameChanged = name !== selected.name;
+    const labelChanged = label !== selected.label;
+    const colorChanged =
+      color.toLowerCase() !== selected.color.toLowerCase();
+    if (!nameChanged && !labelChanged && !colorChanged) return;
+
+    setAccountBusy(selected.id);
+    setAccountNote(null);
+    try {
+      const input = {
+        accountId: selected.id,
+        ...(nameChanged ? { name } : {}),
+        // If only the display name changed, omit label so initials refresh.
+        ...(labelChanged ? { label: label || undefined } : {}),
+        ...(colorChanged ? { color: color.toLowerCase() } : {}),
+      };
+      let next: Account = {
+        ...selected,
+        name: nameChanged ? name : selected.name,
+        label: labelChanged ? label || selected.label : selected.label,
+        color: colorChanged ? color.toLowerCase() : selected.color,
+      };
+      if (hasIntrayBridge()) {
+        const dto = await bridgeUpdateAccount(input);
+        next = {
+          ...selected,
+          ...accountDtoToUi(dto),
+        };
+      } else if (nameChanged && !labelChanged) {
+        const parts = name.split(/[\s._-]+/).filter(Boolean);
+        next = {
+          ...next,
+          label:
+            parts.length >= 2
+              ? (parts[0][0] + parts[1][0]).toUpperCase()
+              : name.slice(0, 2).toUpperCase(),
+        };
+      }
+      onUpdateAccount?.(next);
+      setAccountNameDraft(next.name);
+      setAccountLabelDraft(next.label);
+      setAccountColorDraft(
+        normalizeHexColor(next.color) ?? color.toLowerCase(),
+      );
+      setAccountNote("Appearance updated — no sign-in needed.");
+    } catch (err) {
+      setAccountNote(
+        err instanceof Error ? err.message : "Could not update account.",
+      );
+      setAccountNameDraft(selected.name);
+      setAccountLabelDraft(selected.label);
+      setAccountColorDraft(
+        normalizeHexColor(selected.color) ?? "#8a8f98",
+      );
+    } finally {
+      setAccountBusy(null);
+    }
+  }
 
   useEffect(() => {
     if (!recordingAction || !chordPending) return;
@@ -443,7 +693,7 @@ export function SettingsModal({
     return null;
   };
 
-  const activeBridge = aiBridgeMeta[prefs.aiBridge];
+  const activeBridge = aiBridgeMeta[prefs.aiBridge] ?? aiBridgeMeta.none;
   const activeStatus = detectedRows.find((row) => row.id === prefs.aiBridge);
   const detectedPath = activeStatus?.path ?? "";
   const liveModels = (modelList?.models ?? []).filter(
@@ -851,19 +1101,17 @@ export function SettingsModal({
               <>
                 <Block
                   title="Windows notifications"
-                  hint="System toasts in the notification center — like WhatsApp’s master switch."
+                  hint="Desktop toasts for snooze wakes, read receipts, and other reminders."
                   action={
                     <button
                       type="button"
                       className="settings-section-btn"
                       onClick={() => {
                         void bridgeNotifyShow({
-                          title: prefs.notifyShowSender
-                            ? "Ava Martin"
-                            : "Intray",
+                          title: "Snooze reminder",
                           body: prefs.notifyShowPreview
-                            ? "Q4 roadmap — notes attached"
-                            : "You have new mail",
+                            ? "Follow up next week"
+                            : "A snoozed message is back in your inbox",
                           silent: !prefs.notifySound,
                         });
                       }}
@@ -885,29 +1133,70 @@ export function SettingsModal({
                 </Block>
 
                 <Block
-                  title="Which mail"
-                  hint="Important-only matches the inbox Important / Other split."
+                  title="Notify me about"
+                  hint="Reminders and activity — not a stream of every new email."
                 >
                   <Row
-                    title="Notify about"
-                    hint="Which arrivals raise a desktop toast"
+                    title="Snooze reminders"
+                    hint="When a snoozed message returns to your inbox"
                   >
-                    <Select
-                      value={prefs.notifyMode}
-                      onChange={(notifyMode) => patch({ notifyMode })}
-                      options={[
-                        { id: "all", label: "All mail" },
-                        { id: "important", label: "Important" },
-                        { id: "off", label: "Off" },
-                      ]}
+                    <Toggle
+                      on={prefs.notifySnooze}
+                      onChange={(notifySnooze) => patch({ notifySnooze })}
+                    />
+                  </Row>
+                  <Row
+                    title="Read receipts"
+                    hint="When someone opens a tracked email you sent"
+                  >
+                    <Toggle
+                      on={prefs.notifyOpens}
+                      onChange={(notifyOpens) => patch({ notifyOpens })}
+                    />
+                  </Row>
+                  <Row title="Meetings" hint="Calendar / join reminders">
+                    <Toggle
+                      on={prefs.notifyMeetings}
+                      onChange={(notifyMeetings) => patch({ notifyMeetings })}
+                    />
+                  </Row>
+                  <Row
+                    title="New mail"
+                    hint="Optional inbox arrivals (Important-only uses the inbox split)"
+                  >
+                    <Toggle
+                      on={prefs.notifyNewMail}
+                      onChange={(notifyNewMail) => patch({ notifyNewMail })}
+                    />
+                  </Row>
+                  {prefs.notifyNewMail && (
+                    <Row
+                      title="Which new mail"
+                      hint="Only applies when New mail is on"
+                    >
+                      <Select
+                        value={prefs.notifyMode}
+                        onChange={(notifyMode) => patch({ notifyMode })}
+                        options={[
+                          { id: "all", label: "All mail" },
+                          { id: "important", label: "Important" },
+                          { id: "off", label: "Off" },
+                        ]}
+                      />
+                    </Row>
+                  )}
+                  <Row title="Errors" hint="Sync failures and send problems">
+                    <Toggle
+                      on={prefs.notifyErrors}
+                      onChange={(notifyErrors) => patch({ notifyErrors })}
                     />
                   </Row>
                 </Block>
 
                 <Block title="Message content">
                   <Row
-                    title="Show sender name"
-                    hint="Who the mail is from"
+                    title="Show sender / recipient"
+                    hint="Names in reminder and read-receipt toasts"
                   >
                     <Toggle
                       on={prefs.notifyShowSender}
@@ -931,30 +1220,6 @@ export function SettingsModal({
                     <Toggle
                       on={prefs.notifySound}
                       onChange={(notifySound) => patch({ notifySound })}
-                    />
-                  </Row>
-                </Block>
-
-                <Block
-                  title="Notify me about"
-                  hint="Turn individual categories on or off."
-                >
-                  <Row title="New mail" hint="Inbox arrivals that match the filter above">
-                    <Toggle
-                      on={prefs.notifyNewMail}
-                      onChange={(notifyNewMail) => patch({ notifyNewMail })}
-                    />
-                  </Row>
-                  <Row title="Meetings" hint="Calendar / join reminders">
-                    <Toggle
-                      on={prefs.notifyMeetings}
-                      onChange={(notifyMeetings) => patch({ notifyMeetings })}
-                    />
-                  </Row>
-                  <Row title="Errors" hint="Sync failures and send problems">
-                    <Toggle
-                      on={prefs.notifyErrors}
-                      onChange={(notifyErrors) => patch({ notifyErrors })}
                     />
                   </Row>
                 </Block>
@@ -1750,21 +2015,12 @@ export function SettingsModal({
                             setAccountNote(null);
                           }}
                         >
-                          {a.avatarUrl ? (
-                            <img
-                              className="account-bridge-face"
-                              src={a.avatarUrl}
-                              alt=""
-                              draggable={false}
-                            />
-                          ) : (
-                            <span
-                              className="account-bridge-face fallback"
-                              style={{ background: a.color }}
-                            >
-                              {a.label.slice(0, 2)}
-                            </span>
-                          )}
+                          <AccountFace
+                            name={a.name}
+                            initials={a.label.slice(0, 2)}
+                            color={a.color}
+                            avatarUrl={a.avatarUrl}
+                          />
                           <span className="account-bridge-provider" aria-hidden>
                             <ProviderLogo id={providerId} size={12} />
                           </span>
@@ -1835,6 +2091,215 @@ export function SettingsModal({
                   const busy = accountBusy === selected.id;
                   return (
                     <>
+                      <Block
+                        title="Account appearance"
+                        hint="Change display name, photo, initials, and color locally — no sign-in required."
+                      >
+                        <Row
+                          title="Profile photo"
+                          hint="Shown on the account rail and sidebar. Overrides Google / Gravatar."
+                        >
+                          <div className="account-avatar-editor">
+                            <AccountFace
+                              name={selected.name}
+                              initials={
+                                accountLabelDraft.trim().slice(0, 2) ||
+                                selected.label.slice(0, 2)
+                              }
+                              color={
+                                normalizeHexColor(accountColorDraft) ??
+                                selected.color
+                              }
+                              avatarUrl={selected.avatarUrl}
+                              large
+                            />
+                            <div className="account-avatar-actions">
+                              <button
+                                type="button"
+                                className="settings-section-btn"
+                                disabled={busy || !hasIntrayBridge()}
+                                onClick={() => {
+                                  void (async () => {
+                                    setAccountBusy(selected.id);
+                                    setAccountNote(null);
+                                    try {
+                                      const dto =
+                                        await bridgeChooseAccountAvatar(
+                                          selected.id,
+                                        );
+                                      const next = {
+                                        ...selected,
+                                        ...accountDtoToUi(dto),
+                                      };
+                                      onUpdateAccount?.(next);
+                                      setAccountNote(
+                                        next.avatarUrl
+                                          ? "Profile photo updated."
+                                          : "No photo selected.",
+                                      );
+                                    } catch (err) {
+                                      setAccountNote(
+                                        err instanceof Error
+                                          ? err.message
+                                          : "Could not update photo.",
+                                      );
+                                    } finally {
+                                      setAccountBusy(null);
+                                    }
+                                  })();
+                                }}
+                              >
+                                <ImagePlus size={14} strokeWidth={1.75} />
+                                {selected.avatarUrl
+                                  ? "Change photo"
+                                  : "Add photo"}
+                              </button>
+                              {selected.avatarUrl
+                                ?.toLowerCase()
+                                .startsWith("data:image/") ? (
+                                <button
+                                  type="button"
+                                  className="settings-section-btn"
+                                  disabled={busy || !hasIntrayBridge()}
+                                  onClick={() => {
+                                    void (async () => {
+                                      setAccountBusy(selected.id);
+                                      setAccountNote(null);
+                                      try {
+                                        const dto =
+                                          await bridgeClearAccountAvatar(
+                                            selected.id,
+                                          );
+                                        const next = {
+                                          ...selected,
+                                          ...accountDtoToUi(dto),
+                                        };
+                                        onUpdateAccount?.(next);
+                                        setAccountNote(
+                                          next.avatarUrl
+                                            ? "Reverted to Google / Gravatar photo."
+                                            : "Photo removed — showing initials.",
+                                        );
+                                      } catch (err) {
+                                        setAccountNote(
+                                          err instanceof Error
+                                            ? err.message
+                                            : "Could not remove photo.",
+                                        );
+                                      } finally {
+                                        setAccountBusy(null);
+                                      }
+                                    })();
+                                  }}
+                                >
+                                  <Trash2 size={14} strokeWidth={1.75} />
+                                  Remove
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        </Row>
+                        <Row
+                          title="Display name"
+                          hint="Shown in the sidebar and as the From name when you send"
+                        >
+                          <input
+                            className="settings-input"
+                            value={accountNameDraft}
+                            disabled={busy}
+                            maxLength={80}
+                            aria-label="Display name"
+                            onChange={(e) => setAccountNameDraft(e.target.value)}
+                            onBlur={() => {
+                              void saveAccountAppearance({
+                                name: accountNameDraft,
+                              });
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                (e.target as HTMLInputElement).blur();
+                              }
+                            }}
+                          />
+                        </Row>
+                        <Row
+                          title="Initials"
+                          hint="Short label on the account chip (1–3 characters)"
+                        >
+                          <input
+                            className="settings-input account-label-input"
+                            value={accountLabelDraft}
+                            disabled={busy}
+                            maxLength={3}
+                            aria-label="Account initials"
+                            onChange={(e) =>
+                              setAccountLabelDraft(
+                                e.target.value.replace(/\s+/g, "").slice(0, 3),
+                              )
+                            }
+                            onBlur={() => {
+                              void saveAccountAppearance({
+                                label: accountLabelDraft,
+                              });
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                (e.target as HTMLInputElement).blur();
+                              }
+                            }}
+                          />
+                        </Row>
+                        <Row
+                          title="Account color"
+                          hint="Used for the chip, rail, and message badges"
+                        >
+                          <div className="accent-row account-color-row">
+                            {ACCOUNT_COLORS.map((c) => {
+                              const active =
+                                accountColorDraft.toLowerCase() ===
+                                c.toLowerCase();
+                              return (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  className={`accent-swatch${active ? " active" : ""}`}
+                                  style={{ background: c }}
+                                  title={c}
+                                  aria-label={`Color ${c}`}
+                                  aria-pressed={active}
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setAccountColorDraft(c.toLowerCase());
+                                    void saveAccountAppearance({ color: c });
+                                  }}
+                                />
+                              );
+                            })}
+                            <label
+                              className="account-color-custom"
+                              title="Custom color"
+                            >
+                              <span className="sr-only">Custom color</span>
+                              <input
+                                type="color"
+                                value={
+                                  normalizeHexColor(accountColorDraft) ??
+                                  "#8a8f98"
+                                }
+                                disabled={busy}
+                                onChange={(e) => {
+                                  const next = e.target.value.toLowerCase();
+                                  setAccountColorDraft(next);
+                                  void saveAccountAppearance({ color: next });
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </Row>
+                      </Block>
+
                       <Block
                         title="Manage this account"
                         hint={
@@ -1975,122 +2440,19 @@ export function SettingsModal({
                 </div>
                 <Block
                   title="Remote images"
-                  hint="Remote http(s) images can reveal that you opened a message. Per-message Load images still works when blocked."
+                  hint="Remote http(s) images can reveal that you opened a message."
                 >
                   <Row
-                    title="Download policy"
-                    hint="Always, never, or only from trusted senders"
+                    title="Download images"
+                    hint="Off by default. You can still load images on a message from the header tools."
                   >
-                    <Select
-                      value={prefs.remoteImagePolicy}
-                      onChange={(remoteImagePolicy: RemoteImagePolicy) =>
-                        patch({ remoteImagePolicy })
+                    <Toggle
+                      on={prefs.downloadRemoteImages}
+                      onChange={(downloadRemoteImages) =>
+                        patch({ downloadRemoteImages })
                       }
-                      options={[
-                        { id: "always", label: "Always download" },
-                        { id: "never", label: "Never download" },
-                        {
-                          id: "trusted",
-                          label: "Trusted sources only",
-                        },
-                      ]}
                     />
                   </Row>
-                  {prefs.remoteImagePolicy === "trusted" && (
-                    <div className="trusted-image-editor">
-                      <p className="settings-inline-note">
-                        Add full addresses or domains — e.g.{" "}
-                        <code>ava@northwind.io</code>,{" "}
-                        <code>@northwind.io</code>, or{" "}
-                        <code>northwind.io</code>.
-                      </p>
-                      <div className="trusted-image-add">
-                        <input
-                          className="settings-input settings-input-wide"
-                          type="text"
-                          spellCheck={false}
-                          placeholder="email@domain.com or @domain.com"
-                          value={trustedDraft}
-                          onChange={(e) => setTrustedDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key !== "Enter") return;
-                            e.preventDefault();
-                            const next = trustedDraft.trim();
-                            if (!next) return;
-                            const existing = prefs.trustedImageSenders.map(
-                              (s) => s.toLowerCase(),
-                            );
-                            if (existing.includes(next.toLowerCase())) {
-                              setTrustedDraft("");
-                              return;
-                            }
-                            patch({
-                              trustedImageSenders: [
-                                ...prefs.trustedImageSenders,
-                                next,
-                              ],
-                            });
-                            setTrustedDraft("");
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="compose settings-add"
-                          disabled={!trustedDraft.trim()}
-                          onClick={() => {
-                            const next = trustedDraft.trim();
-                            if (!next) return;
-                            const existing = prefs.trustedImageSenders.map(
-                              (s) => s.toLowerCase(),
-                            );
-                            if (existing.includes(next.toLowerCase())) {
-                              setTrustedDraft("");
-                              return;
-                            }
-                            patch({
-                              trustedImageSenders: [
-                                ...prefs.trustedImageSenders,
-                                next,
-                              ],
-                            });
-                            setTrustedDraft("");
-                          }}
-                        >
-                          <Plus size={15} strokeWidth={2} />
-                          Add
-                        </button>
-                      </div>
-                      {prefs.trustedImageSenders.length > 0 ? (
-                        <ul className="trusted-image-list">
-                          {prefs.trustedImageSenders.map((entry) => (
-                            <li key={entry} className="trusted-image-chip">
-                              <span>{entry}</span>
-                              <button
-                                type="button"
-                                className="trusted-image-chip-x"
-                                aria-label={`Remove ${entry}`}
-                                onClick={() =>
-                                  patch({
-                                    trustedImageSenders:
-                                      prefs.trustedImageSenders.filter(
-                                        (s) => s !== entry,
-                                      ),
-                                  })
-                                }
-                              >
-                                <X size={12} strokeWidth={2} />
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="settings-inline-note">
-                          No trusted sources yet — remote images stay blocked
-                          until you add one or load them on a message.
-                        </p>
-                      )}
-                    </div>
-                  )}
                 </Block>
                 <Block title="Privacy">
                   <Row title="Analytics" hint="Off by default — nothing phones home">
@@ -2116,6 +2478,103 @@ export function SettingsModal({
                       }
                     />
                   </Row>
+                </Block>
+              </>
+            )}
+
+            {tab === "about" && (
+              <>
+                <Block
+                  title="Intray"
+                  hint="Windows unified mail — local-first, no mail relay."
+                >
+                  <Row title="Version" hint="Installed package version">
+                    <span className="settings-version-value">
+                      {updateStatus.currentVersion || appVersion}
+                    </span>
+                  </Row>
+                  <Row
+                    title="Update channel"
+                    hint="Public GitHub Releases for keithsimkin/intray-email-client"
+                  >
+                    <button
+                      type="button"
+                      className="settings-section-btn"
+                      onClick={() => {
+                        void bridgeOpenReleases();
+                      }}
+                    >
+                      <ExternalLink size={14} strokeWidth={1.75} />
+                      Releases
+                    </button>
+                  </Row>
+                </Block>
+
+                <Block
+                  title="Updates"
+                  hint="Installed builds check GitHub for a newer release, download it in the background, then restart to install."
+                  action={
+                    updateStatus.state === "ready" ? (
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={updateBusy}
+                        onClick={() => {
+                          setUpdateBusy(true);
+                          void bridgeInstallUpdate().finally(() =>
+                            setUpdateBusy(false),
+                          );
+                        }}
+                      >
+                        <Download size={14} strokeWidth={1.75} />
+                        Restart and install
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={
+                          updateBusy ||
+                          updateStatus.state === "checking" ||
+                          updateStatus.state === "downloading" ||
+                          updateStatus.state === "available" ||
+                          updateStatus.state === "disabled"
+                        }
+                        onClick={() => {
+                          setUpdateBusy(true);
+                          void bridgeCheckForUpdates()
+                            .then((status) => setUpdateStatus(status))
+                            .finally(() => setUpdateBusy(false));
+                        }}
+                      >
+                        <RefreshCw size={14} strokeWidth={1.75} />
+                        Check for updates
+                      </button>
+                    )
+                  }
+                >
+                  <p className="settings-inline-note">
+                    {updateStatusCopy(updateStatus)}
+                  </p>
+                  {typeof updateStatus.downloadPercent === "number" &&
+                    (updateStatus.state === "downloading" ||
+                      updateStatus.state === "available") && (
+                      <div
+                        className="settings-update-progress"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={updateStatus.downloadPercent}
+                        aria-label="Update download progress"
+                      >
+                        <div
+                          className="settings-update-progress-bar"
+                          style={{
+                            width: `${Math.max(2, updateStatus.downloadPercent)}%`,
+                          }}
+                        />
+                      </div>
+                    )}
                 </Block>
               </>
             )}

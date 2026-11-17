@@ -14,6 +14,8 @@ export type AccountDto = {
   name: string;
   email: string;
   color: string;
+  /** Profile photo URL when known (Google picture, Gravatar, …). */
+  avatarUrl?: string;
   unread: number;
   provider: ProviderId;
   /** True when credentials are missing or sync/auth has failed. */
@@ -30,6 +32,7 @@ export type ThreadMessageDto = {
   from: string;
   initials: string;
   avatarColor: string;
+  avatarUrl?: string;
   email: string;
   time: string;
   to?: RecipientDto[];
@@ -46,6 +49,7 @@ export type MessageDto = {
   from: string;
   initials: string;
   avatarColor: string;
+  avatarUrl?: string;
   email: string;
   subject: string;
   preview: string;
@@ -74,6 +78,19 @@ export type MailListResult = {
   total: number;
 };
 
+export type FolderCountEntry = {
+  total: number;
+  unread: number;
+};
+
+/** Sidebar badge data — totals + unread, keyed by folder id or `label:<id>`. */
+export type MailFolderCounts = {
+  folders: Record<string, FolderCountEntry>;
+  labels: Record<string, FolderCountEntry>;
+  /** Unread inbox across the scoped account(s) — drives Unified / rail badges. */
+  inboxUnread: number;
+};
+
 export type MailMutateAction =
   | "archive"
   | "trash"
@@ -95,6 +112,8 @@ export type DesktopNotifyPayload = {
   body: string;
   silent?: boolean;
   messageId?: string;
+  /** Folder to open when the toast is clicked (e.g. sent for read receipts) */
+  folderId?: string;
 };
 
 export type BadgePayload = {
@@ -119,6 +138,7 @@ export type ContactDto = {
   email: string;
   name: string;
   color: string;
+  avatarUrl?: string;
 };
 
 export type AiProviderId =
@@ -255,4 +275,38 @@ export type ReconnectAccountInput = {
   password?: string;
   /** Force Google browser sign-in even when IMAP settings exist. */
   mode?: "imap" | "oauth";
+};
+
+/** Update local account appearance — no re-auth required. */
+export type UpdateAccountInput = {
+  accountId: string;
+  /** Display name shown in the sidebar and compose From. */
+  name?: string;
+  /** Short initials on the account avatar (1–3 chars). */
+  label?: string;
+  /** Accent color for the account chip (`#rrggbb`). */
+  color?: string;
+};
+
+/** GitHub Releases auto-update status (electron-updater). */
+export type AppUpdateState =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "ready"
+  | "error"
+  | "disabled";
+
+export type AppUpdateStatus = {
+  state: AppUpdateState;
+  currentVersion: string;
+  packaged: boolean;
+  availableVersion?: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  downloadPercent?: number;
+  error?: string;
+  detail?: string;
 };

@@ -57,6 +57,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
   - [AI providers](#ai-providers)
   - [MCP server](#mcp-server)
   - [Build a Windows installer](#build-a-windows-installer)
+  - [Auto-updates (GitHub Releases)](#auto-updates-github-releases)
 - [Marketing site](#marketing-site)
 - [Scripts reference](#scripts-reference)
 - [Architecture](#architecture)
@@ -298,6 +299,20 @@ The installer is an assisted NSIS setup: current user or all users, a chosen fol
 
 App id: `app.intray.desktop` · Product name: **Intray**.
 
+### Auto-updates (GitHub Releases)
+
+Installed builds use [`electron-updater`](https://www.electron.build/auto-update) to poll [GitHub Releases](https://github.com/keithsimkin/intray-email-client/releases). On launch they check for a newer version, download it in the background, then prompt to restart (also under **Settings → About**). Dev / `electron-vite` sessions skip the updater.
+
+`bun run pack` / `pack:desktop` still use `--publish never` so local builds never upload. Publishing a release (needs a `GH_TOKEN` with `repo` scope):
+
+```powershell
+# bump apps/desktop/package.json version first
+cd apps/desktop
+bun run release
+```
+
+That uploads the NSIS installer plus `latest.yml` (required by the updater). Manual uploads must include both artifacts on the same release.
+
 ---
 
 ## Marketing site
@@ -334,6 +349,8 @@ From the **repo root** (`package.json`):
 | `bun run build:native` | Build the Rust `@intray/native` napi addon |
 | `bun run build:desktop` | Build native + desktop renderer/main bundles |
 | `bun run build:web` | Production build of the marketing site |
+| `bun run pack:desktop` | Build native + NSIS installer (`--publish never`) |
+| `bun run release:desktop` | Build + publish installer to GitHub Releases |
 
 Desktop-only (`apps/desktop`):
 
@@ -342,7 +359,8 @@ Desktop-only (`apps/desktop`):
 | `bun run dev` | `electron-vite dev` |
 | `bun run build` | `electron-vite build` |
 | `bun run preview` | Preview the built app |
-| `bun run pack` | Build + assisted NSIS Windows installer |
+| `bun run pack` | Build + assisted NSIS Windows installer (no upload) |
+| `bun run release` | Build + publish to GitHub Releases (`GH_TOKEN` required) |
 
 ---
 

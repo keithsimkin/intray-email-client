@@ -60,6 +60,8 @@ export type AccountRow = {
   name: string;
   label: string;
   color: string;
+  /** HTTPS profile photo URL, or "" if resolved with none. */
+  avatar_url: string | null;
   unread: number;
   created_at: string;
   updated_at: string;
@@ -113,6 +115,8 @@ export type ContactRow = {
   email: string;
   name: string;
   color: string;
+  /** HTTPS profile photo URL, or "" if resolved with none. */
+  avatar_url: string | null;
   last_seen_ms: number;
   frequency: number;
 };
@@ -144,14 +148,15 @@ export function getAccountRow(id: string): AccountRow | undefined {
 
 export function upsertAccount(row: AccountRow): void {
   run(
-    `INSERT INTO accounts (id, provider, email, name, label, color, unread, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO accounts (id, provider, email, name, label, color, avatar_url, unread, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        provider=excluded.provider,
        email=excluded.email,
        name=excluded.name,
        label=excluded.label,
        color=excluded.color,
+       avatar_url=COALESCE(excluded.avatar_url, accounts.avatar_url),
        unread=excluded.unread,
        updated_at=excluded.updated_at`,
     [
@@ -161,10 +166,21 @@ export function upsertAccount(row: AccountRow): void {
       row.name,
       row.label,
       row.color,
+      row.avatar_url,
       row.unread,
       row.created_at,
       row.updated_at,
     ],
+  );
+}
+
+export function setAccountAvatarUrl(
+  accountId: string,
+  avatarUrl: string | null,
+): void {
+  run(
+    `UPDATE accounts SET avatar_url = ?, updated_at = ? WHERE id = ?`,
+    [avatarUrl, new Date().toISOString(), accountId],
   );
 }
 
@@ -672,34 +688,57 @@ export function listSecretKeys(): string[] {
   return all<{ key: string }>("SELECT key FROM secrets").map((r) => r.key);
 }
 
+export function getContact(email: string): ContactRow | undefined {
+  return get<ContactRow>("SELECT * FROM contacts WHERE email = ?", [
+    email.toLowerCase(),
+  ]);
+}
+
 export function upsertContact(row: ContactRow): void {
+  const email = row.email.toLowerCase();
   const existing = get<ContactRow>("SELECT * FROM contacts WHERE email = ?", [
-    row.email.toLowerCase(),
+    email,
   ]);
   if (existing) {
+    const avatar =
+      row.avatar_url !== undefined && row.avatar_url !== null
+        ? row.avatar_url
+        : existing.avatar_url;
     run(
-      `UPDATE contacts SET name = ?, color = ?, last_seen_ms = ?, frequency = ? WHERE email = ?`,
+      `UPDATE contacts SET name = ?, color = ?, avatar_url = ?, last_seen_ms = ?, frequency = ? WHERE email = ?`,
       [
         row.name || existing.name,
         row.color || existing.color,
+        avatar,
         Math.max(row.last_seen_ms, existing.last_seen_ms),
         existing.frequency + 1,
-        row.email.toLowerCase(),
+        email,
       ],
     );
     return;
   }
   run(
-    `INSERT INTO contacts (email, name, color, last_seen_ms, frequency)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO contacts (email, name, color, avatar_url, last_seen_ms, frequency)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     [
-      row.email.toLowerCase(),
+      email,
       row.name,
       row.color,
+      row.avatar_url,
       row.last_seen_ms,
       row.frequency,
     ],
   );
+}
+
+export function setContactAvatarUrl(
+  email: string,
+  avatarUrl: string | null,
+): void {
+  run(`UPDATE contacts SET avatar_url = ? WHERE email = ?`, [
+    avatarUrl,
+    email.toLowerCase(),
+  ]);
 }
 
 export function listContacts(limit = 200): ContactRow[] {
@@ -730,6 +769,52 @@ export function recountUnread(accountId: string): number {
     accountId,
   ]);
   return count;
+}
+
+/** Aggregate total + unread message counts per folder (and per UI label). */
+export function countMessagesByFolder(accountId?: string | "all"): {
+  folders: Array<{ folder: string; total: number; unread: number }>;
+  labels: Array<{ labelId: string; total: number; unread: number }>;
+} {
+  const params: unknown[] = [];
+  let accountClause = "";
+  if (accountId && accountId !== "all") {
+    accountClause = "WHERE account_id = ?";
+    params.push(accountId);
+  }
+
+  const folders = all<{ folder: string; total: number; unread: number }>(
+    `SELECT folder,
+            COUNT(*) AS total,
+            SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread
+     FROM messages
+     ${accountClause}
+     GROUP BY folder`,
+    params,
+  ).map((r) => ({
+    folder: r.folder,
+    total: Number(r.total) || 0,
+    unread: Number(r.unread) || 0,
+  }));
+
+  const labelWhere = accountClause
+    ? `${accountClause} AND ui_label_id IS NOT NULL`
+    : "WHERE ui_label_id IS NOT NULL";
+  const labels = all<{ labelId: string; total: number; unread: number }>(
+    `SELECT ui_label_id AS labelId,
+            COUNT(*) AS total,
+            SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread
+     FROM messages
+     ${labelWhere}
+     GROUP BY ui_label_id`,
+    params,
+  ).map((r) => ({
+    labelId: r.labelId,
+    total: Number(r.total) || 0,
+    unread: Number(r.unread) || 0,
+  }));
+
+  return { folders, labels };
 }
 
 export function deleteMessageByProviderId(

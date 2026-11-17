@@ -9,7 +9,8 @@
     "build:web": "bun --filter @intray/web build",
     "build:native": "bun --filter @intray/native build",
     "build:desktop": "bun run build:native && bun --filter @intray/desktop build",
-    "pack:desktop": "bun run build:native && bun --filter @intray/desktop pack"
+    "pack:desktop": "bun run build:native && bun --filter @intray/desktop pack",
+    "release:desktop": "bun run build:native && bun --filter @intray/desktop release"
   },
   "packageManager": "bun@1.3.2"
 }

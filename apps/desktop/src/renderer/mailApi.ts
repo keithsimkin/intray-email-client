@@ -8,12 +8,14 @@ import type {
   AiProviderId,
   AiProviderStatus,
   AiSecretId,
+  AppUpdateStatus,
   BadgePayload,
   ComposeDraft,
   ContactDto,
   DesktopNotifyPayload,
   LabelDto,
   LaunchAtLoginState,
+  MailFolderCounts,
   MailListQuery,
   MailListResult,
   MailMutateAction,
@@ -22,8 +24,16 @@ import type {
   QueuedSendResult,
   ReconnectAccountInput,
   SyncStatus,
+  UpdateAccountInput,
 } from "../shared/types";
 import type { Account, Message } from "./data/mock";
+
+const DISABLED_UPDATE: AppUpdateStatus = {
+  state: "disabled",
+  currentVersion: "0.0.0",
+  packaged: false,
+  detail: "Updates apply to installed builds only (not the web preview).",
+};
 
 export function hasIntrayBridge(): boolean {
   return typeof window !== "undefined" && Boolean(window.intray);
@@ -110,11 +120,47 @@ export async function bridgeRemoveAccount(accountId: string): Promise<boolean> {
   return window.intray.accounts.remove(accountId);
 }
 
+export async function bridgeUpdateAccount(
+  input: UpdateAccountInput,
+): Promise<AccountDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.update(input);
+}
+
+export async function bridgeChooseAccountAvatar(
+  accountId: string,
+): Promise<AccountDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.chooseAvatar(accountId);
+}
+
+export async function bridgeClearAccountAvatar(
+  accountId: string,
+): Promise<AccountDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Intray bridge unavailable (run inside Electron).");
+  }
+  return window.intray.accounts.clearAvatar(accountId);
+}
+
 export async function bridgeListMail(
   query: MailListQuery,
 ): Promise<MailListResult> {
   if (!hasIntrayBridge()) return { messages: [], nextCursor: null, total: 0 };
   return window.intray.mail.list(query);
+}
+
+export async function bridgeFolderCounts(
+  accountId?: string | "all",
+): Promise<MailFolderCounts> {
+  if (!hasIntrayBridge()) {
+    return { folders: {}, labels: {}, inboxUnread: 0 };
+  }
+  return window.intray.mail.folderCounts(accountId);
 }
 
 export async function bridgeGetMail(id: string): Promise<MessageDto | null> {
@@ -287,6 +333,44 @@ export async function bridgeSetChromeTheme(
   await window.intray.setChromeTheme(theme);
 }
 
+export async function bridgeAppInfo(): Promise<{
+  name: string;
+  version: string;
+  stack: string;
+}> {
+  if (!hasIntrayBridge()) {
+    return { name: "Intray", version: "0.0.0", stack: "preview" };
+  }
+  return window.intray.getAppInfo();
+}
+
+export async function bridgeUpdateStatus(): Promise<AppUpdateStatus> {
+  if (!hasIntrayBridge()) return DISABLED_UPDATE;
+  return window.intray.updates.status();
+}
+
+export async function bridgeCheckForUpdates(): Promise<AppUpdateStatus> {
+  if (!hasIntrayBridge()) return DISABLED_UPDATE;
+  return window.intray.updates.check();
+}
+
+export async function bridgeInstallUpdate(): Promise<boolean> {
+  if (!hasIntrayBridge()) return false;
+  return window.intray.updates.install();
+}
+
+export async function bridgeOpenReleases(): Promise<boolean> {
+  if (!hasIntrayBridge()) return false;
+  return window.intray.updates.openReleases();
+}
+
+export function bridgeOnUpdateStatus(
+  cb: (status: AppUpdateStatus) => void,
+): () => void {
+  if (!hasIntrayBridge()) return () => undefined;
+  return window.intray.updates.onStatus(cb);
+}
+
 export async function bridgeNotifyShow(
   payload: DesktopNotifyPayload,
 ): Promise<boolean> {
@@ -302,7 +386,7 @@ export async function bridgeSetBadge(
 }
 
 export function bridgeOnNotifyOpen(
-  cb: (payload: { messageId: string }) => void,
+  cb: (payload: { messageId: string; folderId?: string }) => void,
 ): () => void {
   if (!hasIntrayBridge()) return () => undefined;
   return window.intray.notify.onOpen(cb);
@@ -336,6 +420,13 @@ export function bridgeOnMailUpdated(
   return window.intray.mail.onUpdated(cb);
 }
 
+export function bridgeOnAvatarUpdated(
+  cb: (payload: { email: string; avatarUrl: string }) => void,
+): () => void {
+  if (!hasIntrayBridge()) return () => undefined;
+  return window.intray.avatars.onUpdated(cb);
+}
+
 export function accountDtoToUi(a: AccountDto): Account {
   return {
     id: a.id,
@@ -343,6 +434,7 @@ export function accountDtoToUi(a: AccountDto): Account {
     name: a.name,
     email: a.email,
     color: a.color,
+    avatarUrl: a.avatarUrl,
     unread: a.unread,
     provider: a.provider,
     loggedOut: a.loggedOut,
@@ -376,6 +468,7 @@ export function messageDtoToUi(m: MessageDto): Message {
     from: m.from,
     initials: m.initials,
     avatarColor: m.avatarColor,
+    avatarUrl: m.avatarUrl,
     email: m.email,
     subject: m.subject,
     preview: m.preview,
@@ -388,6 +481,9 @@ export function messageDtoToUi(m: MessageDto): Message {
     starred: Boolean(m.starred),
     linkCount: linkCount || undefined,
     attachmentCount: attachmentCount || undefined,
-    thread: m.thread,
+    thread: m.thread.map((t) => ({
+      ...t,
+      avatarUrl: t.avatarUrl,
+    })),
   };
 }
