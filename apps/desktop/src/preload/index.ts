@@ -14,6 +14,7 @@ import type {
   DesktopNotifyPayload,
   LabelDto,
   LaunchAtLoginState,
+  MailFolderCounts,
   MailListQuery,
   MailListResult,
   MailMutateAction,
@@ -21,9 +22,11 @@ import type {
   McpStatus,
   MessageDto,
   AccountDto,
+  AppUpdateStatus,
   QueuedSendResult,
   ReconnectAccountInput,
   SyncStatus,
+  UpdateAccountInput,
 } from "../shared/types";
 
 const api = {
@@ -47,15 +50,34 @@ const api = {
   setChromeTheme: (theme: "dark" | "light") =>
     ipcRenderer.invoke("app:setChromeTheme", theme) as Promise<boolean>,
 
+  updates: {
+    status: () =>
+      ipcRenderer.invoke("app:updateStatus") as Promise<AppUpdateStatus>,
+    check: () =>
+      ipcRenderer.invoke("app:checkForUpdates") as Promise<AppUpdateStatus>,
+    install: () =>
+      ipcRenderer.invoke("app:installUpdate") as Promise<boolean>,
+    openReleases: () =>
+      ipcRenderer.invoke("app:openReleases") as Promise<boolean>,
+    onStatus: (cb: (status: AppUpdateStatus) => void) => {
+      const listener = (
+        _: Electron.IpcRendererEvent,
+        payload: AppUpdateStatus,
+      ) => cb(payload);
+      ipcRenderer.on("app:updateStatus", listener);
+      return () => ipcRenderer.removeListener("app:updateStatus", listener);
+    },
+  },
+
   notify: {
     show: (payload: DesktopNotifyPayload) =>
       ipcRenderer.invoke("notify:show", payload) as Promise<boolean>,
     setBadge: (payload: BadgePayload) =>
       ipcRenderer.invoke("notify:setBadge", payload) as Promise<boolean>,
-    onOpen: (cb: (payload: { messageId: string }) => void) => {
+    onOpen: (cb: (payload: { messageId: string; folderId?: string }) => void) => {
       const listener = (
         _: Electron.IpcRendererEvent,
-        payload: { messageId: string },
+        payload: { messageId: string; folderId?: string },
       ) => cb(payload);
       ipcRenderer.on("notify:open", listener);
       return () => ipcRenderer.removeListener("notify:open", listener);
@@ -78,6 +100,18 @@ const api = {
       ipcRenderer.invoke("accounts:reconnect", input) as Promise<AccountDto>,
     remove: (accountId: string) =>
       ipcRenderer.invoke("accounts:remove", accountId) as Promise<boolean>,
+    update: (input: UpdateAccountInput) =>
+      ipcRenderer.invoke("accounts:update", input) as Promise<AccountDto>,
+    chooseAvatar: (accountId: string) =>
+      ipcRenderer.invoke(
+        "accounts:chooseAvatar",
+        accountId,
+      ) as Promise<AccountDto>,
+    clearAvatar: (accountId: string) =>
+      ipcRenderer.invoke(
+        "accounts:clearAvatar",
+        accountId,
+      ) as Promise<AccountDto>,
     oauthStatus: () =>
       ipcRenderer.invoke("accounts:oauthStatus") as Promise<{
         gmailConfigured: boolean;
@@ -87,6 +121,11 @@ const api = {
   mail: {
     list: (query: MailListQuery) =>
       ipcRenderer.invoke("mail:list", query) as Promise<MailListResult>,
+    folderCounts: (accountId?: string | "all") =>
+      ipcRenderer.invoke(
+        "mail:folderCounts",
+        accountId,
+      ) as Promise<MailFolderCounts>,
     get: (id: string) =>
       ipcRenderer.invoke("mail:get", id) as Promise<MessageDto | null>,
     mutate: (
@@ -185,6 +224,17 @@ const api = {
         cb(status);
       ipcRenderer.on("sync:progress", listener);
       return () => ipcRenderer.removeListener("sync:progress", listener);
+    },
+  },
+
+  avatars: {
+    onUpdated: (cb: (payload: { email: string; avatarUrl: string }) => void) => {
+      const listener = (
+        _: Electron.IpcRendererEvent,
+        payload: { email: string; avatarUrl: string },
+      ) => cb(payload);
+      ipcRenderer.on("avatars:updated", listener);
+      return () => ipcRenderer.removeListener("avatars:updated", listener);
     },
   },
 };

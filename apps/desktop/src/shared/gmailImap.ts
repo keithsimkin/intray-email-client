@@ -144,6 +144,33 @@ export function explainGmailImapError(error: unknown): string | null {
   return GMAIL_AUTH_REJECTED_MESSAGE;
 }
 
+/**
+ * Non-Gmail IMAP/SMTP auth failures → actionable copy. Returns null for
+ * unrelated errors (DNS, timeouts, TLS).
+ */
+export function explainImapAuthError(error: unknown): string | null {
+  const text = errorText(error);
+  const lower = text.toLowerCase();
+  if (
+    /too many simultaneous connections|maximum number of connections|connection limit|too many login/.test(
+      lower,
+    )
+  ) {
+    return "This mailbox already has too many open sessions. Close it in other mail apps, wait a moment, then try again.";
+  }
+  if (
+    /authenticationfailed|authentication failed|invalid credentials|username and password not accepted|\b535\b|\beauth\b|login failed|invalid user name or password|invalid username or password/.test(
+      lower,
+    )
+  ) {
+    return "That app password was rejected. Check for typos, generate a fresh app password for this account, and try again.";
+  }
+  if (/log in via your web browser|please log in via your web browser/.test(lower)) {
+    return "The provider asked for a browser login first. Sign in on the web, approve any security prompt, then try again here.";
+  }
+  return null;
+}
+
 function normToken(value: string): string {
   return value.trim().toLowerCase().replace(/^\\+/, "");
 }

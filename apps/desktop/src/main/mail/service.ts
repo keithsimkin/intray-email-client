@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { BrowserWindow } from "electron";
+import { BrowserWindow, dialog, nativeImage } from "electron";
+import {
+  applyAccountAvatar,
+  clearCustomAccountAvatar,
+  lookupAvatarUrl,
+  noteSender,
+  setCustomAccountAvatar,
+} from "../avatars";
 import {
   deleteAccount,
   deleteMessageById,
@@ -7,6 +14,7 @@ import {
   getBody,
   getLabel,
   getMessageRow,
+  countMessagesByFolder,
   listAccountRows,
   listContacts,
   listLabels,
@@ -57,6 +65,7 @@ import {
   runGmailOAuth,
 } from "../providers/gmail/oauth";
 import {
+  closeImapConnections,
   fetchMessageSource,
   findSentMessage,
   parsedToBodies,
@@ -86,6 +95,7 @@ import type {
   ComposeDraft,
   ContactDto,
   LabelDto,
+  MailFolderCounts,
   MailListQuery,
   MailListResult,
   MailMutateAction,
@@ -94,12 +104,20 @@ import type {
   ReconnectAccountInput,
   RecipientDto,
   ThreadMessageDto,
+  UpdateAccountInput,
 } from "../../shared/types";
 
 /** Parallel body downloads once the opened message is on screen. */
 const BODY_FETCH_CONCURRENCY = 4;
+/** Don't leave the reader stuck on a hung provider call for minutes. */
+const BODY_FETCH_TIMEOUT_MS = 45_000;
+/** Warm the first page of the inbox so open is often a cache hit. */
+const BODY_PREFETCH_HEADS = 12;
+const BODY_PREFETCH_CONCURRENCY = 2;
 
 const bodyFetches = new Map<string, Promise<void>>();
+/** Background list warm-up — must not block interactive opens via dedup. */
+const bodyPrefetches = new Map<string, Promise<void>>();
 const threadBackfills = new Map<string, Promise<void>>();
 /** headIds waiting on a shared thread backfill so each gets a final broadcast. */
 const threadBackfillHeads = new Map<string, Set<string>>();
@@ -108,6 +126,29 @@ function broadcastMailUpdated(message: MessageDto): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("mail:updated", { message });
   }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 async function mapLimit<T>(
@@ -131,54 +172,104 @@ async function mapLimit<T>(
   await Promise.all(workers);
 }
 
+async function downloadBodyForRow(
+  row: MessageRow,
+  account: AccountRow,
+  opts?: { background?: boolean },
+): Promise<void> {
+  if (!usesImap(account)) {
+    const full = await getMessageFull(row.account_id, row.provider_id);
+    if (getBody(row.id)) return;
+    upsertMessage(gmailMessageToRow(row.account_id, full));
+    const bodies = bodiesFromGmail(full);
+    upsertBody({
+      message_id: row.id,
+      text_plain: bodies.text ?? null,
+      text_html: bodies.html ?? null,
+      fetched_at: new Date().toISOString(),
+    });
+    if (bodies.text) updateFtsBody(row.id, bodies.text);
+    return;
+  }
+
+  const meta = mailboxMetaFromRow(row);
+  if (!meta) return;
+  const parsed = await fetchMessageSource(
+    row.account_id,
+    meta.mailbox,
+    meta.uid,
+    { lane: opts?.background ? "bulk" : "interactive" },
+  );
+  if (getBody(row.id)) return;
+  const bodies = parsedToBodies(parsed);
+  upsertBody({
+    message_id: row.id,
+    text_plain: bodies.text,
+    text_html: bodies.html,
+    fetched_at: new Date().toISOString(),
+  });
+  if (bodies.text) updateFtsBody(row.id, bodies.text);
+}
+
 async function ensureBodyForRow(
   row: MessageRow,
   account: AccountRow | undefined,
+  opts?: { background?: boolean },
 ): Promise<void> {
   if (getBody(row.id)) return;
-  const existing = bodyFetches.get(row.id);
-  if (existing) return existing;
+  const background = Boolean(opts?.background);
+  const bucket = background ? bodyPrefetches : bodyFetches;
+  // Background may reuse an in-flight interactive fetch; interactive never waits
+  // on prefetch (prefetch shares the bulk lane with sync and can stall opens).
+  if (background) {
+    const existing = bodyPrefetches.get(row.id) ?? bodyFetches.get(row.id);
+    if (existing) return existing;
+  } else {
+    const existing = bodyFetches.get(row.id);
+    if (existing) return existing;
+  }
 
   const task = (async () => {
     if (!account) return;
     try {
-      if (!usesImap(account)) {
-        const full = await getMessageFull(row.account_id, row.provider_id);
-        upsertMessage(gmailMessageToRow(row.account_id, full));
-        const bodies = bodiesFromGmail(full);
-        upsertBody({
-          message_id: row.id,
-          text_plain: bodies.text ?? null,
-          text_html: bodies.html ?? null,
-          fetched_at: new Date().toISOString(),
-        });
-        if (bodies.text) updateFtsBody(row.id, bodies.text);
-      } else {
-        const meta = mailboxMetaFromRow(row);
-        if (!meta) return;
-        const parsed = await fetchMessageSource(
-          row.account_id,
-          meta.mailbox,
-          meta.uid,
-        );
-        const bodies = parsedToBodies(parsed);
-        upsertBody({
-          message_id: row.id,
-          text_plain: bodies.text,
-          text_html: bodies.html,
-          fetched_at: new Date().toISOString(),
-        });
-        if (bodies.text) updateFtsBody(row.id, bodies.text);
-      }
+      await withTimeout(
+        downloadBodyForRow(row, account, opts),
+        BODY_FETCH_TIMEOUT_MS,
+        "Body fetch",
+      );
     } catch {
-      /* leave placeholder */
+      // Unstick a wedged IMAP socket so the next open can retry.
+      if (usesImap(account)) {
+        closeImapConnections(
+          row.account_id,
+          background ? "bulk" : "interactive",
+        );
+      }
+      /* leave placeholder — UI can re-select to retry */
     }
   })().finally(() => {
-    bodyFetches.delete(row.id);
+    if (bucket.get(row.id) === task) bucket.delete(row.id);
   });
 
-  bodyFetches.set(row.id, task);
+  bucket.set(row.id, task);
   return task;
+}
+
+/** Background-warm newest bodies for list heads (fire-and-forget). */
+export function prefetchMailBodies(messageIds: string[]): void {
+  const ids = [...new Set(messageIds)].slice(0, BODY_PREFETCH_HEADS);
+  if (!ids.length) return;
+  void mapLimit(ids, BODY_PREFETCH_CONCURRENCY, async (id) => {
+    const head = getMessageRow(id);
+    if (!head) return;
+    const thread = listThreadMessages(head.account_id, head.thread_id);
+    const primary = thread[thread.length - 1] ?? head;
+    if (getBody(primary.id)) return;
+    const account = getAccountRow(primary.account_id);
+    await ensureBodyForRow(primary, account, { background: true });
+    const dto = buildMessageDto(head.id);
+    if (dto) broadcastMailUpdated(dto);
+  }).catch(() => undefined);
 }
 
 function buildMessageDto(messageId: string): MessageDto | null {
@@ -257,12 +348,15 @@ function accountToDto(row: AccountRow): AccountDto {
   const creds = loadCredentials(row.id);
   const sync = getSyncState(row.id);
   const loggedOut = !creds || isAuthFailure(sync?.error);
+  const avatarUrl =
+    row.avatar_url && row.avatar_url.trim() ? row.avatar_url.trim() : undefined;
   return {
     id: row.id,
     label: row.label,
     name: row.name,
     email: row.email,
     color: row.color,
+    avatarUrl,
     unread: row.unread,
     provider: row.provider as AccountDto["provider"],
     loggedOut,
@@ -288,6 +382,7 @@ function rowToThreadMessage(
     from: row.from_name,
     initials: initialsFrom(row.from_name, row.from_email),
     avatarColor: avatarColorFor(row.from_email),
+    avatarUrl: lookupAvatarUrl(row.from_email),
     email: row.from_email,
     time: formatRelativeTime(row.date_ms),
     to: parseRecipients(row.to_json),
@@ -310,6 +405,7 @@ function rowsToMessageDto(
     from: head.from_name,
     initials: initialsFrom(head.from_name, head.from_email),
     avatarColor: avatarColorFor(head.from_email),
+    avatarUrl: lookupAvatarUrl(head.from_email),
     email: head.from_email,
     subject: head.subject,
     preview: head.snippet,
@@ -390,6 +486,8 @@ export function listContactDtos(): ContactDto[] {
     email: c.email,
     name: c.name,
     color: c.color,
+    avatarUrl:
+      c.avatar_url && c.avatar_url.trim() ? c.avatar_url.trim() : undefined,
   }));
 }
 
@@ -400,9 +498,11 @@ function touchContactsFromDraft(draft: ComposeDraft): void {
       email,
       name: email.split("@")[0] ?? email,
       color: avatarColorFor(email),
+      avatar_url: null,
       last_seen_ms: now,
       frequency: 1,
     });
+    noteSender(email);
   }
 }
 
@@ -434,12 +534,17 @@ export async function addGmailAccount(): Promise<AccountDto> {
     name: profile.name,
     label,
     color: "#ea4335",
+    avatar_url: existing?.avatar_url ?? null,
     unread: existing?.unread ?? 0,
     created_at: existing?.created_at ?? now,
     updated_at: now,
   };
   upsertAccount(row);
   await persistGmailTokens(id, tokens);
+  const avatarUrl = await applyAccountAvatar(id, profile.picture).catch(
+    () => undefined,
+  );
+  if (avatarUrl) row.avatar_url = avatarUrl;
   upsertSyncState({
     account_id: id,
     history_id: null,
@@ -451,7 +556,7 @@ export async function addGmailAccount(): Promise<AccountDto> {
   });
   startAccountPolling(id);
   void syncAccount(id).catch(() => undefined);
-  return accountToDto(row);
+  return accountToDto({ ...row, avatar_url: avatarUrl ?? row.avatar_url });
 }
 
 function assertHost(value: string, label: string): string {
@@ -557,12 +662,15 @@ export async function addImapAccount(
     name: pretty,
     label: initialsFrom(pretty, email),
     color: preset?.color ?? "#8a8f98",
+    avatar_url: existing?.avatar_url ?? null,
     unread: existing?.unread ?? 0,
     created_at: existing?.created_at ?? now,
     updated_at: now,
   };
   upsertAccount(row);
   saveCredentials(id, creds);
+  const avatarUrl = await applyAccountAvatar(id).catch(() => undefined);
+  if (avatarUrl) row.avatar_url = avatarUrl;
   upsertSyncState({
     account_id: id,
     history_id: null,
@@ -574,7 +682,7 @@ export async function addImapAccount(
   });
   startAccountPolling(id);
   void syncAccount(id).catch(() => undefined);
-  return accountToDto(row);
+  return accountToDto({ ...row, avatar_url: avatarUrl ?? row.avatar_url });
 }
 
 function clearAuthErrorAndResume(accountId: string): void {
@@ -641,6 +749,7 @@ export async function reconnectAccount(
     await persistGmailTokens(row.id, tokens);
     const now = new Date().toISOString();
     upsertAccount({ ...row, name: profile.name || row.name, updated_at: now });
+    await applyAccountAvatar(row.id, profile.picture).catch(() => undefined);
     clearAuthErrorAndResume(row.id);
     return accountToDto(getAccountRow(row.id) ?? row);
   }
@@ -678,6 +787,7 @@ export async function reconnectAccount(
   });
 
   await verifyImapLogin(creds);
+  closeImapConnections(row.id);
   saveCredentials(row.id, creds);
   upsertAccount({ ...row, updated_at: new Date().toISOString() });
   clearAuthErrorAndResume(row.id);
@@ -686,7 +796,108 @@ export async function reconnectAccount(
 
 export function removeAccount(accountId: string): void {
   stopAccountPolling(accountId);
+  closeImapConnections(accountId);
   deleteAccount(accountId);
+}
+
+const ACCOUNT_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** Patch display name / label / color without touching credentials. */
+export function updateAccount(input: UpdateAccountInput): AccountDto {
+  const row = getAccountRow(input.accountId);
+  if (!row) throw new Error("Account not found.");
+
+  const name =
+    input.name !== undefined ? input.name.trim() : row.name;
+  if (!name) throw new Error("Display name can’t be empty.");
+
+  let color = row.color;
+  if (input.color !== undefined) {
+    const next = input.color.trim();
+    if (!ACCOUNT_COLOR_RE.test(next)) {
+      throw new Error("Pick a hex color like #ea4335.");
+    }
+    color = next.toLowerCase();
+  }
+
+  let label = row.label;
+  if (input.label !== undefined) {
+    const raw = input.label.trim().replace(/\s+/g, "");
+    label = (raw || initialsFrom(name, row.email)).slice(0, 3).toUpperCase();
+  } else if (input.name !== undefined) {
+    label = initialsFrom(name, row.email);
+  }
+
+  const next: AccountRow = {
+    ...row,
+    name,
+    label,
+    color,
+    updated_at: new Date().toISOString(),
+  };
+  upsertAccount(next);
+  return accountToDto(next);
+}
+
+function encodeAccountAvatarDataUrl(filePath: string): string {
+  const img = nativeImage.createFromPath(filePath);
+  if (img.isEmpty()) {
+    throw new Error("That file doesn’t look like a usable image.");
+  }
+  const { width, height } = img.getSize();
+  if (width < 1 || height < 1) {
+    throw new Error("That file doesn’t look like a usable image.");
+  }
+  const max = 256;
+  const scale = Math.min(max / width, max / height, 1);
+  const resized =
+    scale < 1
+      ? img.resize({
+          width: Math.max(1, Math.round(width * scale)),
+          height: Math.max(1, Math.round(height * scale)),
+          quality: "best",
+        })
+      : img;
+  // JPEG keeps SQLite rows smaller than PNG for photos.
+  const buf = resized.toJPEG(84);
+  return `data:image/jpeg;base64,${buf.toString("base64")}`;
+}
+
+/** Open a file picker and set a custom profile photo for this account. */
+export async function chooseAccountAvatar(
+  accountId: string,
+): Promise<AccountDto> {
+  const row = getAccountRow(accountId);
+  if (!row) throw new Error("Account not found.");
+
+  const result = await dialog.showOpenDialog({
+    title: "Choose profile photo",
+    buttonLabel: "Use photo",
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Images",
+        extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+      },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) {
+    return accountToDto(row);
+  }
+
+  const dataUrl = encodeAccountAvatarDataUrl(result.filePaths[0]);
+  setCustomAccountAvatar(accountId, dataUrl);
+  return accountToDto(getAccountRow(accountId) ?? row);
+}
+
+/** Remove a custom photo (falls back to Google / Gravatar / initials). */
+export async function clearAccountAvatar(
+  accountId: string,
+): Promise<AccountDto> {
+  const row = getAccountRow(accountId);
+  if (!row) throw new Error("Account not found.");
+  await clearCustomAccountAvatar(accountId);
+  return accountToDto(getAccountRow(accountId) ?? { ...row, avatar_url: null });
 }
 
 export function listMail(query: MailListQuery): MailListResult {
@@ -748,7 +959,37 @@ export function listMail(query: MailListQuery): MailListResult {
   const nextCursor =
     heads.length > 0 ? String(heads[heads.length - 1].date_ms) : null;
 
+  // Warm bodies for the visible page so open rarely waits on the provider.
+  const missingHeads = heads
+    .filter((h) => {
+      const thread = listThreadMessages(h.account_id, h.thread_id);
+      const primary = thread[thread.length - 1] ?? h;
+      return !getBody(primary.id);
+    })
+    .map((h) => h.id);
+  if (missingHeads.length) prefetchMailBodies(missingHeads);
+
   return { messages, nextCursor, total };
+}
+
+/** Sidebar counters — not derived from the paged list (which is capped). */
+export function getFolderCounts(
+  accountId?: string | "all",
+): MailFolderCounts {
+  const { folders, labels } = countMessagesByFolder(accountId);
+  const folderMap: MailFolderCounts["folders"] = {};
+  for (const row of folders) {
+    folderMap[row.folder] = { total: row.total, unread: row.unread };
+  }
+  const labelMap: MailFolderCounts["labels"] = {};
+  for (const row of labels) {
+    labelMap[row.labelId] = { total: row.total, unread: row.unread };
+  }
+  return {
+    folders: folderMap,
+    labels: labelMap,
+    inboxUnread: folderMap.inbox?.unread ?? 0,
+  };
 }
 
 /**

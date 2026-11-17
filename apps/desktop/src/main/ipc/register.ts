@@ -11,6 +11,7 @@ import type {
   MailMutateAction,
   MailMutateOptions,
   ReconnectAccountInput,
+  UpdateAccountInput,
 } from "../../shared/types";
 import { completeAi, detectProviders, listProviderModels } from "../ai/bridge";
 import {
@@ -28,6 +29,7 @@ import {
   addImapAccount,
   createLabelDto,
   getAccountReconnectInfo,
+  getFolderCounts,
   getMail,
   hasRealAccounts,
   listAccounts,
@@ -40,6 +42,9 @@ import {
   removeAccount,
   sendMail,
   triggerSync,
+  chooseAccountAvatar,
+  clearAccountAvatar,
+  updateAccount,
 } from "../mail/service";
 import {
   cancelQueuedSend,
@@ -58,6 +63,12 @@ import {
 } from "../mcp/server";
 import { rotateMcpToken } from "../mcp/auth";
 import { refreshTray } from "../tray";
+import {
+  checkForAppUpdates,
+  getUpdateStatus,
+  openReleasesPage,
+  quitAndInstallUpdate,
+} from "../updater";
 
 function isChromeTheme(value: unknown): value is ChromeTheme {
   return value === "dark" || value === "light";
@@ -113,6 +124,11 @@ export function registerIpc(): void {
     return true;
   });
 
+  ipcMain.handle("app:updateStatus", () => getUpdateStatus());
+  ipcMain.handle("app:checkForUpdates", () => checkForAppUpdates());
+  ipcMain.handle("app:installUpdate", () => quitAndInstallUpdate());
+  ipcMain.handle("app:openReleases", () => openReleasesPage());
+
   const mainFromEvent = (e: Electron.IpcMainInvokeEvent) =>
     BrowserWindow.fromWebContents(e.sender);
 
@@ -148,9 +164,25 @@ export function registerIpc(): void {
     removeAccount(assertCanonicalId(accountId));
     return true;
   });
+  ipcMain.handle("accounts:update", (_e, input: UpdateAccountInput) =>
+    updateAccount({
+      ...input,
+      accountId: assertCanonicalId(input.accountId),
+    }),
+  );
+  ipcMain.handle("accounts:chooseAvatar", (_e, accountId: string) =>
+    chooseAccountAvatar(assertCanonicalId(accountId)),
+  );
+  ipcMain.handle("accounts:clearAvatar", (_e, accountId: string) =>
+    clearAccountAvatar(assertCanonicalId(accountId)),
+  );
   ipcMain.handle("accounts:oauthStatus", () => oauthStatus());
 
   ipcMain.handle("mail:list", (_e, query: MailListQuery) => listMail(query));
+  ipcMain.handle(
+    "mail:folderCounts",
+    (_e, accountId?: string | "all") => getFolderCounts(accountId),
+  );
   ipcMain.handle("mail:get", (_e, id: string) => getMail(assertCanonicalId(id)));
   ipcMain.handle(
     "mail:mutate",

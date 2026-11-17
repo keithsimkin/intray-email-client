@@ -3,7 +3,7 @@ import {
   saveCredentials,
   type GmailTokens,
 } from "../../crypto/credentials";
-import { refreshGmailTokens } from "./oauth";
+import { fetchGmailProfile, refreshGmailTokens } from "./oauth";
 
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -122,6 +122,15 @@ export async function persistGmailTokens(
   tokens: GmailTokens,
 ): Promise<void> {
   saveCredentials(accountId, { provider: "gmail", tokens });
+}
+
+/** Google account profile photo URL (userinfo.picture), when available. */
+export async function fetchGmailUserPicture(
+  accountId: string,
+): Promise<string | undefined> {
+  const token = await accessTokenFor(accountId);
+  const profile = await fetchGmailProfile(token);
+  return profile.picture;
 }
 
 export async function listMessageIds(

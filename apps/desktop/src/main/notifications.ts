@@ -13,6 +13,8 @@ export type DesktopNotifyPayload = {
   silent?: boolean;
   /** Open this message when the toast is clicked */
   messageId?: string;
+  /** Folder to select when the toast is clicked */
+  folderId?: string;
 };
 
 export type BadgePayload = {
@@ -88,7 +90,10 @@ export function showDesktopNotification(
       win.show();
       win.focus();
       if (payload.messageId) {
-        win.webContents.send("notify:open", { messageId: payload.messageId });
+        win.webContents.send("notify:open", {
+          messageId: payload.messageId,
+          folderId: payload.folderId,
+        });
       }
     }
   });

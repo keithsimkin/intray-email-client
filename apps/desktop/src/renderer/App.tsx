@@ -25,6 +25,7 @@ import {
   Forward,
   Inbox,
   Calendar,
+  Image as ImageIcon,
   ImageOff,
   Languages,
   Layers,
@@ -115,13 +116,14 @@ import {
   aiWriteReply,
 } from "./aiClient";
 import {
+  getTrackingForMessage,
   registerTrackedSend,
+  scheduleDemoOpen,
   trackingSummary,
 } from "./openTracking";
 import {
   accentColors,
   aiBridgeMeta,
-  allowRemoteImagesForSender,
   loadPreferences,
   resolvedTheme,
   savePreferences,
@@ -140,11 +142,13 @@ import {
   bridgeAccounts,
   bridgeCancelSend,
   bridgeCreateLabel,
+  bridgeFolderCounts,
   bridgeGetMail,
   bridgeHasRealAccounts,
   bridgeListLabels,
   bridgeListMail,
   bridgeMutateMail,
+  bridgeOnAvatarUpdated,
   bridgeOnNotifyOpen,
   bridgeOnSendFlushed,
   bridgeOnSyncProgress,
@@ -157,8 +161,13 @@ import {
   isAuthFailureMessage,
   messageDtoToUi,
 } from "./mailApi";
-import { notifyMeeting, syncTaskbarBadge } from "./notify";
-import type { SyncStatus } from "../shared/types";
+import {
+  notifyMailOpened,
+  notifyMeeting,
+  notifySnoozeReturn,
+  syncTaskbarBadge,
+} from "./notify";
+import type { MailFolderCounts, SyncStatus } from "../shared/types";
 
 type MailAction =
   | "reply"
@@ -393,7 +402,12 @@ function PersonAvatar({
   avatarUrl?: string;
   className?: string;
 }) {
-  if (avatarUrl) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(false);
+  }, [avatarUrl]);
+
+  if (avatarUrl && !broken) {
     return (
       <img
         className={`${className} photo`}
@@ -401,6 +415,7 @@ function PersonAvatar({
         alt=""
         title={name}
         draggable={false}
+        onError={() => setBroken(true)}
       />
     );
   }
@@ -576,13 +591,27 @@ function saveCustomFolders(names: string[]) {
 
 type AppNotification = {
   id: string;
-  kind: "mail" | "meeting" | "ai" | "sync";
+  kind: "mail" | "snooze" | "opened" | "meeting" | "ai" | "sync";
   title: string;
   body: string;
   time: string;
   unread?: boolean;
   messageId?: string;
+  folderId?: string;
 };
+
+function notifTimeLabel(d = new Date()): string {
+  return d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function recipientLabel(message: Message): string | undefined {
+  const to = message.thread[0]?.to?.[0];
+  if (!to) return undefined;
+  return to.name || to.email;
+}
 
 function NotificationsMenu({
   items,
@@ -630,7 +659,9 @@ function NotificationsMenu({
       </div>
       <div className="notif-menu-list">
         {items.length === 0 ? (
-          <div className="notif-empty">No notifications yet</div>
+          <div className="notif-empty">
+            No reminders yet — snooze wakes and read receipts show up here
+          </div>
         ) : (
           items.map((n) => (
             <button
@@ -640,10 +671,14 @@ function NotificationsMenu({
               onClick={() => onOpen(n)}
             >
               <span className={`notif-kind ${n.kind}`} aria-hidden>
-                {n.kind === "mail" ? (
+                {n.kind === "snooze" ? (
+                  <Clock size={14} strokeWidth={1.75} />
+                ) : n.kind === "opened" ? (
+                  <MailOpen size={14} strokeWidth={1.75} />
+                ) : n.kind === "mail" ? (
                   <Mail size={14} strokeWidth={1.75} />
                 ) : n.kind === "meeting" ? (
-                  <Clock size={14} strokeWidth={1.75} />
+                  <Calendar size={14} strokeWidth={1.75} />
                 ) : n.kind === "ai" ? (
                   <Sparkles size={14} strokeWidth={1.75} />
                 ) : (
@@ -788,21 +823,18 @@ function AccountRail({
               title={title}
               aria-label={title}
             >
-              {a.id !== UNIFIED_ID && a.avatarUrl ? (
-                <img
-                  className="account-face photo"
-                  src={a.avatarUrl}
-                  alt=""
-                  draggable={false}
-                />
-              ) : (
+              {a.id === UNIFIED_ID ? (
                 <span className="account-face" style={{ background: a.color }}>
-                  {a.id === UNIFIED_ID ? (
-                    <Layers size={14} strokeWidth={2.25} color="#0a0a0b" />
-                  ) : (
-                    a.label.slice(0, 2)
-                  )}
+                  <Layers size={14} strokeWidth={2.25} color="#0a0a0b" />
                 </span>
+              ) : (
+                <PersonAvatar
+                  name={a.name}
+                  initials={a.label.slice(0, 2)}
+                  color={a.color}
+                  avatarUrl={a.avatarUrl}
+                  className="account-face"
+                />
               )}
               {loggedOut ? (
                 <span className="account-status logged-out" aria-hidden>
@@ -963,20 +995,14 @@ function Sidebar({
           <div className="profile-avatar">
             <Layers size={14} strokeWidth={2.25} />
           </div>
-        ) : account.avatarUrl ? (
-          <img
-            className="profile-avatar photo"
-            src={account.avatarUrl}
-            alt=""
-            draggable={false}
-          />
         ) : (
-          <div
+          <PersonAvatar
+            name={account.name}
+            initials={account.label}
+            color={account.color}
+            avatarUrl={account.avatarUrl}
             className="profile-avatar"
-            style={{ background: account.color, color: "#0a0a0b" }}
-          >
-            {account.label}
-          </div>
+          />
         )}
         <div className="profile-copy">
           <div className="profile-name">{account.name}</div>
@@ -2175,14 +2201,9 @@ function MessageList({
 /** True when HTML references remote http(s) or protocol-relative images. */
 function htmlHasRemoteImages(html: string): boolean {
   if (!html) return false;
-  // src / srcset / background / url(...) with http(s) or //host
   return /(?:src|srcset|background)\s*=\s*["']?\s*(?:https?:)?\/\//i.test(
     html,
   ) || /url\(\s*['"]?(?:https?:)?\/\//i.test(html);
-}
-
-function isRemoteImageUrl(src: string): boolean {
-  return /^(?:https?:)?\/\//i.test(src.trim());
 }
 
 /** about:blank iframes resolve //host poorly — pin to https when loading. */
@@ -2196,43 +2217,21 @@ function HtmlBody({
   html,
   forceDark,
   allowRemote,
-  senderEmail,
-  onTrustSender,
 }: {
   html: string;
   forceDark?: boolean;
-  /** When true, remote images load without a per-message opt-in. */
+  /** Settings default or per-message Load images override. */
   allowRemote: boolean;
-  senderEmail?: string;
-  /** Offer to add this sender to the trusted list (Settings → Privacy). */
-  onTrustSender?: (email: string) => void;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
-  const hasRemote = useMemo(() => htmlHasRemoteImages(html), [html]);
-  const [showImages, setShowImages] = useState(allowRemote);
-  /** blocked | loading | ready — banner stays visible through load. */
-  const [imagePhase, setImagePhase] = useState<
-    "blocked" | "loading" | "ready" | "hidden"
-  >(allowRemote || !hasRemote ? "hidden" : "blocked");
   const [userHeight, setUserHeight] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const naturalHeight = useRef(160);
-  const loadGeneration = useRef(0);
 
   useEffect(() => {
     setUserHeight(null);
-    setShowImages(allowRemote);
-    // Auto-allowed messages skip the banner; blocked ones always show it.
-    setImagePhase(hasRemote && !allowRemote ? "blocked" : "hidden");
-  }, [html, allowRemote, hasRemote]);
-
-  const startLoadingImages = (trustSender?: boolean) => {
-    if (trustSender && senderEmail) onTrustSender?.(senderEmail);
-    loadGeneration.current += 1;
-    setImagePhase("loading");
-    setShowImages(true);
-  };
+  }, [html]);
 
   useEffect(() => {
     const frame = ref.current;
@@ -2249,12 +2248,12 @@ function HtmlBody({
          body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
          img { max-width: 100%; height: auto; }
          a { color: #2563eb; }`;
-    // Block every remote fetch (tracking pixels, CSS imports, media) unless the
-    // policy allows them or the user loads images for this message.
-    const csp = showImages
+    // Parent index.html must allow https/http img-src: about:blank +
+    // allow-same-origin inherits the creator CSP, which intersects with this.
+    const csp = allowRemote
       ? "default-src 'none'; img-src https: http: data: blob:; style-src 'unsafe-inline'; font-src data:; media-src https: http: data: blob:; base-uri 'none'; form-action 'none';"
       : "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none';";
-    const bodyHtml = showImages ? promoteProtocolRelativeUrls(html) : html;
+    const bodyHtml = allowRemote ? promoteProtocolRelativeUrls(html) : html;
     doc.open();
     doc.write(`<!doctype html><html><head><meta charset="utf-8" />
       <meta http-equiv="Content-Security-Policy" content="${csp}" />
@@ -2262,8 +2261,6 @@ function HtmlBody({
     </head><body>${bodyHtml}</body></html>`);
     doc.close();
 
-    // Links inside the sandbox cannot navigate; route them through the main
-    // process, which re-validates the protocol.
     const onClick = (event: MouseEvent) => {
       const target = event.target as Element | null;
       const anchor = target?.closest?.("a");
@@ -2280,8 +2277,6 @@ function HtmlBody({
       const body = doc.body;
       const root = doc.documentElement;
       if (!body) return 120;
-      // body.scrollHeight often under-counts collapsed margins; take the max of
-      // root/body metrics and the furthest child bottom edge.
       const bodyTop = body.getBoundingClientRect().top;
       let childBottom = 0;
       for (const child of Array.from(body.children)) {
@@ -2303,60 +2298,23 @@ function HtmlBody({
       const h = measureHeight();
       naturalHeight.current = Math.min(Math.max(h + 12, 80), 2400);
       if (userHeight == null) {
-        // Fit content so short mail doesn't scroll while the reading pane is empty.
         frame.style.height = `${Math.min(naturalHeight.current, 900)}px`;
       } else {
-        // Keep full content height; the shell max-height + overflow scrolls when shrunk.
         frame.style.height = `${Math.max(naturalHeight.current, userHeight)}px`;
       }
     };
     resize();
-    // Second pass after layout/fonts settle — first paint often under-measures.
     const raf = window.requestAnimationFrame(() => resize());
     const ob = new ResizeObserver(resize);
     if (doc.body) ob.observe(doc.body);
     if (doc.documentElement) ob.observe(doc.documentElement);
 
-    let cancelled = false;
-    const timers: number[] = [];
-    if (showImages && hasRemote) {
-      const gen = loadGeneration.current;
-      const remoteImgs = Array.from(doc.images ?? []).filter((img) =>
-        isRemoteImageUrl(img.getAttribute("src") ?? img.currentSrc ?? ""),
-      );
-      const finish = () => {
-        if (cancelled || loadGeneration.current !== gen) return;
-        setImagePhase((phase) => (phase === "loading" ? "ready" : phase));
-      };
-      if (remoteImgs.length === 0) {
-        // CSS backgrounds only — short beat so the Loading state is visible.
-        timers.push(window.setTimeout(finish, 450));
-      } else {
-        let pending = remoteImgs.length;
-        const settle = () => {
-          pending -= 1;
-          if (pending <= 0) finish();
-        };
-        for (const img of remoteImgs) {
-          if (img.complete) settle();
-          else {
-            img.addEventListener("load", settle, { once: true });
-            img.addEventListener("error", settle, { once: true });
-          }
-        }
-        // Cap wait so a hung host doesn't leave the banner spinning forever.
-        timers.push(window.setTimeout(finish, 8000));
-      }
-    }
-
     return () => {
-      cancelled = true;
-      for (const t of timers) window.clearTimeout(t);
       window.cancelAnimationFrame(raf);
       ob.disconnect();
       doc.removeEventListener("click", onClick);
     };
-  }, [html, forceDark, showImages, userHeight, hasRemote]);
+  }, [html, forceDark, allowRemote, userHeight]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -2376,97 +2334,8 @@ function HtmlBody({
     };
   }, [dragging]);
 
-  const canTrust =
-    Boolean(onTrustSender && senderEmail?.includes("@")) && !allowRemote;
-  const showBanner =
-    hasRemote &&
-    (imagePhase === "blocked" ||
-      imagePhase === "loading" ||
-      imagePhase === "ready");
-
   return (
     <div className="html-frame-wrap">
-      {showBanner && (
-        <div
-          className={`html-images-banner phase-${imagePhase}`}
-          role="status"
-          aria-live="polite"
-        >
-          <div className="html-images-banner-copy">
-            {imagePhase === "loading" ? (
-              <Loader2 size={16} strokeWidth={2} className="spin" />
-            ) : (
-              <ImageOff size={16} strokeWidth={1.75} />
-            )}
-            <div>
-              <strong>
-                {imagePhase === "blocked"
-                  ? "Remote images are blocked"
-                  : imagePhase === "loading"
-                    ? "Loading remote images…"
-                    : "Remote images loaded"}
-              </strong>
-              <span>
-                {imagePhase === "blocked"
-                  ? "Blocked to stop trackers from knowing you opened this message."
-                  : imagePhase === "loading"
-                    ? "Fetching images from the sender’s servers."
-                    : "You can hide them again anytime for this message."}
-              </span>
-            </div>
-          </div>
-          <div className="html-images-banner-actions">
-            {imagePhase === "blocked" && (
-              <>
-                <button
-                  type="button"
-                  className="html-images-primary"
-                  onClick={() => startLoadingImages(false)}
-                >
-                  Load images
-                </button>
-                {canTrust && (
-                  <button
-                    type="button"
-                    className="html-images-secondary"
-                    onClick={() => startLoadingImages(true)}
-                  >
-                    Always from this sender
-                  </button>
-                )}
-              </>
-            )}
-            {imagePhase === "loading" && (
-              <button type="button" className="html-images-primary" disabled>
-                Loading…
-              </button>
-            )}
-            {imagePhase === "ready" && (
-              <>
-                <button
-                  type="button"
-                  className="html-images-secondary"
-                  onClick={() => {
-                    loadGeneration.current += 1;
-                    setShowImages(false);
-                    setImagePhase("blocked");
-                  }}
-                >
-                  Hide images
-                </button>
-                <button
-                  type="button"
-                  className="html-images-ghost"
-                  onClick={() => setImagePhase("hidden")}
-                  aria-label="Dismiss image banner"
-                >
-                  Dismiss
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
       <div
         ref={shellRef}
         className={`html-shell${userHeight != null ? " resized" : ""}`}
@@ -2480,7 +2349,6 @@ function HtmlBody({
           ref={ref}
           className="html-frame"
           title="Email HTML"
-          // allow-same-origin so we can write/measure the doc; no allow-scripts.
           sandbox="allow-same-origin"
           referrerPolicy="no-referrer"
         />
@@ -2505,14 +2373,20 @@ function HtmlBody({
   );
 }
 
+function threadHasRealBody(message: ThreadMessage): boolean {
+  if (message.bodyHtml) return true;
+  return Boolean(
+    message.body?.some((line) => line && line !== "(No body yet)"),
+  );
+}
+
 function ThreadMessageView({
   message,
   defaultExpanded,
   forceDarkHtml,
   showAi,
-  remoteImagePolicy,
-  trustedImageSenders,
-  onTrustImageSender,
+  downloadRemoteImages,
+  bodyLoading,
   onComposeTo,
   onSummarize,
   onTranslate,
@@ -2521,19 +2395,30 @@ function ThreadMessageView({
   defaultExpanded: boolean;
   forceDarkHtml?: boolean;
   showAi: boolean;
-  remoteImagePolicy: Preferences["remoteImagePolicy"];
-  trustedImageSenders: string[];
-  onTrustImageSender: (email: string) => void;
+  /** Settings → Privacy default. */
+  downloadRemoteImages: boolean;
+  /** True while the main process is still fetching this message body. */
+  bodyLoading?: boolean;
   onComposeTo: (r: Recipient) => void;
   onSummarize?: () => void;
   onTranslate?: () => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const hasRemoteImages = useMemo(
+    () => htmlHasRemoteImages(message.bodyHtml ?? ""),
+    [message.bodyHtml],
+  );
+  const [showImages, setShowImages] = useState(downloadRemoteImages);
+  useEffect(() => {
+    setShowImages(downloadRemoteImages);
+  }, [message.id, message.bodyHtml, downloadRemoteImages]);
+
   const hasRecipients =
     (message.to && message.to.length > 0) ||
     (message.cc && message.cc.length > 0);
 
-  const showTools = Boolean(message.noTrackers) || showAi;
+  const showImageTool = hasRemoteImages && Boolean(message.bodyHtml);
+  const showTools = Boolean(message.noTrackers) || showAi || showImageTool;
   const sender: Recipient = { name: message.from, email: message.email };
   const toggleExpanded = () => setExpanded((v) => !v);
 
@@ -2604,6 +2489,22 @@ function ThreadMessageView({
                 <ShieldCheck size={14} strokeWidth={1.75} />
               </span>
             )}
+            {showImageTool && (
+              <button
+                type="button"
+                className={`msg-tool-btn${showImages ? " active" : ""}`}
+                title={showImages ? "Hide images" : "Load images"}
+                aria-label={showImages ? "Hide images" : "Load images"}
+                aria-pressed={showImages}
+                onClick={() => setShowImages((v) => !v)}
+              >
+                {showImages ? (
+                  <ImageIcon size={14} strokeWidth={1.75} />
+                ) : (
+                  <ImageOff size={14} strokeWidth={1.75} />
+                )}
+              </button>
+            )}
             {showAi && (
               <>
                 <button
@@ -2657,18 +2558,13 @@ function ThreadMessageView({
             <HtmlBody
               html={message.bodyHtml}
               forceDark={forceDarkHtml}
-              allowRemote={allowRemoteImagesForSender(
-                remoteImagePolicy,
-                message.email,
-                trustedImageSenders,
-              )}
-              senderEmail={message.email}
-              onTrustSender={
-                remoteImagePolicy === "always"
-                  ? undefined
-                  : onTrustImageSender
-              }
+              allowRemote={showImages}
             />
+          ) : bodyLoading && !threadHasRealBody(message) ? (
+            <div className="body-copy body-loading" role="status">
+              <Loader2 size={14} strokeWidth={2} className="spin" />
+              <span>Loading message…</span>
+            </div>
           ) : (
             <div className="body-copy">
               {(message.body ?? []).map((p) => (
@@ -2739,6 +2635,7 @@ function ReadingPane({
   live,
   account,
   accounts,
+  bodyLoading,
   onBack,
   onAsk,
   onAction,
@@ -2747,7 +2644,6 @@ function ReadingPane({
   onComposeTo,
   onToast,
   onReplySent,
-  onUpdatePrefs,
   replyIntent = { key: 0, mode: "reply" as ReplyMode },
 }: {
   message: Message | null;
@@ -2761,6 +2657,7 @@ function ReadingPane({
   live: boolean;
   account: Account;
   accounts: Account[];
+  bodyLoading?: boolean;
   onBack?: () => void;
   onAsk: () => void;
   onAction: (action: MailAction, snoozeLabel?: string) => void;
@@ -2769,7 +2666,6 @@ function ReadingPane({
   onComposeTo: (r: Recipient) => void;
   onToast: (text: string) => void;
   onReplySent?: (message: Message) => void;
-  onUpdatePrefs: (next: Preferences) => void;
   /** Bumped by parent to focus/seed the reply box (Reply vs Reply all). */
   replyIntent?: { key: number; mode: ReplyMode };
 }) {
@@ -3343,28 +3239,8 @@ function ReadingPane({
               defaultExpanded={idx === arr.length - 1}
               forceDarkHtml={forceDarkHtml}
               showAi={showAi}
-              remoteImagePolicy={prefs.remoteImagePolicy}
-              trustedImageSenders={prefs.trustedImageSenders}
-              onTrustImageSender={(email) => {
-                const normalized = email.trim().toLowerCase();
-                if (!normalized.includes("@")) return;
-                if (
-                  prefs.trustedImageSenders.some(
-                    (s) => s.trim().toLowerCase() === normalized,
-                  )
-                ) {
-                  return;
-                }
-                onUpdatePrefs({
-                  ...prefs,
-                  remoteImagePolicy: "trusted",
-                  trustedImageSenders: [
-                    ...prefs.trustedImageSenders,
-                    normalized,
-                  ],
-                });
-                onToast(`Images will load from ${normalized}`);
-              }}
+              downloadRemoteImages={Boolean(prefs.downloadRemoteImages)}
+              bodyLoading={Boolean(bodyLoading) && idx === arr.length - 1}
               onComposeTo={onComposeTo}
               onSummarize={() => void runSummarize()}
               onTranslate={() => void runTranslate()}
@@ -4483,11 +4359,15 @@ export default function App() {
   const [mail, setMail] = useState<Message[]>(() =>
     seedMessages.map((m) => ({ ...m })),
   );
+  /** DB-backed sidebar badges — not derived from the paged folder list. */
+  const [liveFolderCounts, setLiveFolderCounts] =
+    useState<MailFolderCounts | null>(null);
   const [accountId, setAccountId] = useState(UNIFIED_ID);
   const [folderId, setFolderId] = useState("inbox");
   const [filter, setFilter] = useState<Filter>("all");
   const [stackView, setStackView] = useState<"list" | "reader">("list");
   const [selectedId, setSelectedId] = useState(seedMessages[0].id);
+  const [bodyLoadingId, setBodyLoadingId] = useState<string | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
   const checkAnchorRef = useRef<number | null>(null);
   const [askOpen, setAskOpen] = useState(false);
@@ -4498,29 +4378,45 @@ export default function App() {
   }>({ busy: false, text: null, error: null });
   const [askFocusThread, setAskFocusThread] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
-    const unreadMail = seedMessages
-      .filter((m) => m.unread && m.folder === "inbox")
-      .slice(0, 4)
-      .map((m) => ({
-        id: `mail-${m.id}`,
-        kind: "mail" as const,
-        title: m.from,
-        body: m.subject,
-        time: m.time,
-        unread: true,
-        messageId: m.id,
-      }));
-    return [
-      {
-        id: "meeting-1",
-        kind: "meeting",
-        title: meeting.title,
-        body: "Starting now — join from the tray or calendar",
+    const snoozed = seedMessages.find((m) => m.folder === "snoozed");
+    const opened = seedMessages.find(
+      (m) => m.folder === "sent" && (m.openTracking?.opens.length ?? 0) > 0,
+    );
+    const items: AppNotification[] = [];
+    if (snoozed) {
+      items.push({
+        id: `snooze-${snoozed.id}`,
+        kind: "snooze",
+        title: "Snooze reminder",
+        body: snoozed.subject,
         time: "now",
         unread: true,
-      },
-      ...unreadMail,
-    ];
+        messageId: snoozed.id,
+        folderId: "snoozed",
+      });
+    }
+    if (opened) {
+      const who = recipientLabel(opened);
+      items.push({
+        id: `opened-${opened.id}`,
+        kind: "opened",
+        title: who ? `${who} opened your email` : "Your email was opened",
+        body: opened.subject,
+        time: opened.openTracking?.openedAt ?? opened.time,
+        unread: true,
+        messageId: opened.id,
+        folderId: "sent",
+      });
+    }
+    items.push({
+      id: "meeting-1",
+      kind: "meeting",
+      title: meeting.title,
+      body: "Starting now — join from the tray or calendar",
+      time: "now",
+      unread: true,
+    });
+    return items;
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pluginInviteOpen, setPluginInviteOpen] = useState(false);
@@ -4579,6 +4475,32 @@ export default function App() {
   >(null);
   const searchTimer = useRef<number | null>(null);
   const notifiedMeetingRef = useRef(false);
+  const prefsRef = useRef(prefs);
+  const mailRef = useRef(mail);
+  prefsRef.current = prefs;
+  mailRef.current = mail;
+
+  const pushAppNotification = (
+    item: Omit<AppNotification, "id" | "time" | "unread"> & {
+      id?: string;
+      time?: string;
+      unread?: boolean;
+    },
+  ) => {
+    const next: AppNotification = {
+      id: item.id ?? `${item.kind}-${item.messageId ?? Date.now()}`,
+      kind: item.kind,
+      title: item.title,
+      body: item.body,
+      time: item.time ?? notifTimeLabel(),
+      unread: item.unread ?? true,
+      messageId: item.messageId,
+      folderId: item.folderId,
+    };
+    setNotifications((prev) =>
+      [next, ...prev.filter((n) => n.id !== next.id)].slice(0, 40),
+    );
+  };
 
   const clearChecks = () => {
     setCheckedIds(new Set());
@@ -4598,6 +4520,16 @@ export default function App() {
     resolve?.(ok);
   };
 
+  const refreshFolderCounts = async (aid?: string) => {
+    const scopeId = aid ?? accountId;
+    const scope = scopeId === UNIFIED_ID ? "all" : scopeId;
+    try {
+      setLiveFolderCounts(await bridgeFolderCounts(scope));
+    } catch {
+      /* keep previous badges */
+    }
+  };
+
   const refreshLiveMail = async (opts?: {
     accountId?: string;
     folder?: string;
@@ -4605,12 +4537,14 @@ export default function App() {
     q?: string;
   }) => {
     const aid = opts?.accountId ?? accountId;
+    const scope = aid === UNIFIED_ID ? "all" : aid;
     const requested = opts?.folder ?? folderId;
     const folder = requested.startsWith("label:") ? "inbox" : requested;
     const f = opts?.filter ?? filter;
     const q = opts?.q ?? searchQuery;
+    const countsPromise = refreshFolderCounts(aid);
     const result = await bridgeListMail({
-      accountId: aid === UNIFIED_ID ? "all" : aid,
+      accountId: scope,
       folder,
       filter: f,
       limit: 80,
@@ -4647,12 +4581,14 @@ export default function App() {
     setSelectedId((prev) =>
       messages.some((m) => m.id === prev) ? prev : (messages[0]?.id ?? ""),
     );
+    await countsPromise;
   };
 
   const loadLiveWorkspace = async (selectAccountId?: string) => {
     const real = await bridgeAccounts();
     if (!real.length) {
       setLive(false);
+      setLiveFolderCounts(null);
       setAccounts(seedAccounts.map((a) => ({ ...a })));
       setMail(seedMessages.map((m) => ({ ...m })));
       setSelectedId(seedMessages[0].id);
@@ -4766,17 +4702,62 @@ export default function App() {
       });
       showToast("Sent");
     });
-    const offSnooze = bridgeOnUnsnoozed(() => {
+    const offSnooze = bridgeOnUnsnoozed(({ messageId }) => {
+      const local = mailRef.current.find((m) => m.id === messageId);
+      const subject = local?.subject ?? "Snoozed mail";
+      const from = local?.from ?? "Reminder";
+      pushAppNotification({
+        id: `snooze-${messageId}-${Date.now()}`,
+        kind: "snooze",
+        title: "Snooze reminder",
+        body: subject,
+        messageId,
+        folderId: "inbox",
+      });
+      void notifySnoozeReturn(prefsRef.current, {
+        id: messageId,
+        from,
+        subject,
+      });
       if (live) void refreshLiveMail();
       showToast("Snoozed mail returned to inbox");
     });
     const offUpdated = bridgeOnMailUpdated(({ message }) => {
       const ui = messageDtoToUi(message);
-      setMail((prev) =>
-        prev.map((m) => {
+      const prev = mailRef.current.find((m) => m.id === ui.id);
+      if (
+        prev &&
+        (prev.folder !== ui.folder || prev.unread !== ui.unread)
+      ) {
+        void refreshFolderCounts();
+      }
+      setMail((cur) =>
+        cur.map((m) => {
           if (m.id !== ui.id) return m;
           // Keep renderer-assigned tags when the DTO has none yet.
           return { ...ui, tag: ui.tag ?? m.tag };
+        }),
+      );
+    });
+    const offAvatar = bridgeOnAvatarUpdated(({ email, avatarUrl }) => {
+      const key = email.trim().toLowerCase();
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.email.toLowerCase() === key ? { ...a, avatarUrl } : a,
+        ),
+      );
+      setMail((prev) =>
+        prev.map((m) => {
+          let touched = m.email.toLowerCase() === key;
+          const nextThread = m.thread.map((t) => {
+            if (t.email.toLowerCase() !== key) return t;
+            touched = true;
+            return { ...t, avatarUrl };
+          });
+          if (!touched) return m;
+          return m.email.toLowerCase() === key
+            ? { ...m, avatarUrl, thread: nextThread }
+            : { ...m, thread: nextThread };
         }),
       );
     });
@@ -4784,6 +4765,7 @@ export default function App() {
       offFlush();
       offSnooze();
       offUpdated();
+      offAvatar();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live]);
@@ -4794,16 +4776,32 @@ export default function App() {
   useEffect(() => {
     if (!live || !selectedId) return;
     let cancelled = false;
-    void bridgeGetMail(selectedId).then((dto) => {
-      if (cancelled || !dto) return;
-      const updated = messageDtoToUi(dto);
-      setMail((prev) =>
-        prev.map((m) => {
-          if (m.id !== selectedId) return m;
-          return { ...updated, tag: updated.tag ?? m.tag };
-        }),
-      );
-    });
+    const current = mailRef.current.find((m) => m.id === selectedId);
+    const needsBody = Boolean(
+      current &&
+        !current.thread.some(
+          (t) =>
+            Boolean(t.bodyHtml) ||
+            Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
+        ),
+    );
+    if (needsBody) setBodyLoadingId(selectedId);
+    void bridgeGetMail(selectedId)
+      .then((dto) => {
+        if (cancelled || !dto) return;
+        const updated = messageDtoToUi(dto);
+        setMail((prev) =>
+          prev.map((m) => {
+            if (m.id !== selectedId) return m;
+            return { ...updated, tag: updated.tag ?? m.tag };
+          }),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBodyLoadingId((id) => (id === selectedId ? null : id));
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -5042,6 +5040,7 @@ export default function App() {
               ? detail
               : undefined,
         }).then((dto) => {
+          void refreshFolderCounts();
           if (action === "delete-forever") {
             setMail((prev) => prev.filter((m) => m.id !== messageId));
             return;
@@ -5178,6 +5177,7 @@ export default function App() {
               ? detail
               : undefined,
         }).then((dto) => {
+          void refreshFolderCounts();
           if (action === "delete-forever") {
             setMail((prev) => prev.filter((m) => m.id !== target.id));
             return;
@@ -5338,6 +5338,7 @@ export default function App() {
       for (const t of targets) {
         void bridgeMutateMail(t.id, "delete-forever");
       }
+      void refreshFolderCounts();
     }
     setMail((prev) => prev.filter((m) => !ids.has(m.id)));
     if (ids.has(selectedId)) setSelectedId("");
@@ -5553,7 +5554,8 @@ export default function App() {
     });
   }, [mail, accountId, folderId, labels]);
 
-  const folderCounts = useMemo(() => {
+  /** Demo / offline fallback — full local corpus, not a single paged folder. */
+  const localFolderCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const m of mail) {
       if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
@@ -5562,17 +5564,103 @@ export default function App() {
     return counts;
   }, [mail, accountId]);
 
+  /**
+   * Sidebar badges stay visible across folder switches.
+   * Inbox shows unread (new alerts); other folders show totals (drafts/junk/etc.).
+   */
+  const folderCounts = useMemo(() => {
+    if (live && liveFolderCounts) {
+      const out: Record<string, number> = {};
+      for (const [id, entry] of Object.entries(liveFolderCounts.folders)) {
+        out[id] = id === "inbox" ? entry.unread : entry.total;
+      }
+      return out;
+    }
+    if (!live) {
+      const out: Record<string, number> = { ...localFolderCounts };
+      // Demo inbox badge = unread so it matches the "new alerts" cue.
+      out.inbox = mail.filter(
+        (m) =>
+          m.folder === "inbox" &&
+          m.unread &&
+          (accountId === UNIFIED_ID || m.accountId === accountId),
+      ).length;
+      return out;
+    }
+    return localFolderCounts;
+  }, [live, liveFolderCounts, localFolderCounts, mail, accountId]);
+
+  const inboxBadgeCount = folderCounts.inbox ?? 0;
+
   useEffect(() => {
     void syncTaskbarBadge(prefs, mail);
   }, [prefs, mail]);
 
   useEffect(() => {
-    return bridgeOnNotifyOpen(({ messageId }) => {
+    return bridgeOnNotifyOpen(({ messageId, folderId }) => {
       setSelectedId(messageId);
-      setFolderId("inbox");
+      setFolderId(folderId ?? "inbox");
       setStackView("reader");
     });
   }, []);
+
+  const pushOpenedNotification = (message: Message) => {
+    const who = recipientLabel(message);
+    pushAppNotification({
+      id: `opened-${message.id}-${Date.now()}`,
+      kind: "opened",
+      title: who ? `${who} opened your email` : "Your email was opened",
+      body: message.subject,
+      messageId: message.id,
+      folderId: "sent",
+    });
+    void notifyMailOpened(prefsRef.current, {
+      id: message.id,
+      subject: message.subject,
+      recipient: who,
+    });
+  };
+
+  const applyOpenTracking = (messageId: string, tracking: OpenTracking) => {
+    setMail((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, openTracking: tracking } : m)),
+    );
+    const message = mailRef.current.find((m) => m.id === messageId);
+    if (message) {
+      pushOpenedNotification({ ...message, openTracking: tracking });
+    }
+  };
+
+  // Demo / local open-tracking: simulate a first open for unopened tracked sends.
+  useEffect(() => {
+    const pending = mailRef.current.filter(
+      (m) =>
+        m.folder === "sent" &&
+        m.openTracking?.enabled &&
+        (m.openTracking.opens?.length ?? 0) === 0,
+    );
+    if (!pending.length) return;
+
+    const cleanups = pending.map((m, i) => {
+      const to =
+        m.thread[0]?.to?.map((r) => r.email).filter(Boolean) ?? [];
+      if (!getTrackingForMessage(m.id)) {
+        registerTrackedSend({
+          messageId: m.id,
+          subject: m.subject,
+          to,
+          token: m.openTracking?.token,
+        });
+      }
+      return scheduleDemoOpen(m.id, 9_000 + i * 4_000, (tracking) => {
+        applyOpenTracking(m.id, tracking);
+      });
+    });
+    return () => {
+      for (const stop of cleanups) stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
 
   useEffect(() => {
     if (notifiedMeetingRef.current) return;
@@ -5920,7 +6008,15 @@ export default function App() {
         onOpenNotification={(n) => {
           if (n.messageId) {
             setSelectedId(n.messageId);
-            setFolderId("inbox");
+            setFolderId(
+              n.folderId ??
+                (n.kind === "opened"
+                  ? "sent"
+                  : n.kind === "snooze"
+                    ? "inbox"
+                    : "inbox"),
+            );
+            setStackView("reader");
           } else if (n.kind === "ai") {
             setAskFocusThread(false);
             setAskOpen(true);
@@ -5981,13 +6077,7 @@ export default function App() {
                     : "Live inbox"
                   : "Demo data"
           }
-          inboxCount={
-            mail.filter(
-              (m) =>
-                m.folder === "inbox" &&
-                (accountId === UNIFIED_ID || m.accountId === accountId),
-            ).length
-          }
+          inboxCount={inboxBadgeCount}
           folderCounts={folderCounts}
           onFolder={setFolderId}
           onCompose={() => openCompose()}
@@ -6093,7 +6183,11 @@ export default function App() {
                   m.id === id && m.unread ? { ...m, unread: false } : m,
                 ),
               );
-              if (live) void bridgeMutateMail(id, "read");
+              if (live) {
+                void bridgeMutateMail(id, "read").then(() =>
+                  refreshFolderCounts(),
+                );
+              }
             }
           }}
           onToggleCheck={toggleCheck}
@@ -6157,6 +6251,9 @@ export default function App() {
           live={live}
           account={account}
           accounts={accounts}
+          bodyLoading={Boolean(
+            selected && bodyLoadingId === selected.id,
+          )}
           onBack={
             prefs.layout === "stack" ? () => setStackView("list") : undefined
           }
@@ -6178,7 +6275,6 @@ export default function App() {
           onCreateFolder={createFolder}
           onComposeTo={(r) => openCompose({ to: [r] })}
           onToast={showToast}
-          onUpdatePrefs={updatePrefs}
           replyIntent={replyIntent}
           onReplySent={(message) => {
             setMail((prev) => {
@@ -6249,6 +6345,20 @@ export default function App() {
               void loadLiveWorkspace().then(() => undefined);
             }
           }}
+          onUpdateAccount={(account) => {
+            setAccounts((prev) =>
+              prev.map((a) =>
+                a.id === account.id
+                  ? {
+                      ...a,
+                      name: account.name,
+                      label: account.label,
+                      color: account.color,
+                    }
+                  : a,
+              ),
+            );
+          }}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -6310,6 +6420,14 @@ export default function App() {
             showToast(
               message.openTracking ? "Sent · tracking recorded locally" : "Sent",
             );
+            if (
+              message.openTracking?.enabled &&
+              (message.openTracking.opens?.length ?? 0) === 0
+            ) {
+              scheduleDemoOpen(message.id, 12_000, (tracking) => {
+                applyOpenTracking(message.id, tracking);
+              });
+            }
           }}
         />
       )}

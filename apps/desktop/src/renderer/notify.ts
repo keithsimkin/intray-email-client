@@ -40,7 +40,7 @@ export async function syncTaskbarBadge(
   await bridgeSetBadge({ count, mode: prefs.taskbarBadge });
 }
 
-export type NotifyKind = "mail" | "meeting" | "error";
+export type NotifyKind = "mail" | "meeting" | "error" | "snooze" | "opened";
 
 export function shouldDesktopNotify(
   prefs: Preferences,
@@ -48,14 +48,16 @@ export function shouldDesktopNotify(
   important = false,
 ): boolean {
   if (!prefs.notifyDesktop) return false;
-  if (prefs.notifyMode === "off") return false;
   if (inQuietHours(prefs)) return false;
   if (kind === "mail") {
     if (!prefs.notifyNewMail) return false;
+    if (prefs.notifyMode === "off") return false;
     if (prefs.notifyMode === "important" && !important) return false;
   }
   if (kind === "meeting" && !prefs.notifyMeetings) return false;
   if (kind === "error" && !prefs.notifyErrors) return false;
+  if (kind === "snooze" && !prefs.notifySnooze) return false;
+  if (kind === "opened" && !prefs.notifyOpens) return false;
   return true;
 }
 
@@ -75,6 +77,50 @@ export async function notifyNewMail(
     body,
     silent: !prefs.notifySound,
     messageId: message.id,
+    folderId: "inbox",
+  });
+}
+
+export async function notifySnoozeReturn(
+  prefs: Preferences,
+  message: Pick<Message, "id" | "from" | "subject">,
+): Promise<void> {
+  if (!shouldDesktopNotify(prefs, "snooze")) return;
+
+  const title = "Snooze reminder";
+  const body = prefs.notifyShowPreview
+    ? message.subject || "A snoozed message is back in your inbox"
+    : prefs.notifyShowSender
+      ? `${message.from} — back in inbox`
+      : "A snoozed message is back in your inbox";
+
+  await bridgeNotifyShow({
+    title,
+    body,
+    silent: !prefs.notifySound,
+    messageId: message.id,
+    folderId: "inbox",
+  });
+}
+
+export async function notifyMailOpened(
+  prefs: Preferences,
+  message: Pick<Message, "id" | "subject"> & { recipient?: string },
+): Promise<void> {
+  if (!shouldDesktopNotify(prefs, "opened")) return;
+
+  const who = message.recipient?.trim();
+  const title = who ? `${who} opened your email` : "Your email was opened";
+  const body = prefs.notifyShowPreview
+    ? message.subject || "Open Sent to see delivery ticks"
+    : "Open tracking recorded a read";
+
+  await bridgeNotifyShow({
+    title,
+    body,
+    silent: !prefs.notifySound,
+    messageId: message.id,
+    folderId: "sent",
   });
 }
 

@@ -4,17 +4,23 @@
   "version": "0.1.0",
   "description": "Intray — Windows unified mail",
   "main": "./out/main/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/keithsimkin/intray-email-client.git"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "pack": "electron-vite build && electron-builder --win --x64 --publish never",
+    "release": "electron-vite build && electron-builder --win --x64 --publish always",
     "test": "bun test",
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
     "@intray/native": "workspace:*",
+    "electron-updater": "^6.8.11",
     "imapflow": "^2.12.1",
     "lucide-react": "^0.525.0",
     "mailparser": "^3.14.5",
