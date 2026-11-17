@@ -1,5 +1,12 @@
 import { avatarForEmail } from "../assets/avatars";
 
+export type AccountIdentity = {
+  id: string;
+  email: string;
+  name: string;
+  primary: boolean;
+};
+
 export type Account = {
   id: string;
   label: string;
@@ -12,6 +19,8 @@ export type Account = {
   provider?: "gmail" | "outlook" | "imap" | "icloud" | "fastmail" | "yahoo";
   /** Credentials missing or provider auth revoked — reconnect required. */
   loggedOut?: boolean;
+  /** Primary + linked send-as addresses for this mailbox. */
+  identities?: AccountIdentity[];
 };
 
 export type Folder = {

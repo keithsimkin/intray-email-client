@@ -2,7 +2,13 @@ import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
 import { loadAppIcon, resolveAppIconPath } from "./app-icon";
 import { chromeThemeOptions } from "./chrome-theme";
-import { closeDb, initDb, listAccountRows } from "./db";
+import {
+  backfillLinkCounts,
+  closeDb,
+  initDb,
+  listAccountRows,
+  runDbMaintenance,
+} from "./db";
 import { loadDesktopEnv } from "./env";
 import { registerIpc } from "./ipc/register";
 import { openExternalSafely } from "./security";
@@ -13,6 +19,7 @@ import {
 import { ensureQueueLoop, stopQueueLoop } from "./mail/queue";
 import { startMcpServer, stopMcpServer } from "./mcp/server";
 import { startPollingAll, stopAllPolling } from "./sync/engine";
+import { startMailWatch, stopAllWatches } from "./sync/watch";
 import { createTray } from "./tray";
 import { refreshMissingAvatars } from "./avatars";
 import { startAppUpdater } from "./updater";
@@ -35,6 +42,13 @@ if (!gotSingleInstanceLock) {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let linkBackfillTimer: NodeJS.Timeout | null = null;
+let maintenanceTimer: NodeJS.Timeout | null = null;
+
+/** IDLE watchers make the 30s poll a safety net; see sync/watch.ts. */
+function startWatches(accountIds: string[]): void {
+  for (const accountId of accountIds) startMailWatch(accountId);
+}
 
 function createWindow(opts?: { show?: boolean }): BrowserWindow {
   // Default dark; renderer syncs via app:setChromeTheme once prefs resolve.
@@ -125,6 +139,28 @@ app.whenReady().then(async () => {
 
   const accountIds = listAccountRows().map((a) => a.id);
   startPollingAll(accountIds);
+  startWatches(accountIds);
+
+  // Off the first paint. Link counts are a one-time HTML scan; vacuum waits
+  // longer because it rewrites the file and takes the database lock.
+  linkBackfillTimer = setTimeout(() => {
+    linkBackfillTimer = null;
+    try {
+      backfillLinkCounts();
+    } catch (error) {
+      console.warn("link backfill skipped", error);
+    }
+  }, 3_000);
+  linkBackfillTimer.unref?.();
+  maintenanceTimer = setTimeout(() => {
+    maintenanceTimer = null;
+    try {
+      runDbMaintenance();
+    } catch (error) {
+      console.warn("db maintenance skipped", error);
+    }
+  }, 20_000);
+  maintenanceTimer.unref?.();
 
   // Local MCP for Cursor / Claude Desktop / Codex — localhost only.
   void startMcpServer().catch((e) =>
@@ -152,8 +188,17 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (linkBackfillTimer) {
+    clearTimeout(linkBackfillTimer);
+    linkBackfillTimer = null;
+  }
+  if (maintenanceTimer) {
+    clearTimeout(maintenanceTimer);
+    maintenanceTimer = null;
+  }
   stopQueueLoop();
   stopMcpServer();
+  stopAllWatches();
   stopAllPolling();
   closeDb();
 });

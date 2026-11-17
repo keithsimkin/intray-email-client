@@ -2695,13 +2695,6 @@ button {
   background: transparent;
 }
 
-.html-shell.resized {
-  overflow: auto;
-  max-height: var(--html-shell-height, 320px);
-  border: 1px solid var(--line);
-  background: var(--bg-elevated);
-}
-
 .html-frame {
   display: block;
   width: 100%;
@@ -2712,41 +2705,6 @@ button {
 
 .html-frame-wrap {
   position: relative;
-}
-
-.html-resize-handle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 14px;
-  margin-top: 4px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  cursor: ns-resize;
-  touch-action: none;
-}
-
-.html-resize-handle::before {
-  content: "";
-  width: 36px;
-  height: 3px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 45%, transparent);
-  transition: background 0.12s ease, width 0.12s ease;
-}
-
-.html-resize-handle:hover::before,
-.html-resize-handle:focus-visible::before,
-.html-resize-handle.dragging::before {
-  width: 48px;
-  background: var(--blue);
-}
-
-.html-resize-handle:focus-visible {
-  outline: none;
 }
 
 .html-images-banner {
@@ -4479,7 +4437,8 @@ button {
 .settings-card > .trusted-image-editor,
 .settings-card > .account-manage-actions,
 .settings-card > .account-avatar-editor,
-.settings-card > .account-credential-card {
+.settings-card > .account-credential-card,
+.settings-card > .account-identity-panel {
   margin: 12px 14px;
 }
 
@@ -5900,6 +5859,24 @@ button.keycap,
   font-weight: 650;
   color: #0a0a0b;
   border: 1px solid #ffffff18;
+  overflow: hidden;
+  line-height: 1;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* Beat `.settings-row span` hint styles that un-center initials. */
+.settings-row .account-avatar-preview,
+.settings-row .account-avatar-preview.fallback,
+.settings-row-control .account-avatar-preview {
+  display: grid;
+  place-items: center;
+  margin-top: 0;
+  color: #0a0a0b;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  overflow: hidden;
 }
 
 .account-avatar-preview.fallback {
@@ -5911,6 +5888,111 @@ button.keycap,
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+}
+
+.account-identity-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.account-identity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-identity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+
+.account-identity-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.account-identity-meta strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-identity-meta span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.account-identity-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.account-identity-add .settings-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  margin: 0;
+}
+
+.account-identity-add .compose.settings-add.account-identity-add-btn,
+.account-identity-add-btn {
+  margin-top: 0;
+  margin-bottom: 0;
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 12px;
+  align-self: center;
+}
+
+.account-identity-row.just-added {
+  animation: identity-flash 1.2s ease;
+  border-color: color-mix(in srgb, var(--fg) 28%, var(--border));
+}
+
+@keyframes identity-flash {
+  0% {
+    background: color-mix(in srgb, #3dd68c 22%, var(--panel));
+  }
+  100% {
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+  }
+}
+
+.account-identity-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.account-identity-note.ok {
+  color: #1f8f5f;
+}
+
+.account-identity-note.err {
+  color: #c44;
+}
+
+[data-theme="dark"] .account-identity-note.ok {
+  color: #3dd68c;
+}
+
+[data-theme="dark"] .account-identity-note.err {
+  color: #ffb4b4;
 }
 
 .account-manage-actions {

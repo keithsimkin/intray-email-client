@@ -25,5 +25,17 @@ export declare class MailDb {
   /** Upsert FTS index for a message (headers + optional body text). */
   upsertFts(messageId: string, subject: string, snippet: string, fromName: string, fromEmail: string, body?: string | undefined | null): void
   deleteFts(messageId: string): void
+  /**
+   * Cheap periodic upkeep: refresh SQLite's planner statistics. Safe to run on
+   * every launch; it is a no-op when nothing has changed.
+   */
+  optimize(): void
+  /** Free pages still reserved by the file after prunes. */
+  freelistCount(): number
+  /**
+   * Rebuild the file so pruned rows actually give disk space back. Only worth
+   * running after a large prune; the caller checks `freelist_count` first.
+   */
+  vacuum(): void
   close(): void
 }

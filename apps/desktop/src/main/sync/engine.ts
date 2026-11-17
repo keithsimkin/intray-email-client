@@ -23,6 +23,8 @@ import {
   explainGmailImapError,
   gmailSyncMailboxes,
   GMAIL_FALLBACK_SYNC_MAILBOXES,
+  type ListedMailbox,
+  type MailboxRole,
   type SyncMailbox,
 } from "../../shared/gmailImap";
 
@@ -43,6 +45,8 @@ const EMAIL_CONCURRENCY = 5;
  */
 const BASE_POLL_MS = 30_000;
 const MAX_POLL_MS = 15 * 60_000;
+/** Exported for callers that slow polling while IDLE is connected. */
+export const DEFAULT_POLL_MS = BASE_POLL_MS;
 
 type ImapCursor = Record<string, { uidValidity: number; lastUid: number }>;
 
@@ -52,6 +56,7 @@ type Poller = {
   timer: NodeJS.Timeout | null;
   failures: number;
   stopped: boolean;
+  intervalMs: number;
 };
 const pollers = new Map<string, Poller>();
 
@@ -308,22 +313,93 @@ const IMAP_MAILBOXES: SyncMailbox[] = [
   { path: "Sent Items", role: "sent" },
 ];
 
+/**
+ * Gmail label/star/archive changes produce no new UID, so a short sequence
+ * window has to be re-read to notice them. Doing that on every 30s poll was
+ * expensive (80 envelopes per pass); five minutes is plenty for label churn.
+ */
+const RECENT_REFRESH_MIN_MS = 5 * 60_000;
+const recentRefreshAt = new Map<string, number>();
+
+/** Recent-window size for this pass, or 0 when the refresh is not due yet. */
+function recentRefreshBudget(
+  accountId: string,
+  box: SyncMailbox,
+  gmail: boolean,
+  hasCursor: boolean,
+): number {
+  if (!gmail || !hasCursor) return 0;
+  const key = `${accountId}:${box.path}`;
+  const now = Date.now();
+  const last = recentRefreshAt.get(key) ?? 0;
+  if (now - last < RECENT_REFRESH_MIN_MS) return 0;
+  recentRefreshAt.set(key, now);
+  return box.role === "all" ? 80 : 20;
+}
+
+/** Resolved mailbox targets are stable; LIST on every poll is wasted I/O. */
+const imapTargetsCache = new Map<string, { at: number; targets: SyncMailbox[] }>();
+const IMAP_TARGETS_TTL_MS = 10 * 60_000;
+
+function specialUse(listed: ListedMailbox[], use: string): ListedMailbox | undefined {
+  return listed.find(
+    (box) => (box.specialUse ?? "").replace(/^\\+/, "").toLowerCase() === use,
+  );
+}
+
+/**
+ * Non-Gmail servers: trust SPECIAL-USE from LIST, fall back to common names so
+ * we stop probing four hardcoded Sent spellings (two of which do not exist on
+ * most accounts) on every single poll.
+ */
+function genericImapMailboxes(listed: ListedMailbox[]): SyncMailbox[] {
+  const inbox =
+    listed.find((box) => box.path.toUpperCase() === "INBOX") ??
+    specialUse(listed, "inbox");
+  const out: SyncMailbox[] = [{ path: inbox?.path ?? "INBOX", role: "inbox" }];
+  const wanted: { role: MailboxRole; names: RegExp }[] = [
+    { role: "sent", names: /(^|[./])(sent|sent items|sent messages|gesendet|envoy)/i },
+    { role: "drafts", names: /(^|[./])(drafts?|entw(ü|u)rfe|brouillons)/i },
+    { role: "junk", names: /(^|[./])(junk|spam)/i },
+    { role: "trash", names: /(^|[./])(trash|deleted|bin|papierkorb|corbeille)/i },
+  ];
+  for (const { role, names } of wanted) {
+    const box = specialUse(listed, role) ?? listed.find((b) => names.test(b.path));
+    if (box && box.path.toUpperCase() !== "INBOX") {
+      out.push({ path: box.path, role });
+    }
+  }
+  return out;
+}
+
+async function imapTargets(accountId: string, gmail: boolean): Promise<SyncMailbox[]> {
+  const cached = imapTargetsCache.get(accountId);
+  if (cached && Date.now() - cached.at < IMAP_TARGETS_TTL_MS) {
+    return cached.targets;
+  }
+  let targets: SyncMailbox[] | null = null;
+  try {
+    const listed = await listImapMailboxes(accountId);
+    if (listed.length) {
+      const gmailBoxes = gmail ? gmailSyncMailboxes(listed) : [];
+      targets = gmail
+        ? (gmailBoxes.length ? gmailBoxes : null)
+        : genericImapMailboxes(listed);
+    }
+  } catch {
+    /* LIST failed — fall back to the English names below. */
+  }
+  if (!targets || !targets.length) {
+    targets = gmail ? GMAIL_FALLBACK_SYNC_MAILBOXES : IMAP_MAILBOXES;
+  }
+  imapTargetsCache.set(accountId, { at: Date.now(), targets });
+  return targets;
+}
+
 function surfaceImapError(gmail: boolean, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (!gmail) return message;
   return explainGmailImapError(error) ?? explainGmailImapError(message) ?? message;
-}
-
-async function imapTargets(accountId: string, gmail: boolean): Promise<SyncMailbox[]> {
-  if (!gmail) return IMAP_MAILBOXES;
-  try {
-    const listed = await listImapMailboxes(accountId);
-    const targets = gmailSyncMailboxes(listed);
-    if (targets.length) return targets;
-  } catch {
-    /* LIST failed — try the English Gmail names below. */
-  }
-  return GMAIL_FALLBACK_SYNC_MAILBOXES;
 }
 
 function mailboxIsCritical(box: SyncMailbox, targets: SyncMailbox[]): boolean {
@@ -341,6 +417,9 @@ async function syncImap(accountId: string): Promise<void> {
   const targets = await imapTargets(accountId, gmail);
   const state = getSyncState(accountId);
   const cursor = parseImapCursor(state?.imap_cursor_json);
+  // Only keep cursors for mailboxes we still sync; failed passes carry theirs
+  // over so mail is never skipped.
+  const nextCursor: ImapCursor = { ...cursor };
   let total = 0;
   let failures = 0;
   let lastError: string | null = null;
@@ -362,36 +441,56 @@ async function syncImap(accountId: string): Promise<void> {
         sinceUid: prior?.lastUid,
         sinceUidValidity: prior?.uidValidity,
         // Recent All Mail changes labels (archive, star) without a new UID.
-        refreshRecent: gmail ? (box.role === "all" ? 80 : 20) : 0,
+        refreshRecent: recentRefreshBudget(
+          accountId,
+          box,
+          gmail,
+          prior?.lastUid != null,
+        ),
       });
       for (const env of slice.envelopes) {
         const row = imapEnvelopeToRow(accountId, env);
-        upsertMessage(row);
-        rememberSender(row);
+        const wrote = upsertMessage(row, { flagsOnly: env.partial === true });
+        if (!wrote) continue;
+        if (!env.partial) rememberSender(row);
         total += 1;
       }
-      cursor[box.path] = {
+      nextCursor[box.path] = {
         uidValidity: slice.uidValidity,
         lastUid: slice.highestUid,
       };
       setStatus(accountId, {
         status: "syncing",
         progress: `Indexed ${total} messages`,
-        imapCursorJson: JSON.stringify(cursor),
+        imapCursorJson: JSON.stringify(nextCursor),
       });
     } catch (e) {
       // Keep the previous cursor for this mailbox so the next pass retries the
       // same UID window instead of skipping mail.
+      if (prior) nextCursor[box.path] = prior;
+      else delete nextCursor[box.path];
       failures += 1;
       lastError = surfaceImapError(gmail, e);
       if (mailboxIsCritical(box, targets)) criticalError = lastError;
     }
   }
 
+  // Drop cursors for mailboxes that are no longer part of the target list
+  // (renamed or removed folders used to linger forever).
+  for (const path of Object.keys(nextCursor)) {
+    if (!targets.some((box) => box.path === path)) delete nextCursor[path];
+  }
+
   // A failing Sent folder shouldn't mask a healthy inbox, but a failing inbox
   // (or Gmail All Mail) must surface as an account error so the poller backs
   // off and the UI shows that new mail may be missing — never a false "idle".
-  if (criticalError) throw new Error(criticalError);
+  if (criticalError) {
+    setStatus(accountId, {
+      status: "syncing",
+      imapCursorJson: JSON.stringify(nextCursor),
+    });
+    throw new Error(criticalError);
+  }
   if (failures === targets.length) {
     throw new Error(lastError ?? "IMAP sync failed");
   }
@@ -400,7 +499,7 @@ async function syncImap(accountId: string): Promise<void> {
     status: "syncing",
     progress: `Indexed ${total} messages`,
     historyId: `imap:${Date.now()}`,
-    imapCursorJson: JSON.stringify(cursor),
+    imapCursorJson: JSON.stringify(nextCursor),
   });
 }
 
@@ -409,7 +508,12 @@ export function startAccountPolling(
   intervalMs = BASE_POLL_MS,
 ): void {
   stopAccountPolling(accountId);
-  const poller: Poller = { timer: null, failures: 0, stopped: false };
+  const poller: Poller = {
+    timer: null,
+    failures: 0,
+    stopped: false,
+    intervalMs,
+  };
   pollers.set(accountId, poller);
 
   function schedule(delayMs: number): void {
@@ -424,13 +528,13 @@ export function startAccountPolling(
     try {
       await syncAccount(accountId);
       poller.failures = 0;
-      schedule(jitter(intervalMs));
+      schedule(jitter(poller.intervalMs));
     } catch {
       // Status is already recorded; back off so a broken account stops
       // hammering the provider (and triggering lockouts) every 30 seconds.
       poller.failures += 1;
       const delay = Math.min(
-        intervalMs * 2 ** Math.min(poller.failures, 5),
+        poller.intervalMs * 2 ** Math.min(poller.failures, 5),
         MAX_POLL_MS,
       );
       schedule(jitter(delay));
@@ -439,6 +543,23 @@ export function startAccountPolling(
 
   // Sync shortly after start/app launch, staggered across accounts.
   schedule(400 + Math.random() * 1200);
+}
+
+/**
+ * Change cadence without restarting the poller. With IMAP IDLE connected the
+ * poll is only a safety net, so it can run minutes apart instead of 30s. The
+ * new interval applies from the next scheduled pass.
+ */
+export function setAccountPollInterval(
+  accountId: string,
+  intervalMs: number,
+): void {
+  const poller = pollers.get(accountId);
+  if (!poller) {
+    startAccountPolling(accountId, intervalMs);
+    return;
+  }
+  poller.intervalMs = intervalMs;
 }
 
 export function stopAccountPolling(accountId: string): void {

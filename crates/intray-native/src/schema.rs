@@ -27,6 +27,20 @@ CREATE TABLE IF NOT EXISTS credentials (
   updated_at TEXT NOT NULL
 );
 
+-- Send-as / linked addresses for one mailbox (iCloud custom domains, aliases).
+CREATE TABLE IF NOT EXISTS account_identities (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  email TEXT NOT NULL COLLATE NOCASE,
+  name TEXT NOT NULL DEFAULT '',
+  is_primary INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE(email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_identities_account
+  ON account_identities(account_id);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   account_id TEXT PRIMARY KEY NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   history_id TEXT,
@@ -58,6 +72,7 @@ CREATE TABLE IF NOT EXISTS messages (
   ui_label_id TEXT,
   snooze_until_ms INTEGER,
   internal_date TEXT,
+  link_count INTEGER NOT NULL DEFAULT 0,
   UNIQUE(account_id, provider_id)
 );
 
@@ -140,6 +155,7 @@ pub const MIGRATIONS_SQL: &[&str] = &[
   "ALTER TABLE send_queue ADD COLUMN locked_until_ms INTEGER",
   "ALTER TABLE accounts ADD COLUMN avatar_url TEXT",
   "ALTER TABLE contacts ADD COLUMN avatar_url TEXT",
+  "ALTER TABLE messages ADD COLUMN link_count INTEGER NOT NULL DEFAULT 0",
 ];
 
 pub const POST_MIGRATION_INDEXES_SQL: &[&str] = &[

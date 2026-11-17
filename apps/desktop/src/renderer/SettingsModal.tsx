@@ -35,6 +35,7 @@ import { BridgeLogo, bridgePickerOrder } from "./bridgeLogos";
 import { UNIFIED_ID, type Account } from "./data/mock";
 import {
   accountDtoToUi,
+  bridgeAddAccountIdentity,
   bridgeAiDetect,
   bridgeAiModels,
   bridgeAiSecretsStatus,
@@ -53,6 +54,7 @@ import {
   bridgeOnUpdateStatus,
   bridgeOpenReleases,
   bridgeRemoveAccount,
+  bridgeRemoveAccountIdentity,
   bridgeSetLaunchAtLogin,
   bridgeSync,
   bridgeUpdateAccount,
@@ -134,13 +136,14 @@ function AccountFace({
     );
   }
   return (
-    <span
+    <div
       className={`${faceClass} fallback`}
       style={{ background: color }}
       title={name}
+      aria-hidden
     >
       {initials}
-    </span>
+    </div>
   );
 }
 
@@ -375,6 +378,15 @@ export function SettingsModal({
   const [accountNameDraft, setAccountNameDraft] = useState("");
   const [accountLabelDraft, setAccountLabelDraft] = useState("");
   const [accountColorDraft, setAccountColorDraft] = useState("#8a8f98");
+  const [identityEmailDraft, setIdentityEmailDraft] = useState("");
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityNote, setIdentityNote] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
+  const [justAddedIdentityId, setJustAddedIdentityId] = useState<string | null>(
+    null,
+  );
   const navSearchRef = useRef<HTMLInputElement>(null);
   const [secretStatus, setSecretStatus] = useState<Record<AiSecretId, boolean>>({
     openai: false,
@@ -514,6 +526,9 @@ export function SettingsModal({
       setAccountNameDraft("");
       setAccountLabelDraft("");
       setAccountColorDraft("#8a8f98");
+      setIdentityEmailDraft("");
+      setIdentityNote(null);
+      setJustAddedIdentityId(null);
       return;
     }
     setAccountNameDraft(selectedMailAccount.name);
@@ -521,6 +536,10 @@ export function SettingsModal({
     setAccountColorDraft(
       normalizeHexColor(selectedMailAccount.color) ?? "#8a8f98",
     );
+    setIdentityEmailDraft("");
+    setIdentityBusy(false);
+    setIdentityNote(null);
+    setJustAddedIdentityId(null);
   }, [selectedMailAccount?.id]);
 
   useEffect(() => {
@@ -2298,6 +2317,213 @@ export function SettingsModal({
                             </label>
                           </div>
                         </Row>
+                      </Block>
+
+                      <Block
+                        title="Linked addresses"
+                        hint={
+                          selected.provider === "icloud"
+                            ? "Custom domain and alias addresses that deliver to this iCloud mailbox. Add them to send as those addresses."
+                            : "Extra From addresses for this mailbox (aliases, custom domains). Mail still syncs through this account."
+                        }
+                      >
+                        <div className="account-identity-panel">
+                          <div className="account-identity-list">
+                            {(
+                              selected.identities?.length
+                                ? selected.identities
+                                : [
+                                    {
+                                      id: `${selected.id}-primary`,
+                                      email: selected.email,
+                                      name: selected.name,
+                                      primary: true,
+                                    },
+                                  ]
+                            ).map((identity) => (
+                              <div
+                                key={identity.id}
+                                className={`account-identity-row${
+                                  justAddedIdentityId === identity.id
+                                    ? " just-added"
+                                    : ""
+                                }`}
+                              >
+                                <div className="account-identity-meta">
+                                  <strong>{identity.email}</strong>
+                                  <span>
+                                    {identity.primary
+                                      ? "Primary"
+                                      : "Send as"}
+                                    {identity.name &&
+                                    identity.name !== selected.name
+                                      ? ` · ${identity.name}`
+                                      : ""}
+                                  </span>
+                                </div>
+                                {!identity.primary ? (
+                                  <button
+                                    type="button"
+                                    className="settings-section-btn"
+                                    disabled={
+                                      busy ||
+                                      identityBusy ||
+                                      !hasIntrayBridge()
+                                    }
+                                    aria-label={`Remove ${identity.email}`}
+                                    onClick={() => {
+                                      setIdentityBusy(true);
+                                      setIdentityNote(null);
+                                      void (async () => {
+                                        try {
+                                          const dto =
+                                            await bridgeRemoveAccountIdentity(
+                                              selected.id,
+                                              identity.id,
+                                            );
+                                          onUpdateAccount?.({
+                                            ...selected,
+                                            ...accountDtoToUi(dto),
+                                          });
+                                          setJustAddedIdentityId(null);
+                                          setIdentityNote({
+                                            kind: "ok",
+                                            text: `Removed ${identity.email}.`,
+                                          });
+                                        } catch (err) {
+                                          setIdentityNote({
+                                            kind: "err",
+                                            text:
+                                              err instanceof Error
+                                                ? err.message
+                                                : "Could not remove address.",
+                                          });
+                                        } finally {
+                                          setIdentityBusy(false);
+                                        }
+                                      })();
+                                    }}
+                                  >
+                                    <Trash2 size={14} strokeWidth={1.75} />
+                                    Remove
+                                  </button>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="account-identity-add">
+                            <input
+                              className="settings-input"
+                              type="email"
+                              value={identityEmailDraft}
+                              disabled={
+                                identityBusy || !hasIntrayBridge()
+                              }
+                              placeholder="you@yourdomain.com"
+                              aria-label="Linked email address"
+                              onChange={(e) => {
+                                setIdentityEmailDraft(e.target.value);
+                                if (identityNote?.kind === "err") {
+                                  setIdentityNote(null);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key !== "Enter") return;
+                                e.preventDefault();
+                                (
+                                  e.currentTarget
+                                    .parentElement?.querySelector(
+                                      "button.account-identity-add-btn",
+                                    ) as HTMLButtonElement | null
+                                )?.click();
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="compose settings-add account-identity-add-btn"
+                              disabled={
+                                identityBusy ||
+                                !hasIntrayBridge() ||
+                                !identityEmailDraft.trim()
+                              }
+                              onClick={() => {
+                                const email = identityEmailDraft.trim();
+                                if (!email) return;
+                                setIdentityBusy(true);
+                                setIdentityNote(null);
+                                void (async () => {
+                                  try {
+                                    const before = new Set(
+                                      (selected.identities ?? []).map(
+                                        (i) => i.id,
+                                      ),
+                                    );
+                                    const dto =
+                                      await bridgeAddAccountIdentity({
+                                        accountId: selected.id,
+                                        email,
+                                      });
+                                    const next = {
+                                      ...selected,
+                                      ...accountDtoToUi(dto),
+                                    };
+                                    onUpdateAccount?.(next);
+                                    const added = next.identities?.find(
+                                      (i) =>
+                                        !before.has(i.id) &&
+                                        i.email.toLowerCase() ===
+                                          email.toLowerCase(),
+                                    );
+                                    setJustAddedIdentityId(
+                                      added?.id ?? null,
+                                    );
+                                    setIdentityEmailDraft("");
+                                    setIdentityNote({
+                                      kind: "ok",
+                                      text: `Added ${email}. It appears above and in From when you compose.`,
+                                    });
+                                  } catch (err) {
+                                    setIdentityNote({
+                                      kind: "err",
+                                      text:
+                                        err instanceof Error
+                                          ? err.message
+                                          : "Could not link address.",
+                                    });
+                                  } finally {
+                                    setIdentityBusy(false);
+                                  }
+                                })();
+                              }}
+                            >
+                              {identityBusy ? (
+                                <RefreshCw
+                                  size={14}
+                                  strokeWidth={1.75}
+                                  className="spin"
+                                />
+                              ) : (
+                                <Plus size={14} strokeWidth={1.75} />
+                              )}
+                              {identityBusy ? "Adding…" : "Add"}
+                            </button>
+                          </div>
+                          {identityNote ? (
+                            <p
+                              className={`account-identity-note ${identityNote.kind}`}
+                              role="status"
+                              aria-live="polite"
+                            >
+                              {identityNote.text}
+                            </p>
+                          ) : (
+                            <p className="account-identity-note">
+                              {(selected.identities?.length ?? 1) > 1
+                                ? `${selected.identities!.length} addresses on this mailbox — pick any as From when composing.`
+                                : "Add a custom domain or alias, then pick it as From when composing."}
+                            </p>
+                          )}
+                        </div>
                       </Block>
 
                       <Block
