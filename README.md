@@ -293,7 +293,7 @@ cd apps/desktop
 bun run pack
 ```
 
-From the repo root, `bun run pack:desktop` builds the native mail store, then the app, then the installer. Output is `apps/desktop/release/Intray-Setup-0.1.0.exe`.
+From the repo root, `bun run pack:desktop` builds the native mail store, then the app, then the installer. Output is `apps/desktop/release/Intray-Setup-0.1.1.exe`.
 
 The installer is an assisted NSIS setup: current user or all users, a chosen folder, Start menu and desktop shortcuts, and the GPL license. Uninstall leaves downloaded mail and keys in the user profile. The executable is unsigned until a code-signing certificate is added.
 
