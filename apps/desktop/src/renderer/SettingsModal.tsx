@@ -5,6 +5,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  FlaskConical,
   ImagePlus,
   Info,
   KeyRound,
@@ -229,6 +230,7 @@ type TabId =
   | "shortcuts"
   | "accounts"
   | "privacy"
+  | "testing"
   | "about";
 
 const SETTINGS_TABS: {
@@ -245,6 +247,7 @@ const SETTINGS_TABS: {
   { id: "shortcuts", label: "Shortcuts", Icon: Keyboard, group: "System" },
   { id: "accounts", label: "Accounts", Icon: Layers, group: "System" },
   { id: "privacy", label: "Privacy", Icon: Shield, group: "System" },
+  { id: "testing", label: "Testing support", Icon: FlaskConical, group: "System" },
   { id: "about", label: "About", Icon: Info, group: "System" },
 ];
 
@@ -345,6 +348,10 @@ function credentialGuide(account: Account) {
 export function SettingsModal({
   prefs,
   accounts,
+  demoActive = false,
+  canUnloadDemo = false,
+  onLoadDemo,
+  onUnloadDemo,
   onChange,
   onAddAccount,
   onReconnectAccount,
@@ -354,6 +361,12 @@ export function SettingsModal({
 }: {
   prefs: Preferences;
   accounts: Account[];
+  /** True while the sample inbox is showing instead of synced mail. */
+  demoActive?: boolean;
+  /** True when at least one real account can be restored after unloading demo. */
+  canUnloadDemo?: boolean;
+  onLoadDemo?: () => void;
+  onUnloadDemo?: () => void;
   onChange: (p: Preferences) => void;
   onAddAccount: () => void;
   onReconnectAccount?: (account: Account) => void;
@@ -2705,6 +2718,51 @@ export function SettingsModal({
                     />
                   </Row>
                 </Block>
+              </>
+            )}
+
+            {tab === "testing" && (
+              <>
+                <Block
+                  title="Demo inbox"
+                  hint="Load sample mail to try layouts and flows without touching your synced inbox. Unload to return to your regular email."
+                >
+                  <Row
+                    title="Sample data"
+                    hint={
+                      demoActive
+                        ? canUnloadDemo
+                          ? "Demo mail is showing — your accounts stay connected."
+                          : "Demo mail is showing. Add an account to leave demo."
+                        : "Your synced inboxes are showing."
+                    }
+                  >
+                    <div className="settings-demo-actions">
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={demoActive || !onLoadDemo}
+                        onClick={() => onLoadDemo?.()}
+                      >
+                        <FlaskConical size={14} strokeWidth={1.75} />
+                        Load demo
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={!demoActive || !canUnloadDemo || !onUnloadDemo}
+                        onClick={() => onUnloadDemo?.()}
+                      >
+                        <RotateCcw size={14} strokeWidth={1.75} />
+                        Unload demo
+                      </button>
+                    </div>
+                  </Row>
+                </Block>
+                <p className="settings-inline-note">
+                  Unloading restores your connected accounts and synced mail. Demo
+                  changes are local only and are discarded when you leave demo.
+                </p>
               </>
             )}
 

@@ -12,6 +12,7 @@ import { Check } from "lucide-react";
 import {
   filterContacts,
   mentionQueryAt,
+  useContacts,
   type Contact,
 } from "./contacts";
 import type { Recipient } from "./data/mock";
@@ -46,8 +47,9 @@ export function MentionTextarea({
   const [active, setActive] = useState(0);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
 
+  const contacts = useContacts();
   const exclude = new Set(excludeEmails.map((e) => e.toLowerCase()));
-  const matches = open ? filterContacts(query, exclude) : [];
+  const matches = open ? filterContacts(query, exclude, 6, contacts) : [];
 
   const syncMention = (next: string, caret: number) => {
     const hit = mentionQueryAt(next, caret);
@@ -234,6 +236,7 @@ export function RecipientChips({
   const textUndoRef = useRef<string[]>([]);
   const textRedoRef = useRef<string[]>([]);
 
+  const contacts = useContacts();
   const excluded = useMemo(() => {
     const set = new Set(excludeEmails.map((e) => e.toLowerCase()));
     for (const p of people) set.add(p.email.toLowerCase());
@@ -242,7 +245,7 @@ export function RecipientChips({
 
   const predictions =
     onAdd && draft.trim().length > 0
-      ? filterContacts(draft, excluded, 6)
+      ? filterContacts(draft, excluded, 6, contacts)
       : [];
 
   useEffect(() => {

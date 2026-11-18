@@ -14,7 +14,7 @@ type AppWindowProps = {
 export function AppWindow({ alt, className = "" }: AppWindowProps) {
   return (
     <div
-      className={`@container relative w-full overflow-hidden rounded-2xl border border-[#e4e5e8] bg-[#f0f1f3] shadow-[0_24px_60px_-36px_rgba(20,24,40,0.45)] ${className}`}
+      className={`@container relative w-full overflow-hidden rounded-2xl border border-white/10 bg-[#121214] shadow-[0_24px_60px_-28px_rgba(0,0,0,0.85)] ${className}`}
       style={{ aspectRatio: `${DEMO.w} / ${DEMO.h}` }}
       role="img"
       aria-label={alt}

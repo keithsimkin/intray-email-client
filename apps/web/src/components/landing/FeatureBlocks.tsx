@@ -1,12 +1,51 @@
 import type { ReactNode } from "react";
 import Image from "next/image";
+import { siClaude, siGooglegemini, siOllama } from "simple-icons";
 import {
-  Chip,
-  DEMO_MAIL,
   DemoListPane,
   L,
   Squircle,
 } from "./DemoInbox";
+
+const AI_SUBS = [
+  {
+    name: "Claude",
+    how: "API key",
+    color: `#${siClaude.hex}`,
+    path: siClaude.path,
+  },
+  {
+    name: "OpenAI",
+    how: "API key",
+    color: "#10a37f",
+    // OpenAI mark — simple-icons dropped the brand; keep a compact local path.
+    path: "M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.774-4.28 5.989 5.989 0 0 0 3.992-2.9 6.056 6.056 0 0 0-.747-7.099zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.844-3.375L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.409-.672zm2.01-3.023-.141-.085-4.784-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.795.795 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z",
+  },
+  {
+    name: "Grok",
+    how: "CLI login",
+    color: "#ffffff",
+    path: "M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.2 6.7 3.72v.01L12 11.7 5.3 7.93 12 4.2zm-7 5.3 6.2 3.45v6.9L5 16.35V9.5zm8.2 10.35v-6.9L19 9.5v6.85l-5.8 3.3z",
+  },
+  {
+    name: "Gemini",
+    how: "API key",
+    color: `#${siGooglegemini.hex}`,
+    path: siGooglegemini.path,
+  },
+  {
+    name: "Ollama",
+    how: "Local",
+    color: "#ededed",
+    path: siOllama.path,
+  },
+  {
+    name: "Cursor",
+    how: "MCP / agents",
+    color: "#ffffff",
+    path: "M12 2 2 19.5h4.2L12 8.8l5.8 10.7H22L12 2zm0 8.4-2.7 5.1h5.4L12 10.4z",
+  },
+] as const;
 
 type Feature = {
   title: string;
@@ -18,14 +57,14 @@ type Feature = {
 
 const features: Feature[] = [
   {
-    title: "All inboxes",
-    body: "Gmail, Outlook, iCloud, and IMAP in one tray — switch without switching apps.",
+    title: "Unified inbox",
+    body: "Gmail, Outlook, iCloud, and IMAP in one tray — Superhuman-style triage without the subscription tax.",
     span: "lg:col-span-2",
     visual: <AllInboxesVisual />,
   },
   {
-    title: "Important first",
-    body: "Local AI ranks what needs you now. The rest waits quietly.",
+    title: "Power tools",
+    body: "Keyboard shortcuts, snooze, labels, undo send, and Important — built for speed on Windows.",
     span: "",
     visual: <ImportantVisual />,
   },
@@ -36,10 +75,10 @@ const features: Feature[] = [
     visual: <OtpVisual />,
   },
   {
-    title: "Ask on your machine",
-    body: "Draft replies and summarize threads with a local model — mail never leaves this PC for AI.",
+    title: "Your AI, your keys",
+    body: "Bring Claude, OpenAI, Grok, Gemini, or Ollama — draft, summarize, and label threads with the subscription you already have. Mail stays on your machine.",
     span: "lg:col-span-2",
-    visual: <TrayVisual />,
+    visual: <AiProvidersVisual />,
   },
   {
     title: "Any mailbox",
@@ -49,7 +88,7 @@ const features: Feature[] = [
   },
   {
     title: "No mail relay",
-    body: "TLS straight to providers. Nothing routes through Intray servers.",
+    body: "TLS straight to providers. AI talks only to the model you pick — never through an Intray cloud.",
     span: "",
     id: "privacy",
     visual: <PrivacyVisual />,
@@ -61,14 +100,14 @@ export function UnifiedFeatures() {
     <section id="features" className="landing-light px-5 pb-6 pt-14 md:pt-16">
       <div className="mx-auto max-w-6xl">
         <div className="grid items-start gap-5 md:grid-cols-2 md:gap-10">
-          <h2 className="font-display text-[clamp(2rem,4.5vw,3.25rem)] uppercase leading-[0.95] tracking-[0.02em] text-[#111]">
+          <h2 className="font-display text-[clamp(2rem,4.5vw,3.25rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
             Features.
             <br />
             Everything your tray needs.
           </h2>
-          <p className="max-w-md text-sm leading-relaxed text-[#4a5b52] md:pt-2 md:text-[15px]">
-            Unified accounts, tray triage, local AI, and privacy by architecture — the small
-            desktop details that make daily mail feel lighter.
+          <p className="max-w-md text-sm leading-relaxed text-[#9ca3af] md:pt-2 md:text-[15px]">
+            Unified mail, Superhuman-grade power tools, and AI you already subscribe to — Claude,
+            OpenAI, Grok, Gemini, or local Ollama — wired into one Windows inbox you can audit.
           </p>
         </div>
 
@@ -77,7 +116,7 @@ export function UnifiedFeatures() {
             <article
               key={f.title}
               id={f.id}
-              className={`group relative flex w-[82%] shrink-0 snap-start flex-col overflow-hidden rounded-2xl border border-[#e4e5e8] sm:w-auto ${f.span}`}
+              className={`group relative flex w-[82%] shrink-0 snap-start flex-col overflow-hidden rounded-2xl border border-white/10 sm:w-auto ${f.span}`}
               style={{ background: L.mutedSurface, color: L.fg }}
             >
               <div className="relative z-10 px-5 pb-3 pt-5 sm:px-6 sm:pt-6">
@@ -101,8 +140,12 @@ function AllInboxesVisual() {
   return (
     <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
       <div
-        className="absolute left-5 top-2 right-0 -bottom-4 flex overflow-hidden rounded-tl-xl border bg-white max-sm:[mask-image:linear-gradient(to_bottom,black_60%,transparent_92%)] sm:left-6 sm:top-3"
-        style={{ borderColor: L.line, boxShadow: "0 18px 40px -28px rgba(20,24,40,0.35)" }}
+        className="absolute left-5 top-2 right-0 -bottom-4 flex overflow-hidden rounded-tl-xl border max-sm:[mask-image:linear-gradient(to_bottom,black_60%,transparent_92%)] sm:left-6 sm:top-3"
+        style={{
+          borderColor: L.line,
+          background: L.elevated,
+          boxShadow: "0 18px 40px -28px rgba(0,0,0,0.55)",
+        }}
       >
         <div className="w-[34%] border-r p-3" style={{ borderColor: L.line, background: L.mutedSurface }}>
           <p className="text-[11px] font-medium" style={{ color: L.muted }}>
@@ -112,10 +155,11 @@ function AllInboxesVisual() {
             ["Work · Gmail", "WK", "#7c3aed", "12"],
             ["Personal · Outlook", "PS", "#2563eb", "4"],
             ["Family · iCloud", "IC", "#0891b2", "2"],
-          ].map(([label, ini, tone, n]) => (
+          ].map(([label, ini, tone, n], i) => (
             <div
               key={label as string}
-              className="mt-2 flex items-center gap-2 rounded-lg px-2 py-1.5 first:mt-3 first:bg-white"
+              className="mt-2 flex items-center gap-2 rounded-lg px-2 py-1.5 first:mt-3"
+              style={{ background: i === 0 ? L.elevated : "transparent" }}
             >
               <Squircle initials={ini as string} tone={tone as string} size={24} />
               <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: L.fgDim }}>
@@ -139,8 +183,8 @@ function ImportantVisual() {
   return (
     <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
       <div
-        className="absolute left-5 right-0 top-2 bottom-0 overflow-hidden rounded-tl-xl border bg-white sm:left-6 sm:top-3"
-        style={{ borderColor: L.line }}
+        className="absolute left-5 right-0 top-2 bottom-0 overflow-hidden rounded-tl-xl border sm:left-6 sm:top-3"
+        style={{ borderColor: L.line, background: L.elevated }}
       >
         <DemoListPane filter="important" />
       </div>
@@ -152,8 +196,12 @@ function OtpVisual() {
   return (
     <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
       <div
-        className="absolute left-5 right-5 top-5 rounded-2xl border bg-white p-4 sm:left-6 sm:right-6"
-        style={{ borderColor: L.line, boxShadow: "0 16px 40px -24px rgba(20,24,40,0.35)" }}
+        className="absolute left-5 right-5 top-5 rounded-2xl border p-4 sm:left-6 sm:right-6"
+        style={{
+          borderColor: L.line,
+          background: L.elevated,
+          boxShadow: "0 16px 40px -24px rgba(0,0,0,0.55)",
+        }}
       >
         <div className="flex items-center gap-2.5">
           <span
@@ -174,7 +222,7 @@ function OtpVisual() {
           type="button"
           tabIndex={-1}
           className="mt-3 inline-flex h-8 items-center rounded-full px-3 text-[12px] font-semibold text-white"
-          style={{ background: L.fg }}
+          style={{ background: L.blue }}
         >
           Copy code
         </button>
@@ -194,68 +242,50 @@ function OtpVisual() {
   );
 }
 
-function TrayVisual() {
-  const mail = DEMO_MAIL[3];
+function AiProvidersVisual() {
   return (
     <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
       <div
-        className="absolute left-5 top-2 right-0 -bottom-4 flex overflow-hidden rounded-tl-xl border bg-white sm:left-6 sm:top-3"
-        style={{ borderColor: L.line, boxShadow: "0 18px 40px -28px rgba(20,24,40,0.35)" }}
+        className="absolute left-5 top-2 right-0 -bottom-4 overflow-hidden rounded-tl-xl border p-4 sm:left-6 sm:top-3 sm:p-5"
+        style={{
+          borderColor: L.line,
+          background: L.elevated,
+          boxShadow: "0 18px 40px -28px rgba(0,0,0,0.55)",
+        }}
       >
-        <div className="hidden w-[42%] shrink-0 border-r sm:block" style={{ borderColor: L.line }}>
-          <DemoListPane />
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em]" style={{ color: L.muted }}>
+            Supported AI
+          </p>
+          <p className="text-[11px]" style={{ color: L.muted }}>
+            Your keys · your sub
+          </p>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="border-b px-4 py-3" style={{ borderColor: L.line }}>
-            <p className="text-[14px] font-semibold tracking-[-0.02em]">{mail.subject}</p>
-            <div className="mt-2 flex items-center gap-2">
-              <Squircle initials={mail.ini} tone={mail.tone} size={28} />
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {AI_SUBS.map((ai) => (
+            <div
+              key={ai.name}
+              className="flex items-center gap-2.5 rounded-xl border px-2.5 py-2"
+              style={{ borderColor: L.line, background: L.mutedSurface }}
+            >
+              <span
+                className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px]"
+                style={{ background: L.elevated, color: ai.color }}
+              >
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                  <path d={ai.path} />
+                </svg>
+              </span>
               <div className="min-w-0">
-                <p className="text-[12px] font-semibold">{mail.from}</p>
-                <p className="text-[11px]" style={{ color: L.muted }}>
-                  To you · {mail.time}
+                <p className="truncate text-[12.5px] font-semibold" style={{ color: L.fg }}>
+                  {ai.name}
+                </p>
+                <p className="truncate text-[10px]" style={{ color: L.muted }}>
+                  {ai.how}
                 </p>
               </div>
-              <Chip label={mail.chip} color={mail.chipColor} />
             </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden px-4 py-3">
-            <p className="text-[12.5px] leading-relaxed" style={{ color: L.fgDim }}>
-              {mail.snippet} Happy to move if Friday is tight on your side.
-            </p>
-          </div>
-          <div className="border-t p-3" style={{ borderColor: L.line, background: L.mutedSurface }}>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[12px] font-semibold" style={{ color: L.fgDim }}>
-                Ask
-              </span>
-              <span className="text-[11px]" style={{ color: L.muted }}>
-                Local model · on this PC
-              </span>
-            </div>
-            <p className="mt-2 text-right text-[12px]" style={{ color: L.fgDim }}>
-              Draft a short yes to Friday 10
-            </p>
-            <div className="mt-2 rounded-xl bg-white p-2.5" style={{ border: `1px solid ${L.line}` }}>
-              <p className="text-[12.5px] leading-relaxed">
-                Friday at 10 works — I&apos;ll lock the room and send the invite.
-              </p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {["Insert reply", "Shorter", "Warmer"].map((a, i) => (
-                  <span
-                    key={a}
-                    className="rounded-full px-2.5 py-1 text-[11px] font-medium"
-                    style={{
-                      background: i === 0 ? L.fg : L.mutedSurface,
-                      color: i === 0 ? "#fff" : L.fgDim,
-                    }}
-                  >
-                    {a}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
       </div>
     </div>
@@ -275,8 +305,12 @@ function ProvidersVisual() {
   return (
     <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
       <div
-        className="absolute left-5 top-2 right-0 -bottom-4 overflow-hidden rounded-tl-xl border bg-white p-4 sm:left-6 sm:top-3 sm:p-5"
-        style={{ borderColor: L.line, boxShadow: "0 18px 40px -28px rgba(20,24,40,0.35)" }}
+        className="absolute left-5 top-2 right-0 -bottom-4 overflow-hidden rounded-tl-xl border p-4 sm:left-6 sm:top-3 sm:p-5"
+        style={{
+          borderColor: L.line,
+          background: L.elevated,
+          boxShadow: "0 18px 40px -28px rgba(0,0,0,0.55)",
+        }}
       >
         <div className="flex items-baseline justify-between gap-2">
           <p className="text-[11px] font-medium uppercase tracking-[0.08em]" style={{ color: L.muted }}>
@@ -293,7 +327,10 @@ function ProvidersVisual() {
               className="flex items-center gap-2.5 rounded-xl border px-2.5 py-2"
               style={{ borderColor: L.line, background: L.mutedSurface }}
             >
-              <span className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px] bg-white">
+              <span
+                className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px]"
+                style={{ background: L.elevated }}
+              >
                 <Image src={p.logo} alt="" width={28} height={28} className="object-contain" unoptimized />
               </span>
               <div className="min-w-0">
@@ -320,8 +357,8 @@ function PrivacyVisual() {
       style={{ background: L.bg }}
     >
       <div
-        className="w-full max-w-[220px] rounded-2xl border border-dashed bg-white p-4 text-center"
-        style={{ borderColor: L.lineStrong }}
+        className="w-full max-w-[220px] rounded-2xl border border-dashed p-4 text-center"
+        style={{ borderColor: L.lineStrong, background: L.elevated }}
       >
         <p className="text-[10px] font-medium uppercase tracking-[0.14em]" style={{ color: L.muted }}>
           Intray server

@@ -95,11 +95,11 @@ export type FolderCountEntry = {
   unread: number;
 };
 
-/** Sidebar badge data — totals + unread, keyed by folder id or `label:<id>`. */
+/** Sidebar badge data — totals + unread conversations, keyed by folder id or `label:<id>`. */
 export type MailFolderCounts = {
   folders: Record<string, FolderCountEntry>;
   labels: Record<string, FolderCountEntry>;
-  /** Unread inbox across the scoped account(s) — drives Unified / rail badges. */
+  /** Unread inbox threads across the scoped account(s) — drives Unified / rail badges. */
   inboxUnread: number;
 };
 

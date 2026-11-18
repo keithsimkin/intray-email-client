@@ -34,8 +34,8 @@ function rememberSender(row: MessageRow): void {
 }
 
 const INITIAL_PAGE_SIZE = 50;
-const INITIAL_MAX_MESSAGES = 200;
-const IMAP_INBOX_LIMIT = 120;
+const INITIAL_MAX_MESSAGES = 400;
+const IMAP_INBOX_LIMIT = 400;
 const EMAIL_CONCURRENCY = 5;
 
 /**

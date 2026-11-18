@@ -11,6 +11,8 @@ import {
   markSendFailed,
   markSendRetry,
   markSendSent,
+  nextSendDueMs,
+  nextSnoozeDueMs,
   recoverStaleSends,
   setSendQueueMessageId,
   updateMessageFlags,
@@ -19,16 +21,19 @@ import type { ComposeDraft, QueuedSendResult } from "../../shared/types";
 import { buildMessageId } from "./mime";
 import { sendMail } from "./service";
 
-const TICK_MS = 2_000;
 const MAX_ATTEMPTS = 8;
 const BASE_BACKOFF_MS = 15_000;
 const MAX_BACKOFF_MS = 15 * 60_000;
+/** Nothing scheduled → poll this often. Real work sets an exact wakeup instead. */
+const IDLE_TICK_MS = 15_000;
+const MIN_TICK_MS = 250;
 /** A claimed row older than this is assumed to belong to a dead process. */
 const SEND_LOCK_MS = 3 * 60_000;
 const MAX_SCHEDULE_SECONDS = 365 * 24 * 60 * 60;
 
 let timer: NodeJS.Timeout | null = null;
 let flushing = false;
+let started = false;
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -162,8 +167,44 @@ async function flushDue(): Promise<void> {
   }
 }
 
+/** Earliest queued send / snooze wakeup, or null when the queue is empty. */
+function nextDueAtMs(): number | null {
+  const times: number[] = [];
+  const snooze = nextSnoozeDueMs();
+  if (snooze != null) times.push(snooze);
+  const send = nextSendDueMs();
+  if (send != null) times.push(send);
+  return times.length ? Math.min(...times) : null;
+}
+
+function schedule(delayMs: number): void {
+  if (!started) return;
+  if (timer) clearTimeout(timer);
+  // Scheduled rows wake us at their own time; otherwise stay on the idle tick.
+  const delay = Math.max(MIN_TICK_MS, Math.min(delayMs, IDLE_TICK_MS));
+  timer = setTimeout(runTick, delay);
+}
+
+function scheduleFromQueue(): void {
+  const due = nextDueAtMs();
+  schedule(due == null ? IDLE_TICK_MS : due - Date.now());
+}
+
+function runTick(): void {
+  timer = null;
+  if (!started) return;
+  void flushDue()
+    .catch((e) => console.error("Outbox flush failed", e))
+    .finally(() => scheduleFromQueue());
+}
+
 export function ensureQueueLoop(): void {
-  if (timer) return;
+  if (started) {
+    // A send queued while the loop sleeps should not wait for the idle tick.
+    if (!flushing) schedule(0);
+    return;
+  }
+  started = true;
   // Single-instance app: any row still marked `sending` at this point was
   // interrupted by a crash/quit. Recover it immediately instead of waiting for
   // the 3-minute send lock to expire.
@@ -171,15 +212,13 @@ export function ensureQueueLoop(): void {
   if (interrupted > 0) {
     console.warn(`Recovered ${interrupted} interrupted outbox send(s)`);
   }
-  timer = setInterval(() => {
-    void flushDue().catch((e) => console.error("Outbox flush failed", e));
-  }, TICK_MS);
-  void flushDue().catch((e) => console.error("Outbox flush failed", e));
+  runTick();
 }
 
 export function stopQueueLoop(): void {
+  started = false;
   if (!timer) return;
-  clearInterval(timer);
+  clearTimeout(timer);
   timer = null;
 }
 

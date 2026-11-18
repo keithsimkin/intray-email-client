@@ -80,6 +80,8 @@ export function sanitizeEmailHtml(input: string | null | undefined): string {
   );
 
   html = html.replace(/\ssrcdoc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  // Autofocus inside mail can scroll the reader to a deep element on open.
+  html = html.replace(/\sautofocus\b(?:=(["'][^"']*["']|[^\s>]+))?/gi, "");
   html = neutralizeUrls(html);
 
   return html;

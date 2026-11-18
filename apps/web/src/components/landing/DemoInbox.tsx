@@ -1,14 +1,14 @@
 /** Demo Intray chrome — light theme tokens + layout from apps/desktop, fictional mail only. */
 
 export const L = {
-  bg: "#f0f1f3",
-  elevated: "#ffffff",
-  mutedSurface: "#ebecef",
-  fg: "#141416",
-  fgDim: "#3a3a3e",
-  muted: "#6b6f76",
-  line: "#e4e5e8",
-  lineStrong: "#d5d6da",
+  bg: "#121214",
+  elevated: "#1a1a1e",
+  mutedSurface: "#16161a",
+  fg: "#ededed",
+  fgDim: "#c4c4c8",
+  muted: "#8a8f98",
+  line: "#ffffff14",
+  lineStrong: "#ffffff22",
   blue: "#3b6fd9",
   brand: "#760e0a",
 } as const;

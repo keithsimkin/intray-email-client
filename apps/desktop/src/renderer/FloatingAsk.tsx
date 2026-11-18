@@ -11,7 +11,7 @@ import {
 import { ArrowUp, Eye, Mail, Plus, Sparkles, X } from "lucide-react";
 import "./FloatingAsk.css";
 import { aiAskAboutMail } from "./aiClient";
-import { buildContacts, type Contact } from "./contacts";
+import { useContacts, type Contact } from "./contacts";
 import type { Label, Message } from "./data/mock";
 import type { Preferences } from "./preferences";
 
@@ -425,7 +425,7 @@ export function FloatingAsk({
   const [pinnedFocusId, setPinnedFocusId] = useState<string | null>(null);
   const pendingCaret = useRef<number | null>(null);
 
-  const contacts = useMemo(() => buildContacts(), []);
+  const contacts = useContacts();
 
   const focusId = focusMessage?.id ?? null;
   if (focusId && focusId !== pinnedFocusId) {

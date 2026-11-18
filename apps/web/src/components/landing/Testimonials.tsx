@@ -37,10 +37,10 @@ export function Testimonials() {
 
   return (
     <section id="testimonials" className="landing-light px-5 py-14 md:py-16">
-      <div className="mx-auto max-w-6xl rounded-[1.75rem] bg-[#eaf3f0] px-6 py-10 md:px-10 md:py-12">
+      <div className="mx-auto max-w-6xl rounded-[1.75rem] border border-white/10 bg-[#121214] px-6 py-10 md:px-10 md:py-12">
         <div className="grid gap-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-start">
           <div>
-            <h2 className="max-w-xs font-display text-[clamp(1.85rem,3.5vw,2.75rem)] uppercase leading-[0.95] tracking-[0.02em] text-[#111]">
+            <h2 className="max-w-xs font-display text-[clamp(1.85rem,3.5vw,2.75rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
               Customer reviews and feedback from real users
             </h2>
             <div className="mt-7 flex gap-3">
@@ -48,7 +48,7 @@ export function Testimonials() {
                 type="button"
                 aria-label="Previous reviews"
                 onClick={() => setIndex((i) => (i - 1 + quotes.length) % quotes.length)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#111]/12 bg-white text-[#111] transition hover:border-[#111]/35"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-[#1a1a1e] text-white transition hover:border-white/35"
               >
                 <ChevronLeft size={18} strokeWidth={2} />
               </button>
@@ -56,7 +56,7 @@ export function Testimonials() {
                 type="button"
                 aria-label="Next reviews"
                 onClick={() => setIndex((i) => (i + 1) % quotes.length)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#111]/12 bg-white text-[#111] transition hover:border-[#111]/35"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-[#1a1a1e] text-white transition hover:border-white/35"
               >
                 <ChevronRight size={18} strokeWidth={2} />
               </button>
@@ -67,7 +67,7 @@ export function Testimonials() {
             {visible.map((q) => (
               <blockquote
                 key={`${q.name}-${index}`}
-                className="flex flex-col rounded-[1.25rem] bg-white p-5 shadow-[0_14px_36px_-28px_rgba(20,40,60,0.4)]"
+                className="flex flex-col rounded-[1.25rem] border border-white/10 bg-[#1a1a1e] p-5 shadow-[0_14px_36px_-20px_rgba(0,0,0,0.7)]"
               >
                 <div className="flex items-center gap-3">
                   <Image
@@ -78,8 +78,8 @@ export function Testimonials() {
                     className="h-10 w-10 rounded-full object-cover"
                   />
                   <div>
-                    <p className="text-sm font-semibold text-[#111]">{q.name}</p>
-                    <p className="text-xs text-[#6b7280]">{q.role}</p>
+                    <p className="text-sm font-semibold text-white">{q.name}</p>
+                    <p className="text-xs text-[#8a8f98]">{q.role}</p>
                   </div>
                 </div>
                 <div className="mt-3 flex gap-0.5 text-[#c8f04a]" aria-label="5 stars">
@@ -87,7 +87,7 @@ export function Testimonials() {
                     <Star key={i} size={13} fill="currentColor" strokeWidth={0} />
                   ))}
                 </div>
-                <p className="mt-3 flex-1 text-sm leading-relaxed text-[#4a5b52]">
+                <p className="mt-3 flex-1 text-sm leading-relaxed text-[#9ca3af]">
                   &ldquo;{q.body}&rdquo;
                 </p>
               </blockquote>
