@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Bebas_Neue, Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -40,6 +41,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col bg-[#070708] text-[#ededed]">
         {children}
+        <Script
+          src="https://www.ship-or-die.com/hackathon/verify.js"
+          strategy="afterInteractive"
+          data-site="6717b71973f7ad5cc6fc83bd23d82e503d07a4f1"
+        />
       </body>
     </html>
   );
