@@ -9,7 +9,7 @@ const steps = [
   {
     n: "02",
     title: "Triage from the tray",
-    body: "Archive, snooze, reply, and copy OTPs from the Windows tray flyout — built for toasts.",
+    body: "Archive, snooze, reply, and copy OTPs from the system tray flyout — built for toasts.",
   },
   {
     n: "03",
@@ -51,7 +51,7 @@ export function ProductPanels() {
           </div>
 
           <div className="relative min-w-0">
-            <AppWindow alt="Intray Windows desktop app — unified inbox in light mode" />
+            <AppWindow alt="Intray desktop app — unified inbox in light mode" />
           </div>
         </div>
       </div>

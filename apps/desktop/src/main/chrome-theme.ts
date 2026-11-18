@@ -2,7 +2,7 @@ import type { BrowserWindow } from "electron";
 
 export type ChromeTheme = "dark" | "light";
 
-/** Native Windows caption overlay + window chrome — keep in sync with CSS --bg / --fg. */
+/** Native caption overlay + window chrome — keep in sync with CSS --bg / --fg. */
 export function chromeThemeOptions(theme: ChromeTheme): {
   backgroundColor: string;
   titleBarOverlay: {
@@ -34,5 +34,8 @@ export function chromeThemeOptions(theme: ChromeTheme): {
 export function applyChromeTheme(win: BrowserWindow, theme: ChromeTheme): void {
   const opts = chromeThemeOptions(theme);
   win.setBackgroundColor(opts.backgroundColor);
-  win.setTitleBarOverlay(opts.titleBarOverlay);
+  // titleBarOverlay is Windows-only; macOS uses hiddenInset + traffic lights.
+  if (process.platform === "win32") {
+    win.setTitleBarOverlay(opts.titleBarOverlay);
+  }
 }

@@ -10,7 +10,11 @@
     "build:native": "bun --filter @intray/native build",
     "build:desktop": "bun run build:native && bun --filter @intray/desktop build",
     "pack:desktop": "bun run build:native && bun --filter @intray/desktop pack",
-    "release:desktop": "bun run build:native && bun --filter @intray/desktop release"
+    "pack:desktop:win": "bun run build:native && bun --filter @intray/desktop pack:win",
+    "pack:desktop:mac": "bun run build:native && bun --filter @intray/desktop pack:mac",
+    "release:desktop": "bun run build:native && bun --filter @intray/desktop release",
+    "release:desktop:win": "bun run build:native && bun --filter @intray/desktop release:win",
+    "release:desktop:mac": "bun run build:native && bun --filter @intray/desktop release:mac"
   },
   "packageManager": "bun@1.3.2"
 }

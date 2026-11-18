@@ -1,14 +1,14 @@
 appId: app.intray.desktop
 productName: Intray
 # Stamps app-update.yml so electron-updater can poll GitHub Releases.
-# Local/CI packs still use `--publish never` and never upload.
+# Local packs use `--publish never`; CI release workflow uses `--publish always`.
 publish:
   provider: github
   owner: keithsimkin
   repo: intray-email-client
   releaseType: release
 copyright: Copyright © 2026 Intray contributors
-artifactName: Intray-Setup-${version}.${ext}
+artifactName: Intray-${version}-${os}-${arch}.${ext}
 compression: normal
 npmRebuild: false
 asar: true
@@ -27,6 +27,7 @@ files:
 asarUnpack:
   - "**/*.node"
 win:
+  artifactName: Intray-Setup-${version}.${ext}
   target:
     - target: nsis
       arch:
@@ -58,3 +59,23 @@ nsis:
   installerSidebar: installer-sidebar.bmp
   uninstallerSidebar: uninstaller-sidebar.bmp
   differentialPackage: false
+mac:
+  category: public.app-category.productivity
+  # Apple Silicon first; Intel / universal later.
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  icon: resources/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  darkModeSupport: true
+  # CI ships unsigned until Apple Developer signing + notarization secrets exist.
+  identity: null
+dmg:
+  artifactName: Intray-${version}-mac-${arch}.${ext}
+  title: Intray ${version}
+  writeUpdateInfo: false

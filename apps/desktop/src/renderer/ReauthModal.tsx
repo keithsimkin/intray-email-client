@@ -276,7 +276,7 @@ export function ReauthModal({ account, onClose, onReconnected }: Props) {
               </label>
               <div className="add-account-privacy">
                 <Lock size={14} strokeWidth={1.75} />
-                Stored with Windows DPAPI on this PC
+                Stored with OS secure storage on this device
               </div>
               {error && <p className="add-account-error">{error}</p>}
               <div className="reauth-actions">

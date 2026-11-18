@@ -1,7 +1,7 @@
-# Intray — Windows Unified Mail Product Plan
+# Intray — Unified Mail Product Plan
 
 Reference research: [docs/BLOOP-RESEARCH-BRIEF.md](docs/BLOOP-RESEARCH-BRIEF.md)  
-Inspired by [bloop.email](https://bloop.email/) (Mac-only). Goal: Windows-native alternative with the same pillars, adapted to tray / WinUI-adjacent UX / Credential Manager.
+Inspired by [bloop.email](https://bloop.email/) (Mac-only). Goal: a cross-platform desktop alternative with the same pillars — Windows shipping now, macOS (Apple Silicon) next — adapted to tray UX and OS secure storage.
 
 **One-liner:** All your inboxes in one place. Native fast. AI enabled.
 
@@ -11,9 +11,9 @@ Inspired by [bloop.email](https://bloop.email/) (Mac-only). Goal: Windows-native
 
 | Decision | Default | Why |
 | --- | --- | --- |
-| **Name** | **Intray** | Short, Windows-tray-forward, not Bloop-adjacent; working name until domain secured |
+| **Name** | **Intray** | Short, tray-forward, not Bloop-adjacent; working name until domain secured |
 | **Stack** | **Electron + React + TypeScript + Bun**, with **Rust (`napi-rs`) for the mail store** | UI/IPC stay Electron for speed-to-ship; Discord-style incremental Rust for hot paths (SQLite/FTS first, then sync/MIME) |
-| **OS floor** | **Windows 10 22H2+** (Win11 tray/toast polish first) | Lifetime price needs broad reach; WebView2 evergreen |
+| **OS floor** | **Windows 10 22H2+** now; **macOS Apple Silicon (arm64)** next | Windows ships first; Intel Mac / broader Windows SKUs later |
 | **Price** | **7-day trial → $4.99 lifetime** (strike ~$19.99) | Match Bloop’s wedge; Lemon Squeezy / Paddle for keys |
 | **Providers (v1)** | **Gmail OAuth + Outlook/M365 OAuth + generic IMAP** | Covers majority; others via IMAP + app-password guides |
 | **Marketing UI** | **Echo section order + dark Geist tokens; distinct brand** | Same story beats, own wordmark/screenshots — not a pixel clone |
@@ -42,7 +42,7 @@ Mail providers (Gmail / Graph / IMAP)
 │ Intray Desktop (Electron)           │
 │  React UI + Tray flyout             │
 │  Node sync / OAuth / IMAP / MCP     │
-│  DPAPI safeStorage · AI router      │
+│  OS safeStorage · AI router         │
 │         │                           │
 │         ▼ napi-rs                   │
 │  Rust mail store (@intray/native)   │
@@ -64,15 +64,16 @@ Mail providers (Gmail / Graph / IMAP)
 
 - Electron shell (electron-vite + Bun): frameless window + system tray flyout (hero surface)
 - React + TypeScript UI: Bloop-inspired dark four-pane shell (account rail · folders · list · reader); layouts **Panels** and **Wide List** in MVP
-- Main-process: IMAP (IDLE), Gmail API, Microsoft Graph; Electron `safeStorage` (Windows DPAPI); send queue; MCP
+- Main-process: IMAP (IDLE), Gmail API, Microsoft Graph; Electron `safeStorage` (DPAPI / Keychain); send queue; MCP
 - Rust native addon (`crates/intray-native`): SQLite WAL + FTS5 mail cache loaded from main via napi-rs
-- Notifications: Win10/11 toasts + tray panel actions
+- Notifications: desktop toasts + tray panel actions
+- CI: GitHub Actions publishes Windows x64 + macOS arm64 on each GitHub Release
 
 ### Marketing (`apps/web`)
 
 - Next.js dark landing mirroring Bloop section order
-- Deploy on Netlify; Windows Download CTA
-- Compare vs Spark / Superhuman / Outlook / Windows Mail / Thunderbird
+- Deploy on Netlify; Windows Download CTA + macOS Coming soon
+- Compare vs Spark / Superhuman / Outlook / Thunderbird
 - Tokens: `#000` / `#ededed` / `#8a8f98` / `#ffffff14` / `#0a0a0b` + Geist
 
 ### Licensing

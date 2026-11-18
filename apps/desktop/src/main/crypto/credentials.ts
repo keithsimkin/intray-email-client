@@ -32,7 +32,7 @@ export type StoredCredentials =
 function assertEncryption(): void {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error(
-      "OS encryption (DPAPI) is unavailable. Cannot store mail credentials.",
+      "OS secure storage is unavailable. Cannot store mail credentials.",
     );
   }
 }
@@ -60,7 +60,7 @@ function decryptCredentialsPayload(
     if (!parsed || typeof parsed !== "object") return null;
     return parsed;
   } catch {
-    // Corrupt ciphertext (profile copy, DPAPI reset) is treated as missing
+    // Corrupt ciphertext (profile copy, keychain reset) is treated as missing
     // rather than crashing every sync attempt.
     return null;
   }

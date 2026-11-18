@@ -59,26 +59,37 @@ export function Hero() {
             id="download"
             className="brand-rise brand-rise-delay-3 relative z-10 flex flex-col items-center gap-4 pb-2"
           >
-            <Cta
-              href="#pricing"
-              className="!bg-[#c8f04a] !px-6 !py-3 !text-base !font-semibold !text-[#111] hover:!brightness-105"
-            >
-              Download
-              <span className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#111] text-white">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
-                  <path
-                    d="M2.5 9.5L9.5 2.5M9.5 2.5H4M9.5 2.5V8"
-                    stroke="currentColor"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
+            <div className="flex flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
+              <Cta
+                href="#pricing"
+                className="!bg-[#c8f04a] !px-6 !py-3 !text-base !font-semibold !text-[#111] hover:!brightness-105"
+              >
+                Download for Windows
+                <span className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#111] text-white">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+                    <path
+                      d="M2.5 9.5L9.5 2.5M9.5 2.5H4M9.5 2.5V8"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+              </Cta>
+              <span
+                className="inline-flex items-center gap-2 rounded-full border border-[#1a2a1f]/20 bg-white/55 px-5 py-3 text-sm font-semibold text-[#1a2a1f]/80 backdrop-blur-sm"
+                title="Apple Silicon builds are in progress"
+              >
+                macOS
+                <span className="rounded-full bg-[#1a2a1f]/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#1a2a1f]/75">
+                  Coming soon
+                </span>
               </span>
-            </Cta>
+            </div>
             <p className="max-w-md text-center text-sm font-medium text-[#1a2a1f]/85 md:text-base">
-              Open-source unified mail for Windows — privacy by architecture, local AI, no mail
-              relay.
+              Open-source unified mail — privacy by architecture, local AI, no mail relay. Windows
+              now; macOS (Apple Silicon) next.
             </p>
             <a
               href={GITHUB_URL}

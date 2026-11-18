@@ -112,13 +112,13 @@ export function BottomCta() {
               </a>
             </div>
             <p className="mt-4 text-xs text-[#6b7280]">
-              Windows 10/11 · Electron · open source · no mail relay
+              Windows · macOS coming soon · Electron · open source · no mail relay
             </p>
           </div>
 
           <div className="relative min-w-0 lg:translate-y-8">
             <AppWindow
-              alt="Intray unified inbox on Windows"
+              alt="Intray unified inbox desktop app"
               className="rounded-t-2xl rounded-b-none border-b-0 shadow-none"
             />
           </div>

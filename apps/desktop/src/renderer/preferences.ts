@@ -251,7 +251,7 @@ export type AiBridgeMeta = {
 export const aiBridgeMeta: Record<AiBridgeId, AiBridgeMeta> = {
   openai: {
     name: "OpenAI",
-    blurb: "GPT models via your OpenAI API key. Keys stay on this PC (DPAPI).",
+    blurb: "GPT models via your OpenAI API key. Keys stay on this device.",
     status: "optional",
     needsKey: true,
     kind: "api",
