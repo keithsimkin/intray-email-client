@@ -496,7 +496,9 @@ export async function listRecentEnvelopes(
         meta.uidNext > opts.sinceUid + 1;
       const cursorCurrent =
         opts?.sinceUid != null && opts.sinceUidValidity === meta.uidValidity;
-      const refresh = gmail ? (opts?.refreshRecent ?? 0) : 0;
+      // Flag/label refresh is how reads/stars made in other clients show up
+      // without a new UID. Gmail and generic IMAP both need it.
+      const refresh = opts?.refreshRecent ?? 0;
 
       // The common quiet-mailbox case: nothing new has been assigned a UID
       // since the last pass. Re-fetching the last N envelopes here (with a 4KB
@@ -778,9 +780,12 @@ export async function pushImapChange(
           break;
         case "read":
           addFlags.push("\\Seen");
+          // Gmail tracks unread via \Unread as well as \Seen.
+          removeLabels.push("\\Unread");
           break;
         case "unread":
           removeFlags.push("\\Seen");
+          addLabels.push("\\Unread");
           break;
         case "star":
           addFlags.push("\\Flagged");
@@ -800,10 +805,24 @@ export async function pushImapChange(
       await storeLabels(client, uidStr, addLabels, "add");
       await storeLabels(client, uidStr, removeLabels, "remove");
       if (addFlags.length) {
-        await client.messageFlagsAdd(uidStr, addFlags, { uid: true });
+        const ok = await client.messageFlagsAdd(uidStr, addFlags, {
+          uid: true,
+        });
+        if (!ok) {
+          throw new Error(
+            `Gmail IMAP did not add flags: ${addFlags.join(", ")}`,
+          );
+        }
       }
       if (removeFlags.length) {
-        await client.messageFlagsRemove(uidStr, removeFlags, { uid: true });
+        const ok = await client.messageFlagsRemove(uidStr, removeFlags, {
+          uid: true,
+        });
+        if (!ok) {
+          throw new Error(
+            `Gmail IMAP did not remove flags: ${removeFlags.join(", ")}`,
+          );
+        }
       }
     } finally {
       lock.release();

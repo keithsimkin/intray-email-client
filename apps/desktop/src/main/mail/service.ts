@@ -779,6 +779,60 @@ async function pushAccountImapChange(
   });
 }
 
+/** Keep Gmail OAuth label_ids_json in sync when we clear/set UNREAD locally. */
+function patchGmailLabelIdsJson(
+  labelIdsJson: string,
+  add: string[],
+  remove: string[],
+): string {
+  try {
+    const parsed = JSON.parse(labelIdsJson) as unknown;
+    if (!Array.isArray(parsed)) return labelIdsJson;
+    const set = new Set(parsed.map(String));
+    for (const id of remove) set.delete(id);
+    for (const id of add) set.add(id);
+    return JSON.stringify([...set]);
+  } catch {
+    return labelIdsJson;
+  }
+}
+
+function threadRowsFor(row: MessageRow): MessageRow[] {
+  const thread = listThreadMessages(row.account_id, row.thread_id);
+  return thread.length ? thread : [row];
+}
+
+function safeJsonArray(raw: string): string[] | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.map(String) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Apply unread locally to every message in the thread (list head + badges). */
+function setThreadUnreadLocal(
+  account: AccountRow,
+  row: MessageRow,
+  unread: number,
+): void {
+  const oauthLabels = !usesImap(account);
+  for (const m of threadRowsFor(row)) {
+    const labelPatch =
+      oauthLabels && safeJsonArray(m.label_ids_json)
+        ? {
+            label_ids_json: patchGmailLabelIdsJson(
+              m.label_ids_json,
+              unread ? ["UNREAD"] : [],
+              unread ? [] : ["UNREAD"],
+            ),
+          }
+        : {};
+    updateMessageFlags(m.id, { unread, ...labelPatch });
+  }
+}
+
 export async function addImapAccount(
   input: AddImapAccountInput,
 ): Promise<AccountDto> {
@@ -1311,67 +1365,67 @@ export async function mutateMail(
     return null;
   }
 
+  // Write local flags first so UI/DB stay correct even if the provider call
+  // fails or a concurrent sync returns a stale unread snapshot.
+  if (action === "read") {
+    setThreadUnreadLocal(account, row, 0);
+  } else if (action === "unread") {
+    setThreadUnreadLocal(account, row, 1);
+  } else if (action === "archive") {
+    updateMessageFlags(row.id, { folder: "archive", unread: 0 });
+  } else if (action === "trash") {
+    updateMessageFlags(row.id, { folder: "trash", unread: 0 });
+  } else if (action === "star") {
+    updateMessageFlags(row.id, { starred: 1, important: 1 });
+  } else if (action === "unstar") {
+    updateMessageFlags(row.id, { starred: 0 });
+  }
+
   if (!usesImap(account)) {
-    switch (action) {
-      case "archive":
-        await modifyLabels(row.account_id, row.provider_id, [], ["INBOX"]);
-        updateMessageFlags(row.id, { folder: "archive", unread: 0 });
-        break;
-      case "trash":
-        await trashMessage(row.account_id, row.provider_id);
-        updateMessageFlags(row.id, { folder: "trash", unread: 0 });
-        break;
-      case "read":
-        await modifyLabels(row.account_id, row.provider_id, [], ["UNREAD"]);
-        updateMessageFlags(row.id, { unread: 0 });
-        break;
-      case "unread":
-        await modifyLabels(row.account_id, row.provider_id, ["UNREAD"], []);
-        updateMessageFlags(row.id, { unread: 1 });
-        break;
-      case "star":
-        await modifyLabels(row.account_id, row.provider_id, ["STARRED"], []);
-        updateMessageFlags(row.id, { starred: 1, important: 1 });
-        break;
-      case "unstar":
-        await modifyLabels(row.account_id, row.provider_id, [], ["STARRED"]);
-        updateMessageFlags(row.id, { starred: 0 });
-        break;
+    try {
+      switch (action) {
+        case "archive":
+          await modifyLabels(row.account_id, row.provider_id, [], ["INBOX"]);
+          break;
+        case "trash":
+          await trashMessage(row.account_id, row.provider_id);
+          break;
+        case "read":
+          for (const m of threadRowsFor(row)) {
+            await modifyLabels(m.account_id, m.provider_id, [], ["UNREAD"]);
+          }
+          break;
+        case "unread":
+          for (const m of threadRowsFor(row)) {
+            await modifyLabels(m.account_id, m.provider_id, ["UNREAD"], []);
+          }
+          break;
+        case "star":
+          await modifyLabels(row.account_id, row.provider_id, ["STARRED"], []);
+          break;
+        case "unstar":
+          await modifyLabels(row.account_id, row.provider_id, [], ["STARRED"]);
+          break;
+      }
+    } catch {
+      /* local flags already applied */
     }
-  } else {
-    if (
-      action === "archive" ||
-      action === "trash" ||
-      action === "read" ||
-      action === "unread" ||
-      action === "star" ||
-      action === "unstar"
-    ) {
+  } else if (
+    action === "archive" ||
+    action === "trash" ||
+    action === "read" ||
+    action === "unread" ||
+    action === "star" ||
+    action === "unstar"
+  ) {
+    const targets =
+      action === "read" || action === "unread" ? threadRowsFor(row) : [row];
+    for (const m of targets) {
       try {
-        await pushAccountImapChange(account, row, action);
+        await pushAccountImapChange(account, m, action);
       } catch {
         /* local flag update still applies */
       }
-    }
-    switch (action) {
-      case "archive":
-        updateMessageFlags(row.id, { folder: "archive", unread: 0 });
-        break;
-      case "trash":
-        updateMessageFlags(row.id, { folder: "trash", unread: 0 });
-        break;
-      case "read":
-        updateMessageFlags(row.id, { unread: 0 });
-        break;
-      case "unread":
-        updateMessageFlags(row.id, { unread: 1 });
-        break;
-      case "star":
-        updateMessageFlags(row.id, { starred: 1, important: 1 });
-        break;
-      case "unstar":
-        updateMessageFlags(row.id, { starred: 0 });
-        break;
     }
   }
 

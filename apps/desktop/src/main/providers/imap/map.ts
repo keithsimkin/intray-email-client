@@ -1,4 +1,5 @@
 import type { MessageRow } from "../../db";
+import { unreadFromImapSignals } from "../../../shared/gmailImap";
 import type { ImapEnvelope } from "./client";
 
 export function imapEnvelopeToRow(
@@ -12,7 +13,7 @@ export function imapEnvelopeToRow(
     : `${env.uidValidity}:${env.uid}`;
   const threadId = env.gmThrId ? `gm:${env.gmThrId}` : env.threadId;
   const dateMs = env.date?.getTime() ?? Date.now();
-  const unread = env.flags.some((f) => f.toLowerCase() === "\\seen") ? 0 : 1;
+  const unread = unreadFromImapSignals(env.flags, env.gmLabels);
   const starred =
     env.starred != null
       ? env.starred
