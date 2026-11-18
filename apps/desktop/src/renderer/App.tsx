@@ -982,9 +982,9 @@ function Sidebar({
   account: Account;
   activeFolder: string;
   inboxCount: number;
-  /** Nav badges: unread conversations; Junk/Trash use totals (data loss). */
+  /** Nav badges: unread conversation counts per folder. */
   folderCounts: Record<string, number>;
-  /** Total message counts — Empty Junk/Trash eligibility. */
+  /** Total message counts — Empty Junk/Trash eligibility only. */
   folderTotals: Record<string, number>;
   customFolders: string[];
   labels: Label[];
@@ -5954,26 +5954,18 @@ export default function App() {
     return counts;
   }, [mail, accountId]);
 
-  /**
-   * Sidebar badges: unread conversations everywhere, except Junk/Trash which
-   * show totals as a data-loss cue.
-   */
+  /** Sidebar badges: unread conversations only (never raw folder totals). */
   const folderCounts = useMemo(() => {
-    const dataLoss = (id: string) => id === "junk" || id === "trash";
     if (live && liveFolderCounts) {
       const out: Record<string, number> = {};
       for (const [id, entry] of Object.entries(liveFolderCounts.folders)) {
-        out[id] = dataLoss(id) ? entry.total : entry.unread;
+        out[id] = entry.unread;
       }
       return out;
     }
     const out: Record<string, number> = {};
     for (const m of mail) {
       if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
-      if (dataLoss(m.folder)) {
-        out[m.folder] = (out[m.folder] ?? 0) + 1;
-        continue;
-      }
       if (!m.unread) continue;
       out[m.folder] = (out[m.folder] ?? 0) + 1;
     }
@@ -5991,7 +5983,10 @@ export default function App() {
     return localFolderTotals;
   }, [live, liveFolderCounts, localFolderTotals]);
 
-  const inboxBadgeCount = folderCounts.inbox ?? 0;
+  const inboxBadgeCount =
+    live && liveFolderCounts
+      ? liveFolderCounts.inboxUnread
+      : (folderCounts.inbox ?? 0);
   const taskbarCount = badgeCountForMode(prefs.taskbarBadge, mail);
 
   useEffect(() => {
