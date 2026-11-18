@@ -1,4 +1,5 @@
 import { Webhooks } from "@dodopayments/nextjs";
+import type { NextRequest } from "next/server";
 
 function logEvent(kind: string, payload: { type?: string; data?: Record<string, unknown> }) {
   const data = payload.data ?? {};
@@ -12,40 +13,51 @@ function logEvent(kind: string, payload: { type?: string; data?: Record<string, 
   });
 }
 
-if (!process.env.DODO_PAYMENTS_WEBHOOK_KEY) {
-  console.warn("[dodo webhook] DODO_PAYMENTS_WEBHOOK_KEY is not set");
+function createWebhookHandler() {
+  const webhookKey = process.env.DODO_PAYMENTS_WEBHOOK_KEY?.trim();
+  if (!webhookKey) {
+    return async () =>
+      Response.json(
+        { error: "DODO_PAYMENTS_WEBHOOK_KEY is not configured" },
+        { status: 503 },
+      );
+  }
+
+  return Webhooks({
+    webhookKey,
+    onPayload: async (payload) => {
+      logEvent("payload", payload);
+    },
+    onPaymentSucceeded: async (payload) => {
+      logEvent("payment.succeeded", payload);
+    },
+    onPaymentFailed: async (payload) => {
+      logEvent("payment.failed", payload);
+    },
+    onSubscriptionActive: async (payload) => {
+      logEvent("subscription.active", payload);
+    },
+    onSubscriptionRenewed: async (payload) => {
+      logEvent("subscription.renewed", payload);
+    },
+    onSubscriptionCancelled: async (payload) => {
+      logEvent("subscription.cancelled", payload);
+    },
+    onSubscriptionExpired: async (payload) => {
+      logEvent("subscription.expired", payload);
+    },
+    onSubscriptionOnHold: async (payload) => {
+      logEvent("subscription.on_hold", payload);
+    },
+    onSubscriptionFailed: async (payload) => {
+      logEvent("subscription.failed", payload);
+    },
+    onRefundSucceeded: async (payload) => {
+      logEvent("refund.succeeded", payload);
+    },
+  });
 }
 
-export const POST = Webhooks({
-  webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY!,
-  onPayload: async (payload) => {
-    logEvent("payload", payload);
-  },
-  onPaymentSucceeded: async (payload) => {
-    logEvent("payment.succeeded", payload);
-  },
-  onPaymentFailed: async (payload) => {
-    logEvent("payment.failed", payload);
-  },
-  onSubscriptionActive: async (payload) => {
-    logEvent("subscription.active", payload);
-  },
-  onSubscriptionRenewed: async (payload) => {
-    logEvent("subscription.renewed", payload);
-  },
-  onSubscriptionCancelled: async (payload) => {
-    logEvent("subscription.cancelled", payload);
-  },
-  onSubscriptionExpired: async (payload) => {
-    logEvent("subscription.expired", payload);
-  },
-  onSubscriptionOnHold: async (payload) => {
-    logEvent("subscription.on_hold", payload);
-  },
-  onSubscriptionFailed: async (payload) => {
-    logEvent("subscription.failed", payload);
-  },
-  onRefundSucceeded: async (payload) => {
-    logEvent("refund.succeeded", payload);
-  },
-});
+export async function POST(req: NextRequest) {
+  return createWebhookHandler()(req);
+}
