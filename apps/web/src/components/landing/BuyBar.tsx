@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { SupportCheckoutButton } from "./SupportCheckout";
 
 const perks = [
   {
@@ -68,11 +69,6 @@ export function BuyBar() {
   useEffect(() => {
     if (!shown) setExpanded(false);
   }, [shown]);
-
-  const scrollToPricing = () => {
-    const el = document.getElementById("pricing");
-    el?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
 
   return (
     <div
@@ -142,13 +138,12 @@ export function BuyBar() {
               </div>
             </div>
           </button>
-          <button
-            type="button"
-            onClick={scrollToPricing}
-            className="inline-flex h-10 shrink-0 items-center rounded-full bg-[#760E0A] px-4 text-sm font-semibold text-white transition hover:brightness-110 sm:px-5"
+          <SupportCheckoutButton
+            plan="monthly"
+            className="inline-flex h-10 shrink-0 items-center rounded-full bg-[#760E0A] px-4 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-70 sm:px-5"
           >
             Support · $10/mo
-          </button>
+          </SupportCheckoutButton>
         </div>
       </div>
     </div>

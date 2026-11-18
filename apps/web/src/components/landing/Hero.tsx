@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import Image from "next/image";
 import { siClaude, siGithub, siGooglegemini, siOllama } from "simple-icons";
 import { IntrayMark } from "../Brand";
-import { GITHUB_URL } from "./site";
+import { GITHUB_URL, WINDOWS_DOWNLOAD_URL } from "./site";
 
 const mailProviders = [
   { src: "/logos/gmail.png", name: "Gmail" },
@@ -191,7 +191,7 @@ export function Hero() {
           className="brand-rise brand-rise-delay-3 relative z-10 mt-7 flex flex-col items-center gap-3"
         >
           <a
-            href="#pricing"
+            href={WINDOWS_DOWNLOAD_URL}
             className="inline-flex items-center gap-2.5 rounded-full bg-[#760E0A] px-6 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_-18px_rgba(118,14,10,0.7)] transition hover:brightness-110"
           >
             <WindowsIcon />

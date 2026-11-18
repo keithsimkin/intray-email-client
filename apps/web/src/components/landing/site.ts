@@ -1,7 +1,8 @@
+export const SITE_URL = "https://intray.site";
 export const GITHUB_URL = "https://github.com/keithsimkin/intray-email-client";
 export const TWITTER_URL = "https://x.com/keithsimkin";
-export const SUPPORT_MONTHLY_URL = "https://github.com/sponsors/keithsimkin";
-export const SUPPORT_ONCE_URL = "https://github.com/sponsors/keithsimkin";
+/** Stable path that redirects to the latest Windows setup .exe */
+export const WINDOWS_DOWNLOAD_URL = "/download";
 
 export const nav: { href: string; label: string; active?: boolean }[] = [
   { href: "#", label: "Home", active: true },

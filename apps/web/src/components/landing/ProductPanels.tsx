@@ -1,4 +1,5 @@
 import { AppWindow } from "./AppWindow";
+import { WINDOWS_DOWNLOAD_URL } from "./site";
 
 const steps = [
   {
@@ -43,7 +44,7 @@ export function ProductPanels() {
               <StepCard key={s.n} {...s} />
             ))}
             <a
-              href="#download"
+              href={WINDOWS_DOWNLOAD_URL}
               className="mt-2 inline-flex w-fit items-center justify-center rounded-full bg-[#760E0A] px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
             >
               Download App

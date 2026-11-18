@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Bebas_Neue, Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
+import { SITE_URL } from "../components/landing/site";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -20,6 +21,7 @@ const display = Bebas_Neue({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "Intray — All your inboxes. Native on Windows.",
   description:
     "Open-source unified email for Windows — Superhuman-style power tools plus your Claude, OpenAI, Grok, Gemini, or Ollama subscription. No mail relay. Support optionally at $10/mo or a one-time gift.",
