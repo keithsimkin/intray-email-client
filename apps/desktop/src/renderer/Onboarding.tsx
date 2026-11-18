@@ -29,12 +29,12 @@ const STEPS: Step[] = ["welcome", "privacy", "connect", "prefs", "ready"];
 
 const privacyPoints = [
   {
-    title: "Mail stays on this PC",
+    title: "Mail stays on this device",
     body: "Intray syncs directly with Gmail, Outlook, and IMAP. Nothing routes through our servers.",
   },
   {
-    title: "Secrets use Windows DPAPI",
-    body: "App passwords and OAuth tokens are encrypted by Credential Manager on this machine.",
+    title: "Secrets use OS secure storage",
+    body: "App passwords and OAuth tokens are encrypted by the system keychain on this machine.",
   },
   {
     title: "AI is yours to bring",
@@ -51,7 +51,7 @@ const tips = [
   {
     icon: Keyboard,
     title: "Global hotkey",
-    body: "Ctrl+Alt+M opens Intray from anywhere on Windows.",
+    body: "Ctrl+Alt+M (⌃⌥M on Mac) opens Intray from anywhere.",
   },
   {
     icon: Bot,
@@ -245,7 +245,7 @@ export function Onboarding({
 
             <label className="onboarding-toggle">
               <div>
-                <strong>Start with Windows</strong>
+                <strong>Launch at login</strong>
                 <span>Launch Intray when you sign in</span>
               </div>
               <input

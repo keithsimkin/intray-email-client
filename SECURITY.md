@@ -45,7 +45,8 @@ privileges, or a malicious mail server that is already trusted to deliver mail.
 ### Secrets
 
 - Credentials and API keys live in the **main process only** and are encrypted
-  with Windows DPAPI through Electron `safeStorage`.
+  with OS secure storage through Electron `safeStorage` (DPAPI on Windows,
+  Keychain on macOS).
 - The renderer receives typed IPC results, never raw secrets. The MCP token is the
   one exception shown in Settings, by design, so a client can be configured.
 - Corrupt or unexpectedly shaped secret blobs fail closed rather than being used.
@@ -84,7 +85,7 @@ privileges, or a malicious mail server that is already trusted to deliver mail.
 ### Local MCP endpoint
 
 - Binds to `127.0.0.1` only.
-- Requires a per-install bearer token (32 random bytes, DPAPI-encrypted at rest).
+- Requires a per-install bearer token (32 random bytes, encrypted at rest with OS secure storage).
 - Rejects requests carrying `Origin` or `Sec-Fetch-Mode` (browser drive-bys) and
   invalid `Host` headers, and grants no CORS.
 - Caps request bodies at 1 MB and clamps tool arguments.
@@ -99,7 +100,7 @@ privileges, or a malicious mail server that is already trusted to deliver mail.
   so a stray file next to the binary cannot inject configuration.
 - The mail cache is a local SQLite database opened in WAL mode by the bundled
   Rust addon (`@intray/native`). It stores mail metadata/bodies, never plaintext
-  credentials — those remain DPAPI-encrypted blobs.
+  credentials — those remain OS-encrypted blobs.
 
 ### AI
 

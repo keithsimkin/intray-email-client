@@ -6,7 +6,7 @@ import { useState } from "react";
 
 const quotes = [
   {
-    body: "I wanted Superhuman-level triage on Windows without handing my mail to another cloud. Local AI plus a real tray panel is the combo.",
+    body: "I wanted Superhuman-level triage without handing my mail to another cloud. Local AI plus a real tray panel is the combo.",
     name: "Maya R.",
     role: "Founder, security tooling",
     avatar: "/avatars/avatar-maya.jpg",
@@ -20,11 +20,11 @@ const quotes = [
   {
     body: "OTP copy from the toast alone sold me. Open source means I can audit the privacy claims myself — email is too important not to.",
     name: "Priya S.",
-    role: "Windows power user",
+    role: "Desktop power user",
     avatar: "/avatars/avatar-priya.jpg",
   },
   {
-    body: "One tray for work Gmail and personal iCloud. Archive and snooze without focusing the window — that is the Windows habit I needed.",
+    body: "One tray for work Gmail and personal iCloud. Archive and snooze without focusing the window — that is the habit I needed.",
     name: "Daniel W.",
     role: "Product designer",
     avatar: "/avatars/avatar-daniel.jpg",

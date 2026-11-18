@@ -61,7 +61,7 @@ export function Footer() {
         </div>
 
         <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-[#e5e7eb] pt-5 text-xs text-[#9ca3af] sm:flex-row">
-          <p>© 2026 Intray. Open source unified mail for Windows.</p>
+          <p>© 2026 Intray. Open source unified mail for Windows and macOS.</p>
           <div className="flex gap-4">
             <a href="#" className="hover:text-[#111]">
               Terms

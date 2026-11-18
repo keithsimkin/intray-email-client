@@ -67,8 +67,8 @@ export function UnifiedFeatures() {
             Everything your tray needs.
           </h2>
           <p className="max-w-md text-sm leading-relaxed text-[#4a5b52] md:pt-2 md:text-[15px]">
-            Unified accounts, tray triage, local AI, and privacy by architecture — with the small
-            Windows details that make daily mail feel lighter.
+            Unified accounts, tray triage, local AI, and privacy by architecture — the small
+            desktop details that make daily mail feel lighter.
           </p>
         </div>
 

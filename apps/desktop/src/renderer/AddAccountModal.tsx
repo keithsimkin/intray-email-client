@@ -266,7 +266,7 @@ export function AddAccountModal({
             </div>
             <p className="modal-note">
               Gmail, iCloud, Outlook, Yahoo, and Fastmail use an app password.
-              It stays encrypted on this PC with Windows DPAPI. Google sign-in
+              It stays encrypted on this device with OS secure storage. Google sign-in
               stays available for Gmail testers when OAuth is configured.
             </p>
           </>
@@ -401,8 +401,8 @@ export function AddAccountModal({
                   <span className="add-field-hint">
                     Not your everyday login password. With 2FA on, create an
                     app-specific password in {provider.shortName} security
-                    settings, then paste it here. Stored on this PC only
-                    (DPAPI).
+                    settings, then paste it here. Stored on this device with OS
+                    secure storage.
                   </span>
                 </label>
                 <label className="add-field">
@@ -479,7 +479,7 @@ export function AddAccountModal({
 
                 <div className="add-account-privacy">
                   <Lock size={14} strokeWidth={1.75} />
-                  Stored with Windows DPAPI on this PC
+                  Stored with OS secure storage on this device
                 </div>
 
                 {error && <p className="add-account-error">{error}</p>}

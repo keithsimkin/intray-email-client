@@ -2,7 +2,7 @@
   "name": "@intray/desktop",
   "private": true,
   "version": "0.1.1",
-  "description": "Intray — Windows unified mail",
+  "description": "Intray — unified mail for Windows and macOS",
   "main": "./out/main/index.js",
   "repository": {
     "type": "git",
@@ -13,7 +13,11 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "pack": "electron-vite build && electron-builder --win --x64 --publish never",
+    "pack:win": "electron-vite build && electron-builder --win --x64 --publish never",
+    "pack:mac": "electron-vite build && electron-builder --mac --arm64 --publish never",
     "release": "electron-vite build && electron-builder --win --x64 --publish always",
+    "release:win": "electron-vite build && electron-builder --win --x64 --publish always",
+    "release:mac": "electron-vite build && electron-builder --mac --arm64 --publish always",
     "test": "bun test",
     "typecheck": "tsc -b --pretty false"
   },

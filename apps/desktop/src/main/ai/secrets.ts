@@ -19,7 +19,7 @@ const KEY_PREFIX = "ai.";
 function assertEncryption(): void {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error(
-      "OS encryption (DPAPI) is unavailable. Cannot store AI API keys.",
+      "OS secure storage is unavailable. Cannot store AI API keys.",
     );
   }
 }

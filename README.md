@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>All your inboxes in one place. Native fast. AI enabled.</strong><br>
-  A Windows-first unified mail client — privacy by architecture, local/BYO AI, system tray triage, and built-in MCP.
+  Unified mail for Windows and macOS — privacy by architecture, local/BYO AI, system tray triage, and built-in MCP.
 </p>
 
 <p align="center">
@@ -29,17 +29,17 @@
 
 ## What is Intray?
 
-Intray is an open-source **Windows unified mail client**. It connects Gmail, Outlook, iCloud, Yahoo, Fastmail, and other IMAP providers into one inbox on your PC. Mail stays on the device path to your providers — there is **no Intray mail relay**.
+Intray is an open-source **unified mail client** for Windows and macOS. It connects Gmail, Outlook, iCloud, Yahoo, Fastmail, and other IMAP providers into one inbox on your device. Mail stays on the device path to your providers — there is **no Intray mail relay**.
 
-It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for Windows tray workflows, DPAPI-backed secrets, and agent tooling via MCP.
+It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for tray workflows, OS secure storage (`safeStorage`), and agent tooling via MCP. Windows ships today; **macOS (Apple Silicon) is in progress**.
 
 | Pillar | What it means |
 | --- | --- |
 | **Unified inbox** | Gmail (app password or OAuth) + IMAP/SMTP accounts in one UI |
-| **Privacy by architecture** | Device ↔ provider only; credentials encrypted with Windows DPAPI |
-| **Local / BYO AI** | OpenAI, Anthropic, Gemini, Grok CLI (`grok login`), Ollama, Claude Code, Codex, Cursor — secrets stay on this PC |
+| **Privacy by architecture** | Device ↔ provider only; credentials encrypted with OS secure storage |
+| **Local / BYO AI** | OpenAI, Anthropic, Gemini, Grok CLI (`grok login`), Ollama, Claude Code, Codex, Cursor — secrets stay on this device |
 | **MCP** | Localhost tools so Cursor / Claude / Codex can search and read mail |
-| **Tray-first** | System tray triage, notifications, optional start with Windows |
+| **Tray-first** | System tray triage, notifications, optional launch at login |
 
 > **Status:** early development (v0.1). The UI runs with demo data until you connect an account. Expect breaking changes.
 
@@ -56,7 +56,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
   - [Connect IMAP accounts](#connect-imap-accounts)
   - [AI providers](#ai-providers)
   - [MCP server](#mcp-server)
-  - [Build a Windows installer](#build-a-windows-installer)
+  - [Build installers](#build-installers)
   - [Auto-updates (GitHub Releases)](#auto-updates-github-releases)
 - [Marketing site](#marketing-site)
 - [Scripts reference](#scripts-reference)
@@ -74,9 +74,9 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
 
 | Tool | Version | Notes |
 | --- | --- | --- |
-| **OS** | Windows 10 22H2+ | Windows 11 recommended for tray/toast polish |
+| **OS** | Windows 10 22H2+ · macOS 13+ (Apple Silicon builds first) | Windows ships now; macOS packaging is in CI |
 | **[Bun](https://bun.sh)** | 1.3+ | Package manager and script runner for this monorepo |
-| **[Rust](https://rustup.rs)** | stable (MSVC) | Builds `@intray/native` (mail SQLite store) |
+| **[Rust](https://rustup.rs)** | stable | Builds `@intray/native` (mail SQLite store). Use the MSVC toolchain on Windows |
 | **Git** | recent | Clone and contribute |
 | **Google Cloud project** | optional | Only for the Gmail “Sign in with Google” tester flow. App passwords do not need it |
 
@@ -86,9 +86,15 @@ Install Bun on Windows (PowerShell):
 powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 
+On macOS:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
 Confirm:
 
-```powershell
+```bash
 bun --version
 ```
 
@@ -176,7 +182,7 @@ bun run build
 
 ### Connect Gmail
 
-Gmail has two sign-in paths. **App password over IMAP/SMTP is the default** and works for any account that can create app passwords — no Google Cloud project and no restricted-scope verification. **Sign in with Google** stays available for testers when `GMAIL_CLIENT_ID` is set. Both store secrets on this PC with Electron `safeStorage` (Windows DPAPI). Mail goes device ↔ Google. There is no Intray relay.
+Gmail has two sign-in paths. **App password over IMAP/SMTP is the default** and works for any account that can create app passwords — no Google Cloud project and no restricted-scope verification. **Sign in with Google** stays available for testers when `GMAIL_CLIENT_ID` is set. Both store secrets on this device with Electron `safeStorage` (DPAPI / Keychain). Mail goes device ↔ Google. There is no Intray relay.
 
 #### App password (recommended)
 
@@ -240,7 +246,7 @@ For **Gmail, iCloud, Outlook.com, Yahoo, Fastmail, Zoho, AOL**, or any generic I
 2. In Intray: **Add account** → pick the provider (or custom IMAP).
 3. Enter email + app password.
 
-Credentials are encrypted with Windows DPAPI on this machine. Mail syncs provider ↔ app over TLS; nothing is uploaded to an Intray server.
+Credentials are encrypted with OS secure storage on this machine. Mail syncs provider ↔ app over TLS; nothing is uploaded to an Intray server.
 
 ### AI providers
 
@@ -251,7 +257,7 @@ Credentials are encrypted with Windows DPAPI on this machine. Mail syncs provide
 - Ollama (local)
 - Claude Code, Codex, Cursor-oriented setups
 
-API keys (when used) are encrypted with DPAPI. Mail content is sent only to the AI provider **you** configure — never through an Intray backend.
+API keys (when used) are encrypted with OS secure storage. Mail content is sent only to the AI provider **you** configure — never through an Intray backend.
 
 ### MCP server
 
@@ -261,7 +267,7 @@ On launch, Intray can start a **localhost-only** MCP endpoint (default port **47
 http://127.0.0.1:47821/mcp
 ```
 
-Every request must carry a **per-install bearer token** (except `/health`). The token is generated on first run, encrypted at rest with DPAPI, and shown only inside **Settings → AI & agents**. Paste the ready-made snippet into your client:
+Every request must carry a **per-install bearer token** (except `/health`). The token is generated on first run, encrypted at rest with OS secure storage, and shown only inside **Settings → AI & agents**. Paste the ready-made snippet into your client:
 
 ```json
 {
@@ -286,16 +292,23 @@ Toggle MCP under **Settings → AI & agents**, and use **Rotate access token** t
 
 Hardening: the listener binds to `127.0.0.1` only; requests with an `Origin` or `Sec-Fetch-Mode` header (i.e. browser pages) are rejected before auth; `Host` is validated; CORS is not granted; bodies are capped at 1 MB and tool arguments are clamped. If the default port is taken, Intray falls back to an ephemeral port and shows the new URL in Settings.
 
-### Build a Windows installer
+### Build installers
+
+**Windows (x64 NSIS)** — from the repo root:
 
 ```powershell
-cd apps/desktop
-bun run pack
+bun run pack:desktop:win
 ```
 
-From the repo root, `bun run pack:desktop` builds the native mail store, then the app, then the installer. Output is `apps/desktop/release/Intray-Setup-0.1.1.exe`.
+Output: `apps/desktop/release/Intray-Setup-<version>.exe`. Assisted NSIS setup (current user or all users, folder picker, Start menu + desktop shortcuts, GPL license). Uninstall leaves mail and keys in the user profile.
 
-The installer is an assisted NSIS setup: current user or all users, a chosen folder, Start menu and desktop shortcuts, and the GPL license. Uninstall leaves downloaded mail and keys in the user profile. The executable is unsigned until a code-signing certificate is added.
+**macOS (Apple Silicon)** — run on an arm64 Mac (or rely on CI):
+
+```bash
+bun run pack:desktop:mac
+```
+
+Output: `apps/desktop/release/Intray-<version>-mac-arm64.dmg` plus a `.zip` for auto-updates. Builds are unsigned until Apple Developer signing + notarization secrets are wired into CI.
 
 App id: `app.intray.desktop` · Product name: **Intray**.
 
@@ -303,15 +316,17 @@ App id: `app.intray.desktop` · Product name: **Intray**.
 
 Installed builds use [`electron-updater`](https://www.electron.build/auto-update) to poll [GitHub Releases](https://github.com/keithsimkin/intray-email-client/releases). On launch they check for a newer version, download it in the background, then prompt to restart (also under **Settings → About**). Dev / `electron-vite` sessions skip the updater.
 
-`bun run pack` / `pack:desktop` still use `--publish never` so local builds never upload. Publishing a release (needs a `GH_TOKEN` with `repo` scope):
+**Preferred publish path:** create a GitHub Release. The [Release desktop](.github/workflows/release-desktop.yml) workflow builds **Windows x64** and **macOS arm64** and uploads the installers (plus `latest.yml` / `latest-mac.yml`) to that release.
 
-```powershell
-# bump apps/desktop/package.json version first
-cd apps/desktop
-bun run release
+1. Bump `version` in `apps/desktop/package.json` (and the root `package.json`) to match the tag.
+2. Push the version commit, then publish a GitHub Release (e.g. tag `v0.1.2`).
+3. Wait for both matrix jobs to finish and attach artifacts.
+
+Local packs still use `--publish never`. Emergency local publish (needs `GH_TOKEN` with `repo` scope):
+
+```bash
+bun run release:desktop:win   # or release:desktop:mac on an Apple Silicon Mac
 ```
-
-That uploads the NSIS installer plus `latest.yml` (required by the updater). Manual uploads must include both artifacts on the same release.
 
 ---
 
@@ -349,8 +364,9 @@ From the **repo root** (`package.json`):
 | `bun run build:native` | Build the Rust `@intray/native` napi addon |
 | `bun run build:desktop` | Build native + desktop renderer/main bundles |
 | `bun run build:web` | Production build of the marketing site |
-| `bun run pack:desktop` | Build native + NSIS installer (`--publish never`) |
-| `bun run release:desktop` | Build + publish installer to GitHub Releases |
+| `bun run pack:desktop` / `pack:desktop:win` | Build native + Windows x64 NSIS installer (`--publish never`) |
+| `bun run pack:desktop:mac` | Build native + macOS arm64 DMG/ZIP (`--publish never`; needs macOS) |
+| `bun run release:desktop:win` / `release:desktop:mac` | Local publish to GitHub Releases (prefer the CI workflow) |
 
 Desktop-only (`apps/desktop`):
 
@@ -359,8 +375,9 @@ Desktop-only (`apps/desktop`):
 | `bun run dev` | `electron-vite dev` |
 | `bun run build` | `electron-vite build` |
 | `bun run preview` | Preview the built app |
-| `bun run pack` | Build + assisted NSIS Windows installer (no upload) |
-| `bun run release` | Build + publish to GitHub Releases (`GH_TOKEN` required) |
+| `bun run pack` / `pack:win` | Build + Windows x64 NSIS installer (no upload) |
+| `bun run pack:mac` | Build + macOS arm64 DMG/ZIP (no upload; needs macOS) |
+| `bun run release:win` / `release:mac` | Build + publish to GitHub Releases (`GH_TOKEN` required) |
 
 ---
 
@@ -374,7 +391,7 @@ Mail providers (Gmail API / IMAP+SMTP)
 │ Intray Desktop (Electron)           │
 │  React UI + tray                    │
 │  Node sync / OAuth / IMAP / MCP     │
-│  DPAPI safeStorage · AI router      │
+│  OS safeStorage · AI router         │
 │         │ napi-rs                   │
 │  Rust mail store · SQLite + FTS5    │
 └─────────────────────────────────────┘
@@ -389,7 +406,7 @@ Same approach Discord used before Project Phoenix: keep the Electron shell, move
 
 | Layer | Path | Responsibility |
 | --- | --- | --- |
-| **Main** | `apps/desktop/src/main/` | Windows, tray, OAuth, IMAP, typed DB façade, credentials, AI secrets, MCP, notifications |
+| **Main** | `apps/desktop/src/main/` | App shell, tray, OAuth, IMAP, typed DB façade, credentials, AI secrets, MCP, notifications |
 | **Native** | `crates/intray-native/` | SQLite WAL + FTS5 mail cache (`MailDb` via napi-rs) |
 | **Preload** | `apps/desktop/src/preload/` | Thin `contextBridge` — typed IPC only, no business logic |
 | **Renderer** | `apps/desktop/src/renderer/` | React UI |
@@ -397,7 +414,7 @@ Same approach Discord used before Project Phoenix: keep the Electron shell, move
 
 Hard rules:
 
-- Secrets and API keys live in **main** only (DPAPI via `safeStorage`).
+- Secrets and API keys live in **main** only (OS secure storage via `safeStorage`).
 - Do not put mail credentials or AI keys in the renderer, logs, or URLs.
 - Prefer extending preload with a minimal typed method over widening Node access in the UI.
 
@@ -408,7 +425,7 @@ See [SECURITY.md](SECURITY.md) for the threat model and how to report issues.
 ## Privacy model
 
 - Mail bodies and headers leave the machine only to **your** mail provider or **your** chosen AI endpoint.
-- App passwords and OAuth tokens are encrypted with **Windows DPAPI** (`Electron safeStorage`).
+- App passwords and OAuth tokens are encrypted with **OS secure storage** (`Electron safeStorage` — DPAPI on Windows, Keychain on macOS).
 - SMTP uses STARTTLS on submission ports (465 is implicit TLS) with TLS 1.2+; IMAP requires TLS.
 - Outbound mail is built by an RFC 5322 builder in the main process — the renderer never supplies raw headers.
 - Inbound HTML is sanitized in the main process. Remote images follow **Settings → Privacy → Remote images** (never / always / trusted senders); the default is never, with per-message Load images. Links open through a validated allowlist (`http`, `https`, `mailto`).
@@ -435,7 +452,7 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and how to report issues.
 | Remote images blocked | Expected default (**Never download**) — choose **Load images**, or set Always / Trusted sources in Settings → Privacy |
 | `bun install` fails | Use Bun 1.3+; delete `node_modules` and retry from repo root |
 | Native addon missing / `Cannot find module @intray/native` | Install Rust (MSVC), then `bun run build:native` |
-| DPAPI / encryption errors | Run on a normal Windows user session (encryption needs OS secure storage) |
+| Secure storage / encryption errors | Run in a normal user session (DPAPI on Windows, Keychain on macOS) |
 
 ---
 

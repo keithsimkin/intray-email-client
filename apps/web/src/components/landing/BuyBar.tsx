@@ -10,7 +10,7 @@ const perks = [
   },
   {
     title: "Local AI included",
-    body: "Ollama, Copilot+, or your own keys — mail stays on your PC.",
+    body: "Ollama, Copilot+, or your own keys — mail stays on your device.",
   },
   {
     title: "Private by design",
@@ -95,7 +95,7 @@ export function BuyBar() {
             className="size-8 rounded-lg"
           />
           <div className="min-w-0 flex-1 leading-tight">
-            <div className="truncate text-sm font-semibold text-white">Intray for Windows</div>
+            <div className="truncate text-sm font-semibold text-white">Intray</div>
             <div className="truncate text-xs text-white/55">
               Open source · $10/mo or give once
             </div>

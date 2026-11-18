@@ -30,7 +30,7 @@ Be respectful in issues, PRs, and review comments. Assume good intent; disagree 
 
 ### Prerequisites
 
-- Windows 10 22H2+ (Win11 preferred)
+- Windows 10 22H2+ (Win11 preferred) or macOS 13+ (Apple Silicon for local mac packs)
 - [Bun](https://bun.sh) 1.3+
 - [Rust](https://rustup.rs) stable (MSVC toolchain on Windows) — required to build `@intray/native`
 - Git
