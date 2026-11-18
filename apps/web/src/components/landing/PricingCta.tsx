@@ -73,7 +73,7 @@ export function BottomCta() {
               </a>
             </div>
             <p className="mt-4 text-xs text-[#8a8f98]">
-              Windows 10/11 · Electron · open source · no mail relay
+              Windows 10/11 now · macOS coming soon · Electron · open source · no mail relay
             </p>
           </div>
 

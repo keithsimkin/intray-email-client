@@ -134,7 +134,7 @@ export function BuyBar() {
             <div className="min-w-0 flex-1 leading-tight">
               <div className="truncate text-sm font-semibold text-white">Intray for Windows</div>
               <div className="truncate text-xs text-white/55">
-                Open source · $10/mo or give once
+                Open source · macOS soon · $10/mo or give once
               </div>
             </div>
           </button>
