@@ -17,7 +17,7 @@ import {
   User,
   X,
 } from "lucide-react";
-import { filterContacts, type Contact } from "./contacts";
+import { filterContacts, useContacts, type Contact } from "./contacts";
 import type { Label } from "./data/mock";
 import {
   HAS_SUGGESTIONS,
@@ -25,6 +25,8 @@ import {
   SEARCH_FIELD_META,
   makeToken,
   parseSearchInput,
+  parseSlashDraft,
+  slashFieldChoices,
   type SearchField,
   type SearchToken,
 } from "./searchQuery";
@@ -35,13 +37,24 @@ const ADD_FILTERS: {
   field: PendingField;
   icon: typeof User;
   hint: string;
+  slash: string;
 }[] = [
-  { field: "from", icon: User, hint: "Sender name or email" },
-  { field: "to", icon: User, hint: "Recipient name or email" },
-  { field: "subject", icon: Search, hint: "Words in the subject line" },
-  { field: "tag", icon: Tag, hint: "Label applied to the thread" },
-  { field: "has", icon: Paperclip, hint: "Attachment, link, or meeting" },
-  { field: "is", icon: Check, hint: "Unread, starred, or important" },
+  { field: "from", icon: User, hint: "Sender name or email", slash: "/from" },
+  { field: "to", icon: User, hint: "Recipient name or email", slash: "/to" },
+  {
+    field: "subject",
+    icon: Search,
+    hint: "Words in the subject line",
+    slash: "/subject",
+  },
+  { field: "tag", icon: Tag, hint: "Label applied to the thread", slash: "/tag" },
+  {
+    field: "has",
+    icon: Paperclip,
+    hint: "Attachment, link, or meeting",
+    slash: "/has",
+  },
+  { field: "is", icon: Check, hint: "Unread, starred, or important", slash: "/is" },
 ];
 
 function fieldLabel(field: SearchField) {
@@ -56,12 +69,21 @@ function hasIcon(value: string) {
   return Paperclip;
 }
 
+function filterIcon(field: PendingField) {
+  return ADD_FILTERS.find((f) => f.field === field)?.icon ?? Search;
+}
+
+/** Prefer email for from:/to: chips so SQL matching hits the address. */
+function contactTokenValue(contact: Contact) {
+  return contact.email?.trim() || contact.name;
+}
+
 export function SearchBar({
   tokens,
   onTokensChange,
   labels,
   inputRef,
-  placeholder = "Search mail — or add From, Subject, Tag…",
+  placeholder = "Search mail — /from, /subject, or pick a person…",
 }: {
   tokens: SearchToken[];
   onTokensChange: (next: SearchToken[]) => void;
@@ -76,6 +98,7 @@ export function SearchBar({
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<PendingField | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
+  const contacts = useContacts();
 
   const setInputRef = (node: HTMLInputElement | null) => {
     localInputRef.current = node;
@@ -93,34 +116,70 @@ export function SearchBar({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
+  const slash = useMemo(
+    () => (pending ? null : parseSlashDraft(draft)),
+    [draft, pending],
+  );
+  const slashChoosing = Boolean(slash?.choosing);
+  const slashChoices = useMemo(
+    () => (slashChoosing ? slashFieldChoices(slash?.prefix ?? "") : []),
+    [slashChoosing, slash?.prefix],
+  );
+
+  const contactQuery = useMemo(() => {
+    if (pending === "from" || pending === "to") return draft;
+    if (slash?.field === "from" || slash?.field === "to") {
+      return slash.rest;
+    }
+    if (!pending && !slashChoosing && draft.trim() && !draft.trimStart().startsWith("/")) {
+      return draft;
+    }
+    return "";
+  }, [pending, draft, slash, slashChoosing]);
+
   const contactHits = useMemo(() => {
-    if (pending !== "from" && pending !== "to" && !draft) return [];
+    if (!contactQuery && pending !== "from" && pending !== "to") return [];
     if (pending && pending !== "from" && pending !== "to") return [];
-    return filterContacts(draft, new Set(), 6);
-  }, [draft, pending]);
+    if (slash?.field && slash.field !== "from" && slash.field !== "to") {
+      return [];
+    }
+    return filterContacts(contactQuery, new Set(), 6, contacts);
+  }, [contactQuery, pending, slash?.field, contacts]);
 
   const labelHits = useMemo(() => {
+    const q =
+      pending === "tag"
+        ? draft.trim().toLowerCase()
+        : slash?.field === "tag"
+          ? slash.rest.trim().toLowerCase()
+          : "";
     if (pending && pending !== "tag") return [];
-    const q = draft.trim().toLowerCase();
+    if (!pending && slash?.field !== "tag") return [];
     return labels
       .filter((l) => !q || l.name.toLowerCase().includes(q))
       .slice(0, 6);
-  }, [draft, labels, pending]);
+  }, [draft, labels, pending, slash]);
 
   const valueSuggestions = useMemo(() => {
-    if (pending === "has") {
-      const q = draft.trim().toLowerCase();
-      return HAS_SUGGESTIONS.filter((s) => !q || s.includes(q));
-    }
-    if (pending === "is") {
-      const q = draft.trim().toLowerCase();
-      return IS_SUGGESTIONS.filter((s) => !q || s.includes(q));
-    }
-    return [] as string[];
-  }, [draft, pending]);
+    const field =
+      pending === "has" || pending === "is"
+        ? pending
+        : slash?.field === "has" || slash?.field === "is"
+          ? slash.field
+          : null;
+    if (!field) return [] as string[];
+    const q = (
+      pending === field ? draft : (slash?.rest ?? "")
+    )
+      .trim()
+      .toLowerCase();
+    const source = field === "has" ? HAS_SUGGESTIONS : IS_SUGGESTIONS;
+    return source.filter((s) => !q || s.includes(q));
+  }, [draft, pending, slash]);
 
   type Suggestion =
     | { kind: "filter"; field: PendingField }
+    | { kind: "slash"; field: PendingField; slash: string }
     | { kind: "contact"; contact: Contact }
     | { kind: "label"; label: Label }
     | { kind: "value"; value: string }
@@ -129,52 +188,117 @@ export function SearchBar({
   const suggestions = useMemo(() => {
     const list: Suggestion[] = [];
 
-    if (pending === "from" || pending === "to") {
+    if (slashChoosing) {
+      for (const row of slashChoices) {
+        list.push({ kind: "slash", field: row.field, slash: row.slash });
+      }
+      return list;
+    }
+
+    // `/from ada` — treat as pending field with rest as the draft value.
+    const effectivePending: PendingField | null =
+      pending ??
+      (slash && !slash.choosing && slash.field ? slash.field : null);
+    const valueDraft = pending
+      ? draft.trim()
+      : slash && !slash.choosing
+        ? slash.rest.trim()
+        : draft.trim();
+
+    if (effectivePending === "from" || effectivePending === "to") {
       for (const c of contactHits) list.push({ kind: "contact", contact: c });
-      if (draft.trim()) {
-        list.push({ kind: "commit", field: pending, value: draft.trim() });
+      if (valueDraft) {
+        list.push({
+          kind: "commit",
+          field: effectivePending,
+          value: valueDraft,
+        });
       }
       return list;
     }
 
-    if (pending === "tag") {
+    if (effectivePending === "tag") {
       for (const l of labelHits) list.push({ kind: "label", label: l });
-      if (draft.trim()) {
-        list.push({ kind: "commit", field: "tag", value: draft.trim() });
+      if (valueDraft) {
+        list.push({ kind: "commit", field: "tag", value: valueDraft });
       }
       return list;
     }
 
-    if (pending === "has" || pending === "is") {
+    if (effectivePending === "has" || effectivePending === "is") {
       for (const value of valueSuggestions) list.push({ kind: "value", value });
-      return list;
-    }
-
-    if (pending === "subject") {
-      if (draft.trim()) {
-        list.push({ kind: "commit", field: "subject", value: draft.trim() });
+      if (valueDraft && !valueSuggestions.includes(valueDraft as never)) {
+        list.push({
+          kind: "commit",
+          field: effectivePending,
+          value: valueDraft,
+        });
       }
       return list;
     }
 
-    // No pending field — offer filters + free-text commit + operator parse hints
+    if (effectivePending === "subject") {
+      if (valueDraft) {
+        list.push({ kind: "commit", field: "subject", value: valueDraft });
+      }
+      return list;
+    }
+
+    // No pending field — filters, people (as From), free-text
     for (const f of ADD_FILTERS) list.push({ kind: "filter", field: f.field });
-    if (draft.trim()) {
+    for (const c of contactHits) list.push({ kind: "contact", contact: c });
+    if (draft.trim() && !draft.trimStart().startsWith("/")) {
       list.push({ kind: "commit", field: "text", value: draft.trim() });
     }
     return list;
-  }, [pending, contactHits, labelHits, valueSuggestions, draft]);
+  }, [
+    pending,
+    contactHits,
+    labelHits,
+    valueSuggestions,
+    draft,
+    slash,
+    slashChoosing,
+    slashChoices,
+  ]);
 
   useEffect(() => {
     setActiveIdx(0);
   }, [suggestions.length, pending, draft]);
 
+  const resolvePersonValue = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.includes("@")) return trimmed;
+    const hit = filterContacts(trimmed, new Set(), 1, contacts)[0];
+    if (!hit) return trimmed;
+    const name = hit.name.toLowerCase();
+    const q = trimmed.toLowerCase();
+    if (
+      name === q ||
+      name.includes(q) ||
+      q.split(/\s+/).every((t) => t.length < 2 || name.includes(t))
+    ) {
+      return hit.email?.trim() || trimmed;
+    }
+    return trimmed;
+  };
+
   const addToken = (field: SearchField, value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
-    onTokensChange([...tokens, makeToken(field, trimmed)]);
+    const resolved =
+      field === "from" || field === "to"
+        ? resolvePersonValue(trimmed)
+        : trimmed;
+    onTokensChange([...tokens, makeToken(field, resolved)]);
     setDraft("");
     setPending(null);
+    localInputRef.current?.focus();
+  };
+
+  const startField = (field: PendingField) => {
+    setPending(field);
+    setDraft("");
     localInputRef.current?.focus();
   };
 
@@ -198,6 +322,20 @@ export function SearchBar({
       return;
     }
 
+    const slashParsed = parseSlashDraft(raw);
+    if (slashParsed.choosing && slashParsed.field) {
+      startField(slashParsed.field);
+      return;
+    }
+    if (slashParsed.field && slashParsed.rest) {
+      addToken(slashParsed.field, slashParsed.rest);
+      return;
+    }
+    if (slashParsed.field && !slashParsed.rest) {
+      startField(slashParsed.field);
+      return;
+    }
+
     const parsed = parseSearchInput(raw);
     if (parsed.tokens.length) {
       const next = [...tokens, ...parsed.tokens];
@@ -207,24 +345,29 @@ export function SearchBar({
       return;
     }
 
+    // Bare email → From filter
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
+      addToken("from", raw);
+      return;
+    }
+
     addToken("text", raw);
   };
 
   const applySuggestion = (s: Suggestion) => {
     switch (s.kind) {
       case "filter":
-        setPending(s.field);
-        setDraft("");
-        localInputRef.current?.focus();
+      case "slash":
+        startField(s.field);
         break;
       case "contact":
-        addToken(pending ?? "from", s.contact.name);
+        addToken(pending ?? "from", contactTokenValue(s.contact));
         break;
       case "label":
         addToken("tag", s.label.name);
         break;
       case "value":
-        addToken(pending ?? "has", s.value);
+        addToken(pending ?? slash?.field ?? "has", s.value);
         break;
       case "commit":
         addToken(s.field, s.value);
@@ -259,6 +402,21 @@ export function SearchBar({
       return;
     }
 
+    // Space after `/from` locks the field chip.
+    if (e.key === " " && !pending) {
+      const slashParsed = parseSlashDraft(draft);
+      if (
+        slashParsed.choosing &&
+        slashParsed.field &&
+        draft.trim().startsWith("/") &&
+        !/\s/.test(draft.trim())
+      ) {
+        e.preventDefault();
+        startField(slashParsed.field);
+        return;
+      }
+    }
+
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setOpen(true);
@@ -288,8 +446,14 @@ export function SearchBar({
   const inputPlaceholder = pending
     ? SEARCH_FIELD_META[pending].placeholder
     : tokens.length
-      ? "Add another filter…"
+      ? "Add another filter… (/subject)"
       : placeholder;
+
+  const showFilterGrid = !pending && !slashChoosing && !draft.trim();
+  const showSlashMenu = !pending && slashChoosing;
+  const effectivePending: PendingField | null =
+    pending ??
+    (slash && !slash.choosing && slash.field ? slash.field : null);
 
   return (
     <div className={`search-bar${open ? " open" : ""}`} ref={rootRef}>
@@ -370,7 +534,7 @@ export function SearchBar({
 
       {open && (
         <div className="search-panel" id={panelId} role="listbox">
-          {!pending && (
+          {showFilterGrid && (
             <div className="search-panel-section">
               <div className="search-panel-label">Add filter</div>
               <div className="search-filter-grid">
@@ -395,7 +559,9 @@ export function SearchBar({
                       <Icon size={14} strokeWidth={1.75} />
                       <span>
                         <strong>{SEARCH_FIELD_META[f.field].label}</strong>
-                        <small>{f.hint}</small>
+                        <small>
+                          {f.hint} · <code>{f.slash}</code>
+                        </small>
                       </span>
                     </button>
                   );
@@ -404,17 +570,57 @@ export function SearchBar({
             </div>
           )}
 
-          {pending && (
+          {showSlashMenu && (
+            <div className="search-panel-section">
+              <div className="search-panel-label">Filter shortcut</div>
+              <div className="search-suggest-list">
+                {suggestions.map((s, i) => {
+                  if (s.kind !== "slash") return null;
+                  const Icon = filterIcon(s.field);
+                  const active = i === activeIdx;
+                  return (
+                    <button
+                      key={s.slash}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      className={`search-suggest${active ? " active" : ""}`}
+                      onMouseEnter={() => setActiveIdx(i)}
+                      onClick={() => applySuggestion(s)}
+                    >
+                      <Icon size={14} strokeWidth={1.75} />
+                      <span className="search-suggest-meta">
+                        <strong>{SEARCH_FIELD_META[s.field].label}</strong>
+                        <small>
+                          <code>{s.slash}</code> ·{" "}
+                          {ADD_FILTERS.find((f) => f.field === s.field)?.hint}
+                        </small>
+                      </span>
+                    </button>
+                  );
+                })}
+                {suggestions.length === 0 && (
+                  <div className="search-suggest-empty">
+                    Try /from, /subject, /is…
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {effectivePending && (
             <div className="search-panel-section">
               <div className="search-panel-label">
-                {SEARCH_FIELD_META[pending].label}
-                <button
-                  type="button"
-                  className="search-panel-cancel"
-                  onClick={() => setPending(null)}
-                >
-                  Cancel
-                </button>
+                {SEARCH_FIELD_META[effectivePending].label}
+                {pending && (
+                  <button
+                    type="button"
+                    className="search-panel-cancel"
+                    onClick={() => setPending(null)}
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
               <div className="search-suggest-list">
                 {suggestions.map((s, i) => {
@@ -446,7 +652,9 @@ export function SearchBar({
                         )}
                         <span className="search-suggest-meta">
                           <strong>{s.contact.name}</strong>
-                          <small>{s.contact.email}</small>
+                          <small>
+                            {fieldLabel(effectivePending)} · {s.contact.email}
+                          </small>
                         </span>
                       </button>
                     );
@@ -495,7 +703,7 @@ export function SearchBar({
                   if (s.kind === "commit") {
                     return (
                       <button
-                        key={`commit-${s.value}`}
+                        key={`commit-${s.field}-${s.value}`}
                         type="button"
                         role="option"
                         aria-selected={active}
@@ -526,31 +734,64 @@ export function SearchBar({
             </div>
           )}
 
-          {!pending && draft.trim() && (
+          {!pending && !slashChoosing && !effectivePending && draft.trim() && (
             <div className="search-panel-section">
               <div className="search-panel-label">Search</div>
               <div className="search-suggest-list">
                 {suggestions
-                  .filter((s) => s.kind === "commit")
+                  .filter(
+                    (s) => s.kind === "contact" || s.kind === "commit",
+                  )
                   .map((s) => {
-                    if (s.kind !== "commit") return null;
                     const i = suggestions.indexOf(s);
+                    const active = i === activeIdx;
+                    if (s.kind === "contact") {
+                      return (
+                        <button
+                          key={`people-${s.contact.email}`}
+                          type="button"
+                          role="option"
+                          aria-selected={active}
+                          className={`search-suggest${active ? " active" : ""}`}
+                          onMouseEnter={() => setActiveIdx(i)}
+                          onClick={() => applySuggestion(s)}
+                        >
+                          {s.contact.avatarUrl ? (
+                            <img
+                              className="search-suggest-avatar photo"
+                              src={s.contact.avatarUrl}
+                              alt=""
+                            />
+                          ) : (
+                            <span
+                              className="search-suggest-avatar"
+                              style={{ background: s.contact.color }}
+                            >
+                              {s.contact.initials}
+                            </span>
+                          )}
+                          <span className="search-suggest-meta">
+                            <strong>{s.contact.name}</strong>
+                            <small>From · {s.contact.email}</small>
+                          </span>
+                        </button>
+                      );
+                    }
+                    if (s.kind !== "commit") return null;
                     return (
                       <button
                         key={`text-${s.value}`}
                         type="button"
                         role="option"
-                        aria-selected={i === activeIdx}
-                        className={`search-suggest${i === activeIdx ? " active" : ""}`}
+                        aria-selected={active}
+                        className={`search-suggest${active ? " active" : ""}`}
                         onMouseEnter={() => setActiveIdx(i)}
                         onClick={() => applySuggestion(s)}
                       >
                         <Search size={14} strokeWidth={1.75} />
                         <span className="search-suggest-meta">
                           <strong>Search “{s.value}”</strong>
-                          <small>
-                            Tip: from:name subject:words tag:label
-                          </small>
+                          <small>/from · /subject · from:email</small>
                         </span>
                       </button>
                     );
@@ -559,10 +800,10 @@ export function SearchBar({
             </div>
           )}
 
-          {!pending && !draft.trim() && (
+          {showFilterGrid && (
             <p className="search-panel-hint">
-              Tip: type <code>from:Ava</code>, <code>subject:roadmap</code>, or{" "}
-              <code>is:unread</code> — or pick a filter above.
+              Tip: type <code>/from</code> or <code>/subject</code>, pick a
+              person for From, or use <code>from:email</code>.
             </p>
           )}
         </div>

@@ -71,7 +71,11 @@ import {
   isOnboardingComplete,
 } from "./onboardingStorage";
 import { SearchBar } from "./SearchBar";
-import type { Contact } from "./contacts";
+import {
+  buildContacts,
+  setContactDirectory,
+  type Contact,
+} from "./contacts";
 import {
   aiFindUnsubscribe,
   looksLikeNewsletter,
@@ -146,6 +150,7 @@ import {
   bridgeFolderCounts,
   bridgeGetMail,
   bridgeHasRealAccounts,
+  bridgeListContacts,
   bridgeListLabels,
   bridgeListMail,
   bridgeMutateMail,
@@ -963,6 +968,7 @@ function Sidebar({
   activeFolder,
   inboxCount,
   folderCounts,
+  folderTotals,
   customFolders,
   labels,
   syncLabel,
@@ -976,7 +982,10 @@ function Sidebar({
   account: Account;
   activeFolder: string;
   inboxCount: number;
+  /** Nav badges: unread conversations; Junk/Trash use totals (data loss). */
   folderCounts: Record<string, number>;
+  /** Total message counts — Empty Junk/Trash eligibility. */
+  folderTotals: Record<string, number>;
   customFolders: string[];
   labels: Label[];
   syncLabel: string;
@@ -1255,7 +1264,7 @@ function Sidebar({
 
       {(activeFolder === "junk" || activeFolder === "trash") &&
         onEmptyFolder &&
-        (folderCounts[activeFolder] ?? 0) > 0 && (
+        (folderTotals[activeFolder] ?? 0) > 0 && (
           <div className="folder-toolbar">
             <button
               type="button"
@@ -1823,6 +1832,21 @@ function MessageList({
   const anyUnstarred = checkedMessages.some((m) => !m.starred);
   const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
 
+  // Replay the fade-up only for rows that just arrived. Re-rendering the list
+  // on every sync tick used to restart the staggered animation for all rows.
+  const seenIds = useRef<Set<string>>(new Set());
+  const freshIds = useMemo(() => {
+    const fresh = new Set<string>();
+    for (const m of items) {
+      if (!seenIds.current.has(m.id)) fresh.add(m.id);
+    }
+    return fresh;
+  }, [items]);
+  useEffect(() => {
+    for (const m of items) seenIds.current.add(m.id);
+  }, [items]);
+  const animateRow = (id: string) => !reduceMotion && freshIds.has(id);
+
   const menuMessage = menu
     ? items.find((m) => m.id === menu.messageId) ?? null
     : null;
@@ -2034,9 +2058,11 @@ function MessageList({
             return (
               <div
                 key={m.id}
-                className={`message-row${reduceMotion ? "" : " fade-up"}${selected ? " selected" : ""}${checked ? " checked" : ""}${menu?.messageId === m.id ? " menu-target" : ""}${m.unread ? " unread" : ""}${starred ? " starred" : ""}${hoverActions ? " hover-actions" : ""}${showAvatars ? "" : " no-avatar"}`}
+                className={`message-row${animateRow(m.id) ? " fade-up" : ""}${selected ? " selected" : ""}${checked ? " checked" : ""}${menu?.messageId === m.id ? " menu-target" : ""}${m.unread ? " unread" : ""}${starred ? " starred" : ""}${hoverActions ? " hover-actions" : ""}${showAvatars ? "" : " no-avatar"}`}
                 style={
-                  reduceMotion ? undefined : { animationDelay: `${i * 0.03}s` }
+                  animateRow(m.id)
+                    ? { animationDelay: `${Math.min(i, 12) * 0.03}s` }
+                    : undefined
                 }
                 onClick={(e) => {
                   if (e.shiftKey || e.metaKey || e.ctrlKey) {
@@ -2265,17 +2291,47 @@ function promoteProtocolRelativeUrls(html: string): string {
     .replace(/(url\(\s*['"]?)\/\//gi, "$1https://");
 }
 
+/** Shared resets so newsletters cannot invent a tall viewport inside the iframe. */
+const EMAIL_FRAME_RESET = `
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+  body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
+  img { max-width: 100%; height: auto; }
+  /* Full-viewport wrappers (100vh / height=100%) leave a gap above centered mail. */
+  body > table[height="100%"],
+  body > table[style*="height:100%"],
+  body > table[style*="height: 100%"],
+  body > div[style*="min-height:100vh"],
+  body > div[style*="min-height: 100vh"],
+  body > div[style*="height:100vh"],
+  body > div[style*="height: 100vh"] {
+    height: auto !important;
+    min-height: 0 !important;
+  }
+`;
+
 function HtmlBody({
   html,
   forceDark,
   allowRemote,
+  onLayout,
 }: {
   html: string;
   forceDark?: boolean;
   /** Settings default or per-message Load images override. */
   allowRemote: boolean;
+  /** Fired after the iframe height is applied (lazy hydrate / image load). */
+  onLayout?: () => void;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
+  const onLayoutRef = useRef(onLayout);
+  onLayoutRef.current = onLayout;
 
   useEffect(() => {
     const frame = ref.current;
@@ -2283,14 +2339,12 @@ function HtmlBody({
     const doc = frame.contentDocument;
     if (!doc) return;
     const dark = forceDark
-      ? `html, body { margin: 0; padding: 0; overflow: hidden; background: #141416; color: #e8e8ea; }
-         body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
-         img { max-width: 100%; height: auto; }
+      ? `${EMAIL_FRAME_RESET}
+         html, body { background: #141416; color: #e8e8ea; }
          a { color: #7eb0ff; }
          table, td, div { background-color: transparent !important; color: inherit !important; }`
-      : `html, body { margin: 0; padding: 0; overflow: hidden; background: #fff; color: #1a1a1a; }
-         body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
-         img { max-width: 100%; height: auto; }
+      : `${EMAIL_FRAME_RESET}
+         html, body { background: #fff; color: #1a1a1a; }
          a { color: #2563eb; }`;
     // Parent index.html must allow https/http img-src: about:blank +
     // allow-same-origin inherits the creator CSP, which intersects with this.
@@ -2321,38 +2375,53 @@ function HtmlBody({
       const body = doc.body;
       const root = doc.documentElement;
       if (!body) return 120;
+      // Prefer the content bounding box. scrollHeight follows min-height:100vh
+      // / height:100% wrappers and invents a tall empty frame.
       const bodyTop = body.getBoundingClientRect().top;
-      let childBottom = 0;
+      let contentBottom = 0;
       for (const child of Array.from(body.children)) {
-        childBottom = Math.max(
-          childBottom,
+        contentBottom = Math.max(
+          contentBottom,
           child.getBoundingClientRect().bottom - bodyTop,
         );
       }
+      if (contentBottom > 0) return contentBottom;
       return Math.max(
         body.scrollHeight,
         body.offsetHeight,
         root?.scrollHeight ?? 0,
         root?.offsetHeight ?? 0,
-        childBottom,
+        80,
       );
     };
 
     const resize = () => {
       // Always size to full content so the reader pane scrolls instead of
       // clipping the message behind a manual resize handle.
-      frame.style.height = `${Math.max(measureHeight() + 12, 80)}px`;
+      const next = Math.max(measureHeight() + 12, 80);
+      if (frame.style.height !== `${next}px`) {
+        frame.style.height = `${next}px`;
+        onLayoutRef.current?.();
+      }
     };
     resize();
     const raf = window.requestAnimationFrame(() => resize());
     const ob = new ResizeObserver(resize);
     if (doc.body) ob.observe(doc.body);
     if (doc.documentElement) ob.observe(doc.documentElement);
+    // Late-loading images also change height without always resizing body.
+    const imgs = Array.from(doc.images ?? []);
+    for (const img of imgs) {
+      if (!img.complete) img.addEventListener("load", resize);
+    }
 
     return () => {
       window.cancelAnimationFrame(raf);
       ob.disconnect();
       doc.removeEventListener("click", onClick);
+      for (const img of imgs) {
+        img.removeEventListener("load", resize);
+      }
     };
   }, [html, forceDark, allowRemote]);
 
@@ -2365,6 +2434,7 @@ function HtmlBody({
           title="Email HTML"
           sandbox="allow-same-origin"
           referrerPolicy="no-referrer"
+          tabIndex={-1}
         />
       </div>
     </div>
@@ -2388,6 +2458,7 @@ function ThreadMessageView({
   onComposeTo,
   onSummarize,
   onTranslate,
+  onHtmlLayout,
 }: {
   message: ThreadMessage;
   defaultExpanded: boolean;
@@ -2400,6 +2471,8 @@ function ThreadMessageView({
   onComposeTo: (r: Recipient) => void;
   onSummarize?: () => void;
   onTranslate?: () => void;
+  /** Keep the reader pinned while the HTML iframe sizes itself. */
+  onHtmlLayout?: () => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const hasRemoteImages = useMemo(
@@ -2557,6 +2630,7 @@ function ThreadMessageView({
               html={message.bodyHtml}
               forceDark={forceDarkHtml}
               allowRemote={showImages}
+              onLayout={onHtmlLayout}
             />
           ) : bodyLoading && !threadHasRealBody(message) ? (
             <div className="body-copy body-loading" role="status">
@@ -2667,6 +2741,41 @@ function ReadingPane({
   /** Bumped by parent to focus/seed the reply box (Reply vs Reply all). */
   replyIntent?: { key: number; mode: ReplyMode };
 }) {
+  const readerScrollRef = useRef<HTMLDivElement>(null);
+  /** True while the user is still at the top — pin through lazy HTML sizing. */
+  const pinReaderTopRef = useRef(true);
+
+  useEffect(() => {
+    pinReaderTopRef.current = true;
+    const node = readerScrollRef.current;
+    if (node) node.scrollTop = 0;
+  }, [message?.id]);
+
+  useEffect(() => {
+    const node = readerScrollRef.current;
+    if (!node) return;
+    const onScroll = () => {
+      pinReaderTopRef.current = node.scrollTop < 12;
+    };
+    node.addEventListener("scroll", onScroll, { passive: true });
+    return () => node.removeEventListener("scroll", onScroll);
+  }, [message?.id]);
+
+  const keepReaderTop = () => {
+    if (!pinReaderTopRef.current) return;
+    const node = readerScrollRef.current;
+    if (node && node.scrollTop !== 0) node.scrollTop = 0;
+  };
+
+  // Lazy body hydrate replaces the short loading stub with tall HTML; re-pin.
+  useEffect(() => {
+    if (bodyLoading) return;
+    keepReaderTop();
+    const id = window.requestAnimationFrame(keepReaderTop);
+    return () => window.cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bodyLoading, message?.id]);
+
   const sendable = useMemo(
     () => sendIdentitiesForAccounts(accounts),
     [accounts],
@@ -3258,7 +3367,11 @@ function ReadingPane({
         </div>
       )}
 
-      <div className="reader-scroll fade-up-delay" key={message.id}>
+      <div
+        className="reader-scroll fade-up-delay"
+        key={message.id}
+        ref={readerScrollRef}
+      >
         <div className="reader-meta-row">
           <span className="thread-count">
             {message.thread.length}{" "}
@@ -3300,6 +3413,7 @@ function ReadingPane({
               onComposeTo={onComposeTo}
               onSummarize={() => void runSummarize()}
               onTranslate={() => void runTranslate()}
+              onHtmlLayout={keepReaderTop}
             />
           ))}
         </div>
@@ -4446,6 +4560,12 @@ export default function App() {
     startW: number;
   } | null>(null);
   const [live, setLive] = useState(false);
+  /** Real linked mailboxes exist in the local DB (even while demo is showing). */
+  const [hasRealAccounts, setHasRealAccounts] = useState(false);
+  /** Snapshot of real accounts for Settings while the shell shows demo seed data. */
+  const [liveAccountSnapshot, setLiveAccountSnapshot] = useState<Account[]>(
+    [],
+  );
   const [accounts, setAccounts] = useState<Account[]>(() =>
     seedAccounts.map((a) => ({ ...a })),
   );
@@ -4623,7 +4743,29 @@ export default function App() {
     const scopeId = aid ?? accountId;
     const scope = scopeId === UNIFIED_ID ? "all" : scopeId;
     try {
-      setLiveFolderCounts(await bridgeFolderCounts(scope));
+      const [counts, real] = await Promise.all([
+        bridgeFolderCounts(scope),
+        bridgeAccounts().catch(() => null),
+      ]);
+      setLiveFolderCounts(counts);
+      // Rail badges use accounts.unread — keep them aligned with inbox unread.
+      if (real?.length) {
+        const mapped = real.map(accountDtoToUi);
+        const byId = new Map(mapped.map((a) => [a.id, a]));
+        const mergeUnread = (list: Account[]) =>
+          list.map((a) => {
+            if (a.id === UNIFIED_ID) {
+              return {
+                ...a,
+                unread: mapped.reduce((n, x) => n + x.unread, 0),
+              };
+            }
+            const next = byId.get(a.id);
+            return next ? { ...a, unread: next.unread } : a;
+          });
+        setAccounts(mergeUnread);
+        setLiveAccountSnapshot(mergeUnread);
+      }
     } catch {
       /* keep previous badges */
     }
@@ -4634,7 +4776,7 @@ export default function App() {
     folder?: string;
     filter?: Filter;
     q?: string;
-  }) => {
+  }): Promise<Message[]> => {
     const aid = opts?.accountId ?? accountId;
     const scope = aid === UNIFIED_ID ? "all" : aid;
     const requested = opts?.folder ?? folderId;
@@ -4642,11 +4784,12 @@ export default function App() {
     const f = opts?.filter ?? filter;
     const q = opts?.q ?? searchQuery;
     const countsPromise = refreshFolderCounts(aid);
+    const searching = Boolean(q.trim());
     const result = await bridgeListMail({
       accountId: scope,
-      folder,
-      filter: f,
-      limit: 80,
+      folder: searching ? undefined : folder,
+      filter: searching ? "all" : f,
+      limit: searching ? 250 : 80,
       q: q.trim() || undefined,
     });
     const messages = result.messages.map(messageDtoToUi);
@@ -4681,16 +4824,25 @@ export default function App() {
       messages.some((m) => m.id === prev) ? prev : (messages[0]?.id ?? ""),
     );
     await countsPromise;
+    return messages;
   };
 
   const loadLiveWorkspace = async (selectAccountId?: string) => {
     const real = await bridgeAccounts();
     if (!real.length) {
       setLive(false);
+      setHasRealAccounts(false);
+      setLiveAccountSnapshot([]);
       setLiveFolderCounts(null);
       setAccounts(seedAccounts.map((a) => ({ ...a })));
+      setLabels(seedLabels.map((l) => ({ ...l })));
       setMail(seedMessages.map((m) => ({ ...m })));
       setSelectedId(seedMessages[0].id);
+      setAccountId(UNIFIED_ID);
+      setFolderId("inbox");
+      setFilter("all");
+      setStackView("list");
+      setContactDirectory(null);
       return;
     }
     const uiAccounts: Account[] = [
@@ -4705,12 +4857,16 @@ export default function App() {
       ...real.map(accountDtoToUi),
     ];
     setLive(true);
+    setHasRealAccounts(true);
+    setLiveAccountSnapshot(uiAccounts);
     setAccounts(uiAccounts);
     const nextId = selectAccountId ?? UNIFIED_ID;
     setAccountId(nextId);
     setFolderId("inbox");
     setFilter("all");
     setStackView("list");
+    clearChecks();
+    setSearchTokens([]);
     try {
       const remoteLabels = await bridgeListLabels();
       if (remoteLabels.length) {
@@ -4725,12 +4881,27 @@ export default function App() {
     } catch {
       /* keep seed labels */
     }
-    await refreshLiveMail({
+    let remoteContacts: Awaited<ReturnType<typeof bridgeListContacts>> = [];
+    try {
+      remoteContacts = await bridgeListContacts();
+    } catch {
+      /* directory falls back to live mail participants */
+    }
+    const liveMessages = await refreshLiveMail({
       accountId: nextId,
       folder: "inbox",
       filter: "all",
       q: "",
     });
+    // Replace demo people in search / @mentions with real contacts + synced mail.
+    setContactDirectory(
+      buildContacts({
+        accounts: uiAccounts,
+        messages: liveMessages,
+        remote: remoteContacts,
+        includeDemoExtras: false,
+      }),
+    );
   };
 
   useEffect(() => {
@@ -4738,6 +4909,7 @@ export default function App() {
     void (async () => {
       const has = await bridgeHasRealAccounts();
       if (cancelled) return;
+      setHasRealAccounts(has);
       if (has) {
         // Returning user with accounts — skip first-run even if the flag was cleared.
         if (!isOnboardingComplete()) completeOnboarding();
@@ -4761,11 +4933,16 @@ export default function App() {
         isAuthFailureMessage(status.error) &&
         status.accountId
       ) {
-        setAccounts((prev) =>
-          prev.map((a) =>
+        const markLoggedOut = (list: Account[]) =>
+          list.map((a) =>
             a.id === status.accountId ? { ...a, loggedOut: true } : a,
-          ),
-        );
+          );
+        if (live) {
+          setAccounts(markLoggedOut);
+          setLiveAccountSnapshot(markLoggedOut);
+        } else {
+          setLiveAccountSnapshot(markLoggedOut);
+        }
       }
       if (status.state === "idle" && live) {
         // One list refresh for a burst of per-account idle events, and none
@@ -4776,12 +4953,14 @@ export default function App() {
         idleRefreshTimer.current = window.setTimeout(() => {
           idleRefreshTimer.current = null;
           if (document.visibilityState === "hidden") return;
-          void refreshLiveMail();
-        }, 1200);
-        void bridgeAccounts().then((real) => {
-          setAccounts((prev) => {
+          void (async () => {
+            const [liveMessages, real, remote] = await Promise.all([
+              refreshLiveMail(),
+              bridgeAccounts(),
+              bridgeListContacts().catch(() => []),
+            ]);
             const mapped = real.map(accountDtoToUi);
-            return [
+            const uiAccounts: Account[] = [
               {
                 id: UNIFIED_ID,
                 label: "All",
@@ -4792,8 +4971,19 @@ export default function App() {
               },
               ...mapped,
             ];
-          });
-        });
+            setAccounts(uiAccounts);
+            setLiveAccountSnapshot(uiAccounts);
+            setHasRealAccounts(mapped.length > 0);
+            setContactDirectory(
+              buildContacts({
+                accounts: uiAccounts,
+                messages: liveMessages,
+                remote,
+                includeDemoExtras: false,
+              }),
+            );
+          })();
+        }, 1200);
       }
     });
     return () => {
@@ -4850,6 +5040,7 @@ export default function App() {
       showToast("Snoozed mail returned to inbox");
     });
     const offUpdated = bridgeOnMailUpdated(({ message }) => {
+      if (!live) return;
       const ui = messageDtoToUi(message);
       const prev = mailRef.current.find((m) => m.id === ui.id);
       if (
@@ -4867,8 +5058,14 @@ export default function App() {
       );
     });
     const offAvatar = bridgeOnAvatarUpdated(({ email, avatarUrl }) => {
+      if (!live) return;
       const key = email.trim().toLowerCase();
       setAccounts((prev) =>
+        prev.map((a) =>
+          a.email.toLowerCase() === key ? { ...a, avatarUrl } : a,
+        ),
+      );
+      setLiveAccountSnapshot((prev) =>
         prev.map((a) =>
           a.email.toLowerCase() === key ? { ...a, avatarUrl } : a,
         ),
@@ -4920,7 +5117,11 @@ export default function App() {
         setMail((prev) =>
           prev.map((m) => {
             if (m.id !== selectedId) return m;
-            return { ...updated, tag: updated.tag ?? m.tag };
+            // Body hydrate can race mark-as-read; don't let a stale unread
+            // snapshot undo a read the user (or mark-on-open) just applied.
+            const unread =
+              m.unread === false && updated.unread ? false : updated.unread;
+            return { ...updated, tag: updated.tag ?? m.tag, unread };
           }),
         );
       })
@@ -4991,6 +5192,42 @@ export default function App() {
   const showToast = (text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(null), 2200);
+  };
+
+  const loadDemoWorkspace = () => {
+    if (!live) {
+      showToast("Demo data is already loaded");
+      return;
+    }
+    setLive(false);
+    setLiveFolderCounts(null);
+    setAccounts(seedAccounts.map((a) => ({ ...a })));
+    setLabels(seedLabels.map((l) => ({ ...l })));
+    setMail(seedMessages.map((m) => ({ ...m })));
+    setSelectedId(seedMessages[0].id);
+    setAccountId(UNIFIED_ID);
+    setFolderId("inbox");
+    setFilter("all");
+    setStackView("list");
+    clearChecks();
+    setSearchTokens([]);
+    setContactDirectory(null);
+    showToast("Demo data loaded");
+  };
+
+  const unloadDemoWorkspace = async () => {
+    if (live) {
+      showToast("Already on your inbox");
+      return;
+    }
+    const has = await bridgeHasRealAccounts();
+    if (!has) {
+      setHasRealAccounts(false);
+      showToast("Add an account to leave demo");
+      return;
+    }
+    await loadLiveWorkspace();
+    showToast("Back to your inbox");
   };
 
   const mutateLocalMessage = (
@@ -5691,8 +5928,11 @@ export default function App() {
   };
 
   const scoped = useMemo(() => {
+    const searching = searchTokens.length > 0;
     return mail.filter((m) => {
       if (accountId !== UNIFIED_ID && m.accountId !== accountId) return false;
+      // Active search is cross-folder (matches Gmail-style from:/subject:).
+      if (searching) return true;
       if (folderId.startsWith("label:")) {
         const labelId = folderId.slice("label:".length);
         const label = labels.find((l) => l.id === labelId);
@@ -5702,10 +5942,10 @@ export default function App() {
       if (folderId === "inbox") return m.folder === "inbox";
       return m.folder === folderId;
     });
-  }, [mail, accountId, folderId, labels]);
+  }, [mail, accountId, folderId, labels, searchTokens.length]);
 
-  /** Demo / offline fallback — full local corpus, not a single paged folder. */
-  const localFolderCounts = useMemo(() => {
+  /** Demo / offline fallback — total messages per folder (Empty Junk/Trash). */
+  const localFolderTotals = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const m of mail) {
       if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
@@ -5715,30 +5955,41 @@ export default function App() {
   }, [mail, accountId]);
 
   /**
-   * Sidebar badges stay visible across folder switches.
-   * Inbox shows unread (new alerts); other folders show totals (drafts/junk/etc.).
+   * Sidebar badges: unread conversations everywhere, except Junk/Trash which
+   * show totals as a data-loss cue.
    */
   const folderCounts = useMemo(() => {
+    const dataLoss = (id: string) => id === "junk" || id === "trash";
     if (live && liveFolderCounts) {
       const out: Record<string, number> = {};
       for (const [id, entry] of Object.entries(liveFolderCounts.folders)) {
-        out[id] = id === "inbox" ? entry.unread : entry.total;
+        out[id] = dataLoss(id) ? entry.total : entry.unread;
       }
       return out;
     }
-    if (!live) {
-      const out: Record<string, number> = { ...localFolderCounts };
-      // Demo inbox badge = unread so it matches the "new alerts" cue.
-      out.inbox = mail.filter(
-        (m) =>
-          m.folder === "inbox" &&
-          m.unread &&
-          (accountId === UNIFIED_ID || m.accountId === accountId),
-      ).length;
+    const out: Record<string, number> = {};
+    for (const m of mail) {
+      if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
+      if (dataLoss(m.folder)) {
+        out[m.folder] = (out[m.folder] ?? 0) + 1;
+        continue;
+      }
+      if (!m.unread) continue;
+      out[m.folder] = (out[m.folder] ?? 0) + 1;
+    }
+    return out;
+  }, [live, liveFolderCounts, mail, accountId]);
+
+  const folderTotals = useMemo(() => {
+    if (live && liveFolderCounts) {
+      const out: Record<string, number> = {};
+      for (const [id, entry] of Object.entries(liveFolderCounts.folders)) {
+        out[id] = entry.total;
+      }
       return out;
     }
-    return localFolderCounts;
-  }, [live, liveFolderCounts, localFolderCounts, mail, accountId]);
+    return localFolderTotals;
+  }, [live, liveFolderCounts, localFolderTotals]);
 
   const inboxBadgeCount = folderCounts.inbox ?? 0;
   const taskbarCount = badgeCountForMode(prefs.taskbarBadge, mail);
@@ -6149,8 +6400,8 @@ export default function App() {
           setSearchTokens(tokens);
           if (!live) return;
           if (searchTimer.current) window.clearTimeout(searchTimer.current);
-          // Bridge gets free-text only; structured chips filter client-side.
-          const q = serializeSearch(tokens.filter((t) => t.field === "text"));
+          // Send full fielded query (from:/subject:/…) to the local store.
+          const q = serializeSearch(tokens);
           searchTimer.current = window.setTimeout(() => {
             void refreshLiveMail({ q });
           }, 280);
@@ -6235,6 +6486,7 @@ export default function App() {
           }
           inboxCount={inboxBadgeCount}
           folderCounts={folderCounts}
+          folderTotals={folderTotals}
           onFolder={setFolderId}
           onCompose={() => openCompose()}
           onEmptyFolder={(folder) => {
@@ -6484,7 +6736,17 @@ export default function App() {
       {settingsOpen && (
         <SettingsModal
           prefs={prefs}
-          accounts={accounts}
+          accounts={
+            !live && hasRealAccounts && liveAccountSnapshot.length
+              ? liveAccountSnapshot
+              : accounts
+          }
+          demoActive={!live}
+          canUnloadDemo={hasRealAccounts}
+          onLoadDemo={loadDemoWorkspace}
+          onUnloadDemo={() => {
+            void unloadDemoWorkspace();
+          }}
           onChange={updatePrefs}
           onAddAccount={() => {
             setSettingsOpen(false);
@@ -6495,15 +6757,24 @@ export default function App() {
             setReauthAccount(account);
           }}
           onRemoveAccount={(id) => {
-            setAccounts((prev) => prev.filter((a) => a.id !== id));
-            setAccountId((cur) => (cur === id ? UNIFIED_ID : cur));
             if (live) {
+              setAccounts((prev) => prev.filter((a) => a.id !== id));
+              setAccountId((cur) => (cur === id ? UNIFIED_ID : cur));
               void loadLiveWorkspace().then(() => undefined);
+              return;
             }
+            // Demo shell — only update the real-account snapshot used by Settings.
+            setLiveAccountSnapshot((prev) =>
+              prev.filter((a) => a.id !== id),
+            );
+            void bridgeHasRealAccounts().then((has) => {
+              setHasRealAccounts(has);
+              if (!has) setLiveAccountSnapshot([]);
+            });
           }}
           onUpdateAccount={(account) => {
-            setAccounts((prev) =>
-              prev.map((a) =>
+            const merge = (list: Account[]) =>
+              list.map((a) =>
                 a.id === account.id
                   ? {
                       ...a,
@@ -6512,8 +6783,15 @@ export default function App() {
                       unread: a.unread,
                     }
                   : a,
-              ),
-            );
+              );
+            if (live) {
+              setAccounts(merge);
+              setLiveAccountSnapshot(merge);
+            } else if (hasRealAccounts) {
+              setLiveAccountSnapshot(merge);
+            } else {
+              setAccounts(merge);
+            }
           }}
           onClose={() => setSettingsOpen(false)}
         />

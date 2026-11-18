@@ -1,13 +1,16 @@
 import type { Message } from "./data/mock";
+import {
+  parseSearchClauses,
+  serializeSearchClauses,
+  type SearchField,
+} from "../shared/searchQuery";
 
-export type SearchField =
-  | "text"
-  | "from"
-  | "to"
-  | "subject"
-  | "tag"
-  | "has"
-  | "is";
+export type { SearchField } from "../shared/searchQuery";
+export {
+  parseSlashDraft,
+  resolveSlashField,
+  slashFieldChoices,
+} from "../shared/searchQuery";
 
 export type SearchToken = {
   id: string;
@@ -27,18 +30,6 @@ export const SEARCH_FIELD_META: Record<
   is: { label: "Is", placeholder: "unread, starred, or important" },
 };
 
-const FIELD_ALIASES: Record<string, SearchField> = {
-  from: "from",
-  sender: "from",
-  to: "to",
-  subject: "subject",
-  subj: "subject",
-  tag: "tag",
-  label: "tag",
-  has: "has",
-  is: "is",
-};
-
 let tokenSeq = 0;
 export function makeToken(field: SearchField, value: string): SearchToken {
   tokenSeq += 1;
@@ -49,39 +40,23 @@ export function makeToken(field: SearchField, value: string): SearchToken {
   };
 }
 
-/** Parse a typed fragment into tokens. Supports from:"Ava Martin" and from:ava. */
+/** Parse a typed fragment into tokens. Supports from:"Ada Martin" and from:ada. */
 export function parseSearchInput(raw: string): {
   tokens: SearchToken[];
   rest: string;
 } {
+  const clauses = parseSearchClauses(raw);
   const tokens: SearchToken[] = [];
-  let rest = raw.trim();
-  const re =
-    /\b(from|sender|to|subject|subj|tag|label|has|is):(?:"([^"]*)"|(\S+))/gi;
-
-  rest = rest
-    .replace(re, (_m, key: string, quoted?: string, bare?: string) => {
-      const field = FIELD_ALIASES[key.toLowerCase()];
-      const value = (quoted ?? bare ?? "").trim();
-      if (field && value) tokens.push(makeToken(field, value));
-      return " ";
-    })
-    .replace(/\s+/g, " ")
-    .trim();
-
+  let rest = "";
+  for (const c of clauses) {
+    if (c.field === "text") rest = c.value;
+    else tokens.push(makeToken(c.field, c.value));
+  }
   return { tokens, rest };
 }
 
 export function serializeSearch(tokens: SearchToken[]): string {
-  return tokens
-    .map((t) => {
-      if (t.field === "text") return t.value;
-      const needsQuotes = /\s/.test(t.value);
-      const v = needsQuotes ? `"${t.value}"` : t.value;
-      return `${t.field}:${v}`;
-    })
-    .filter(Boolean)
-    .join(" ");
+  return serializeSearchClauses(tokens);
 }
 
 function includes(hay: string | undefined, needle: string) {
@@ -134,6 +109,29 @@ function messageHaystack(message: Message) {
   return parts.filter(Boolean).join("\n").toLowerCase();
 }
 
+function matchFrom(message: Message, value: string) {
+  const needle = value.trim().toLowerCase();
+  if (!needle) return true;
+  const tokens = needle.includes("@")
+    ? []
+    : needle.split(/\s+/).filter((t) => t.length >= 2);
+
+  const hit = (name?: string, email?: string) => {
+    const n = (name ?? "").toLowerCase();
+    const e = (email ?? "").toLowerCase();
+    if (n.includes(needle) || e.includes(needle)) return true;
+    if (tokens.length && tokens.every((t) => n.includes(t))) return true;
+    // First name alone — calendar invites often use full name; other mail may not.
+    if (tokens.length > 1 && (n.includes(tokens[0]!) || e.includes(tokens[0]!))) {
+      return true;
+    }
+    return false;
+  };
+
+  if (hit(message.from, message.email)) return true;
+  return message.thread.some((t) => hit(t.from, t.email));
+}
+
 export function messageMatchesSearch(
   message: Message,
   tokens: SearchToken[],
@@ -146,9 +144,7 @@ export function messageMatchesSearch(
 
     switch (token.field) {
       case "from":
-        if (!(includes(message.from, v) || includes(message.email, v))) {
-          return false;
-        }
+        if (!matchFrom(message, v)) return false;
         break;
       case "to": {
         const hit = message.thread.some((t) =>

@@ -5,6 +5,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  FlaskConical,
   ImagePlus,
   Info,
   KeyRound,
@@ -229,6 +230,7 @@ type TabId =
   | "shortcuts"
   | "accounts"
   | "privacy"
+  | "testing"
   | "about";
 
 const SETTINGS_TABS: {
@@ -245,6 +247,7 @@ const SETTINGS_TABS: {
   { id: "shortcuts", label: "Shortcuts", Icon: Keyboard, group: "System" },
   { id: "accounts", label: "Accounts", Icon: Layers, group: "System" },
   { id: "privacy", label: "Privacy", Icon: Shield, group: "System" },
+  { id: "testing", label: "Testing support", Icon: FlaskConical, group: "System" },
   { id: "about", label: "About", Icon: Info, group: "System" },
 ];
 
@@ -315,7 +318,7 @@ function credentialGuide(account: Account) {
       kind: "oauth" as const,
       title: "Google sign-in",
       summary:
-        "This mailbox uses OAuth — not a password field. Tokens stay on this device.",
+        "This mailbox uses OAuth — not a password field. Tokens stay on this PC (DPAPI).",
       steps: [
         "Update sign-in / Reconnect opens Google in your browser and replaces the stored token.",
         "Revoke access anytime in Google Account → Security → Third-party access.",
@@ -336,7 +339,7 @@ function credentialGuide(account: Account) {
     steps: [
       `Create an app password in ${where}, then use Reconnect / Update sign-in — only the password is asked for; email and server settings stay.`,
       "Your everyday login password usually will not work once two-factor auth is enabled.",
-      "Secrets are encrypted with OS secure storage on this device — mail never routes through Intray servers.",
+      "Secrets are encrypted with Windows DPAPI on this PC — mail never routes through Intray servers.",
       "Remove wipes the stored app password and local copies of this mailbox.",
     ],
   };
@@ -345,6 +348,10 @@ function credentialGuide(account: Account) {
 export function SettingsModal({
   prefs,
   accounts,
+  demoActive = false,
+  canUnloadDemo = false,
+  onLoadDemo,
+  onUnloadDemo,
   onChange,
   onAddAccount,
   onReconnectAccount,
@@ -354,6 +361,12 @@ export function SettingsModal({
 }: {
   prefs: Preferences;
   accounts: Account[];
+  /** True while the sample inbox is showing instead of synced mail. */
+  demoActive?: boolean;
+  /** True when at least one real account can be restored after unloading demo. */
+  canUnloadDemo?: boolean;
+  onLoadDemo?: () => void;
+  onUnloadDemo?: () => void;
   onChange: (p: Preferences) => void;
   onAddAccount: () => void;
   onReconnectAccount?: (account: Account) => void;
@@ -891,7 +904,7 @@ export function SettingsModal({
               <>
                 <Block
                   title="Appearance"
-                  hint="Match the system, or lock light/dark. No glow effects."
+                  hint="Match Windows, or lock light/dark. No glow effects."
                 >
                   <Row title="Theme" hint="Light, dark, or follow the OS">
                     <Select
@@ -1119,7 +1132,7 @@ export function SettingsModal({
             {tab === "notifications" && (
               <>
                 <Block
-                  title="Desktop notifications"
+                  title="Windows notifications"
                   hint="Desktop toasts for snooze wakes, read receipts, and other reminders."
                   action={
                     <button
@@ -1142,7 +1155,7 @@ export function SettingsModal({
                 >
                   <Row
                     title="Show desktop notifications"
-                    hint="Uses system notification banners when Intray is in the background"
+                    hint="Uses Windows notification banners when Intray is in the background"
                   >
                     <Toggle
                       on={prefs.notifyDesktop}
@@ -1246,7 +1259,7 @@ export function SettingsModal({
                 <Block title="Badges">
                   <Row
                     title="Taskbar badge"
-                    hint="Unread badge on the dock or taskbar icon"
+                    hint="Unread overlay on the Windows taskbar icon"
                   >
                     <Select
                       value={prefs.taskbarBadge}
@@ -1278,7 +1291,7 @@ export function SettingsModal({
 
                 <Block title="Startup & tray">
                   <Row
-                    title="Launch at login"
+                    title="Start with Windows"
                     hint="Open Intray when you sign in (hidden to tray)"
                   >
                     <Toggle
@@ -1313,7 +1326,7 @@ export function SettingsModal({
                       onChange={(globalHotkey) => patch({ globalHotkey })}
                     />
                   </Row>
-                  <Row title="Quiet hours" hint="Mute desktop toasts overnight">
+                  <Row title="Quiet hours" hint="Mute Windows toasts overnight">
                     <Toggle
                       on={prefs.quietHours}
                       onChange={(quietHours) => patch({ quietHours })}
@@ -1640,8 +1653,8 @@ export function SettingsModal({
                           title={`${aiBridgeMeta[prefs.aiBridge].name} API key`}
                           hint={
                             secretStatus[secretId]
-                              ? "Provider API key saved on this device — not your email password. Paste a new key to replace."
-                              : "This is a provider API key (sk-…), not a mail account password. Stored only on this device with OS secure storage."
+                              ? "Provider API key saved on this PC (DPAPI) — not your email password. Paste a new key to replace."
+                              : "This is a provider API key (sk-…), not a mail account password. Stored only on this device with Windows DPAPI."
                           }
                         >
                           <input
@@ -2010,7 +2023,7 @@ export function SettingsModal({
               <>
                 <Block
                   title="Connected accounts"
-                  hint="Pick a mailbox to manage. Credentials stay on this device — mail never routes through Intray servers."
+                  hint="Pick a mailbox to manage. Credentials stay on this PC (Windows DPAPI) — mail never routes through Intray servers."
                 >
                   <div
                     className="bridge-icons"
@@ -2708,11 +2721,56 @@ export function SettingsModal({
               </>
             )}
 
+            {tab === "testing" && (
+              <>
+                <Block
+                  title="Demo inbox"
+                  hint="Load sample mail to try layouts and flows without touching your synced inbox. Unload to return to your regular email."
+                >
+                  <Row
+                    title="Sample data"
+                    hint={
+                      demoActive
+                        ? canUnloadDemo
+                          ? "Demo mail is showing — your accounts stay connected."
+                          : "Demo mail is showing. Add an account to leave demo."
+                        : "Your synced inboxes are showing."
+                    }
+                  >
+                    <div className="settings-demo-actions">
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={demoActive || !onLoadDemo}
+                        onClick={() => onLoadDemo?.()}
+                      >
+                        <FlaskConical size={14} strokeWidth={1.75} />
+                        Load demo
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={!demoActive || !canUnloadDemo || !onUnloadDemo}
+                        onClick={() => onUnloadDemo?.()}
+                      >
+                        <RotateCcw size={14} strokeWidth={1.75} />
+                        Unload demo
+                      </button>
+                    </div>
+                  </Row>
+                </Block>
+                <p className="settings-inline-note">
+                  Unloading restores your connected accounts and synced mail. Demo
+                  changes are local only and are discarded when you leave demo.
+                </p>
+              </>
+            )}
+
             {tab === "about" && (
               <>
                 <Block
                   title="Intray"
-                  hint="Unified mail — local-first, no mail relay."
+                  hint="Windows unified mail — local-first, no mail relay."
                 >
                   <Row title="Version" hint="Installed package version">
                     <span className="settings-version-value">

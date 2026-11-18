@@ -6,6 +6,9 @@ import { listAccountRows } from "./db";
 import { triggerSync } from "./mail/service";
 
 let tray: Tray | null = null;
+/** Count the native menu was last built for; -1 forces the first build. */
+let menuUnread = -1;
+let applyUnread: ((n: number) => void) | null = null;
 
 function loadTrayImage() {
   const bases = [
@@ -16,19 +19,13 @@ function loadTrayImage() {
     const path = join(base, "tray-icon.png");
     if (!existsSync(path)) continue;
     const img = nativeImage.createFromPath(path);
-    if (img.isEmpty()) continue;
-    // Template images follow the macOS menu-bar tint (light/dark).
-    if (process.platform === "darwin") img.setTemplateImage(true);
-    return img;
+    if (!img.isEmpty()) return img;
   }
 
   // Prefer the branded app icon over any Electron/default placeholder.
   const appIcon = loadAppIcon();
   if (appIcon) {
-    const size = process.platform === "darwin" ? 22 : 16;
-    const resized = appIcon.resize({ width: size, height: size });
-    if (process.platform === "darwin") resized.setTemplateImage(true);
-    return resized;
+    return appIcon.resize({ width: 16, height: 16 });
   }
 
   return nativeImage.createEmpty();
@@ -43,16 +40,14 @@ function unreadTotal(): number {
 }
 
 function refreshTooltip(): void {
-  if (!tray) return;
-  const n = unreadTotal();
-  tray.setToolTip(n > 0 ? `Intray · ${n} unread` : "Intray");
+  if (!applyUnread) return;
+  applyUnread(unreadTotal());
 }
 
 export function createTray(getMainWindow: () => BrowserWindow | null): Tray {
   if (tray) return tray;
 
   tray = new Tray(loadTrayImage());
-  refreshTooltip();
 
   const show = () => {
     const win = getMainWindow();
@@ -61,9 +56,14 @@ export function createTray(getMainWindow: () => BrowserWindow | null): Tray {
     win.focus();
   };
 
-  const rebuild = () => {
-    const n = unreadTotal();
-    tray?.setContextMenu(
+  applyUnread = (n: number) => {
+    if (!tray) return;
+    tray.setToolTip(n > 0 ? `Intray · ${n} unread` : "Intray");
+    // Rebuilding a native menu allocates a fresh Menu + items; the item labels
+    // only change with the unread count, so skip the churn when it is the same.
+    if (n === menuUnread) return;
+    menuUnread = n;
+    tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "Open Intray", click: show },
         {
@@ -86,11 +86,10 @@ export function createTray(getMainWindow: () => BrowserWindow | null): Tray {
         },
       ]),
     );
-    refreshTooltip();
   };
 
-  rebuild();
-  setInterval(rebuild, 15_000);
+  applyUnread(unreadTotal());
+  setInterval(() => applyUnread?.(unreadTotal()), 15_000);
 
   tray.on("click", show);
   return tray;

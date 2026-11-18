@@ -34,8 +34,8 @@ function rememberSender(row: MessageRow): void {
 }
 
 const INITIAL_PAGE_SIZE = 50;
-const INITIAL_MAX_MESSAGES = 200;
-const IMAP_INBOX_LIMIT = 120;
+const INITIAL_MAX_MESSAGES = 400;
+const IMAP_INBOX_LIMIT = 400;
 const EMAIL_CONCURRENCY = 5;
 
 /**
@@ -314,12 +314,11 @@ const IMAP_MAILBOXES: SyncMailbox[] = [
 ];
 
 /**
- * Flag/label/star/archive changes produce no new UID, so a short sequence
- * window has to be re-read to notice them (including reads made in other
- * clients). Doing that on every 30s poll was expensive; a few minutes is
- * enough, and the first pass after process start always refreshes.
+ * Gmail label/star/archive changes produce no new UID, so a short sequence
+ * window has to be re-read to notice them. Doing that on every 30s poll was
+ * expensive (80 envelopes per pass); five minutes is plenty for label churn.
  */
-const RECENT_REFRESH_MIN_MS = 2 * 60_000;
+const RECENT_REFRESH_MIN_MS = 5 * 60_000;
 const recentRefreshAt = new Map<string, number>();
 
 /** Recent-window size for this pass, or 0 when the refresh is not due yet. */
@@ -329,14 +328,13 @@ function recentRefreshBudget(
   gmail: boolean,
   hasCursor: boolean,
 ): number {
-  if (!hasCursor) return 0;
+  if (!gmail || !hasCursor) return 0;
   const key = `${accountId}:${box.path}`;
   const now = Date.now();
   const last = recentRefreshAt.get(key) ?? 0;
   if (now - last < RECENT_REFRESH_MIN_MS) return 0;
   recentRefreshAt.set(key, now);
-  if (gmail) return box.role === "all" ? 80 : 20;
-  return box.role === "inbox" ? 40 : 0;
+  return box.role === "all" ? 80 : 20;
 }
 
 /** Resolved mailbox targets are stable; LIST on every poll is wasted I/O. */

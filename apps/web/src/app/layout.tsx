@@ -19,9 +19,9 @@ const display = Bebas_Neue({
 });
 
 export const metadata: Metadata = {
-  title: "Intray — All your inboxes. Native fast.",
+  title: "Intray — All your inboxes. Native on Windows.",
   description:
-    "Open-source unified inbox for Windows and macOS. Email is too important for a black box — audit the code, local/BYO AI, no mail relay. Support optionally at $10/mo or a one-time gift.",
+    "Open-source unified email for Windows — Superhuman-style power tools plus your Claude, OpenAI, Grok, Gemini, or Ollama subscription. No mail relay. Support optionally at $10/mo or a one-time gift.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "48x48" },
@@ -38,7 +38,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} ${display.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-background text-foreground">
+      <body className="flex min-h-full flex-col bg-[#070708] text-[#ededed]">
         {children}
       </body>
     </html>

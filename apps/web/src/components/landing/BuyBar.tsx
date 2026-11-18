@@ -9,8 +9,8 @@ const perks = [
     body: "Email is sensitive — audit the code, prove there's no relay.",
   },
   {
-    title: "Local AI included",
-    body: "Ollama, Copilot+, or your own keys — mail stays on your device.",
+    title: "Bring your AI",
+    body: "Claude, OpenAI, Grok, Gemini, or Ollama — your keys, your sub.",
   },
   {
     title: "Private by design",
@@ -22,8 +22,12 @@ const perks = [
   },
 ] as const;
 
+const CONSENT_EVENT = "intray-cookie-consent";
+
 export function BuyBar() {
   const [shown, setShown] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [consentVisible, setConsentVisible] = useState(false);
 
   useEffect(() => {
     const hero = document.getElementById("download");
@@ -48,10 +52,40 @@ export function BuyBar() {
     };
   }, []);
 
+  useEffect(() => {
+    const readConsent = () => {
+      try {
+        setConsentVisible(!window.localStorage.getItem("intray-cookie-consent"));
+      } catch {
+        setConsentVisible(true);
+      }
+    };
+    readConsent();
+    window.addEventListener(CONSENT_EVENT, readConsent);
+    return () => window.removeEventListener(CONSENT_EVENT, readConsent);
+  }, []);
+
+  useEffect(() => {
+    if (!shown) setExpanded(false);
+  }, [shown]);
+
+  const scrollToPricing = () => {
+    const el = document.getElementById("pricing");
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
-    <div className={`buybar fixed inset-x-0 bottom-0 z-40 px-4 pb-4 sm:pb-6${shown ? " buybar-shown" : ""}`}>
-      <div className="buybar-pill mx-auto max-w-xl rounded-[29px] border border-white/10">
-        <div className="buybar-more">
+    <div
+      className={`buybar fixed inset-x-0 z-40 px-4${shown ? " buybar-shown" : ""}${
+        expanded ? " buybar-expanded" : ""
+      }${consentVisible ? " buybar-above-consent" : ""}`}
+    >
+      <div
+        className="buybar-pill mx-auto max-w-xl rounded-[29px] border border-white/10"
+        onMouseEnter={() => setExpanded(true)}
+        onMouseLeave={() => setExpanded(false)}
+      >
+        <div id="buybar-details" className="buybar-more" aria-hidden={!expanded}>
           <div className="min-h-0 overflow-hidden">
             <div className="px-5 pb-2 pt-5">
               <p className="text-[13px] font-medium text-white/55">
@@ -87,26 +121,34 @@ export function BuyBar() {
         </div>
 
         <div className="buybar-content flex min-w-0 items-center gap-3 py-2 pl-3 pr-2">
-          <Image
-            src="/icon.png"
-            alt=""
-            width={32}
-            height={32}
-            className="size-8 rounded-lg"
-          />
-          <div className="min-w-0 flex-1 leading-tight">
-            <div className="truncate text-sm font-semibold text-white">Intray</div>
-            <div className="truncate text-xs text-white/55">
-              Open source · $10/mo or give once
-            </div>
-          </div>
-          <a
-            href="#pricing"
-            className="inline-flex h-10 shrink-0 items-center rounded-full bg-[#c8f04a] px-4 text-sm font-semibold text-[#111] transition hover:brightness-105 sm:px-5"
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+            aria-expanded={expanded}
+            aria-controls="buybar-details"
+            onClick={() => setExpanded((v) => !v)}
           >
-            <span className="sm:hidden">Support · $10/mo</span>
-            <span className="hidden sm:inline">Support · $10/mo</span>
-          </a>
+            <Image
+              src="/icon.png"
+              alt=""
+              width={32}
+              height={32}
+              className="size-8 rounded-lg"
+            />
+            <div className="min-w-0 flex-1 leading-tight">
+              <div className="truncate text-sm font-semibold text-white">Intray for Windows</div>
+              <div className="truncate text-xs text-white/55">
+                Open source · $10/mo or give once
+              </div>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={scrollToPricing}
+            className="inline-flex h-10 shrink-0 items-center rounded-full bg-[#760E0A] px-4 text-sm font-semibold text-white transition hover:brightness-110 sm:px-5"
+          >
+            Support · $10/mo
+          </button>
         </div>
       </div>
     </div>

@@ -24,6 +24,7 @@ import {
   listMessageRows,
   listThreadMessages,
   recountUnread,
+  expandPersonQuery,
   searchMessageRows,
   updateFtsBody,
   updateMessageFlags,
@@ -51,6 +52,8 @@ import {
   deleteMessageForever,
   findMessageIdByRfc822,
   getMessageFull,
+  getMessageMeta,
+  listMessageIds,
   modifyLabels,
   persistGmailTokens,
   sendRawMessage,
@@ -75,17 +78,19 @@ import {
   findSentMessage,
   parsedToBodies,
   pushImapChange,
+  searchImapFrom,
   sendSmtp,
   verifyImapLogin,
   type ImapChangeAction,
 } from "../providers/imap/client";
-import { mailboxMetaFromRow } from "../providers/imap/map";
+import { imapEnvelopeToRow, mailboxMetaFromRow } from "../providers/imap/map";
 import { presetFor } from "../providers/imap/presets";
 import {
   gmailAppPasswordFormatError,
   isGmailImapTarget,
   normalizeGmailAppPassword,
 } from "../../shared/gmailImap";
+import { parseSearchClauses } from "../../shared/searchQuery";
 import { assertAddressList, buildMessageId, buildRawMessage } from "./mime";
 import { sanitizeEmailHtml } from "./sanitize";
 import {
@@ -188,7 +193,8 @@ async function downloadBodyForRow(
   if (!usesImap(account)) {
     const full = await getMessageFull(row.account_id, row.provider_id);
     if (getBody(row.id)) return;
-    upsertMessage(gmailMessageToRow(row.account_id, full));
+    // Body only — never re-upsert flags here. Opening a message races
+    // mark-as-read; a stale UNREAD snapshot would undo the local write.
     const bodies = bodiesFromGmail(full);
     upsertBody({
       message_id: row.id,
@@ -563,7 +569,9 @@ function rowsToMessageDto(
             minute: "2-digit",
           })}`
         : formatRelativeTime(head.date_ms),
-    unread: head.unread === 1,
+    // Thread is unread if any message in it is — matches sidebar badges
+    // (conversation counts) and avoids "all rows look read, badge still high".
+    unread: threadRows.some((r) => r.unread === 1) || head.unread === 1,
     important: head.important === 1 || head.starred === 1,
     starred: head.starred === 1,
     folder: head.folder,
@@ -772,14 +780,16 @@ async function pushAccountImapChange(
   folder?: string,
 ): Promise<void> {
   const meta = mailboxMetaFromRow(row);
-  if (!meta) return;
+  if (!meta) {
+    throw new Error("Missing IMAP mailbox/uid for this message");
+  }
   await pushImapChange(account.id, meta.mailbox, meta.uid, action, {
     gmail: isGmailImapAccount(account.id),
     folder,
   });
 }
 
-/** Keep Gmail OAuth label_ids_json in sync when we clear/set UNREAD locally. */
+/** Keep Gmail label_ids_json in sync when we clear/set UNREAD locally. */
 function patchGmailLabelIdsJson(
   labelIdsJson: string,
   add: string[],
@@ -802,20 +812,11 @@ function threadRowsFor(row: MessageRow): MessageRow[] {
   return thread.length ? thread : [row];
 }
 
-function safeJsonArray(raw: string): string[] | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Apply unread locally to every message in the thread (list head + badges). */
 function setThreadUnreadLocal(
   account: AccountRow,
   row: MessageRow,
-  unread: number,
+  unread: 0 | 1,
 ): void {
   const oauthLabels = !usesImap(account);
   for (const m of threadRowsFor(row)) {
@@ -830,6 +831,15 @@ function setThreadUnreadLocal(
           }
         : {};
     updateMessageFlags(m.id, { unread, ...labelPatch });
+  }
+}
+
+function safeJsonArray(raw: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1126,13 +1136,91 @@ function listHeadDtos(
   return messages;
 }
 
-export function listMail(query: MailListQuery): MailListResult {
-  const limit = Math.min(query.limit ?? 50, 100);
+/**
+ * from: filters often miss older mail because IMAP only keeps a recent local
+ * window. Expand names via contacts, then ask the provider for matching FROM
+ * envelopes and index them before the local query runs.
+ */
+async function enrichFromSearch(query: MailListQuery): Promise<void> {
+  const q = query.q?.trim();
+  if (!q) return;
+  const fromValues = parseSearchClauses(q)
+    .filter((c) => c.field === "from")
+    .map((c) => c.value.trim())
+    .filter(Boolean);
+  if (!fromValues.length) return;
+
+  const searchTerms = new Set<string>();
+  for (const value of fromValues) {
+    searchTerms.add(value);
+    const expanded = expandPersonQuery(value);
+    for (const email of expanded.emails) searchTerms.add(email);
+    for (const token of expanded.nameTokens) searchTerms.add(token);
+  }
+  const terms = [...searchTerms].slice(0, 8);
+  if (!terms.length) return;
+
+  const accounts = listAccountRows().filter((a) => {
+    if (query.accountId && query.accountId !== "all") {
+      return a.id === query.accountId;
+    }
+    return true;
+  });
+
+  await Promise.all(
+    accounts.map(async (account) => {
+      try {
+        if (accountUsesImap(account.id, account.provider)) {
+          const gmail = isGmailImapAccount(account.id);
+          const envelopes = await searchImapFrom(account.id, terms, {
+            mailbox: "INBOX",
+            limit: 100,
+            gmail,
+            role: "inbox",
+          });
+          for (const env of envelopes) {
+            const row = imapEnvelopeToRow(account.id, env);
+            const wrote = upsertMessage(row);
+            if (wrote) noteSender(row.from_email, row.from_name);
+          }
+          return;
+        }
+        if (account.provider === "gmail") {
+          for (const term of terms.slice(0, 3)) {
+            const page = await listMessageIds(account.id, {
+              q: `from:${term}`,
+              maxResults: 40,
+            });
+            const ids = page.messages ?? [];
+            for (const m of ids) {
+              try {
+                const meta = await getMessageMeta(account.id, m.id);
+                const row = gmailMessageToRow(account.id, meta);
+                const wrote = upsertMessage(row);
+                if (wrote) noteSender(row.from_email, row.from_name);
+              } catch {
+                /* skip one bad id */
+              }
+            }
+          }
+        }
+      } catch {
+        /* keep local results if provider search fails */
+      }
+    }),
+  );
+}
+
+export async function listMail(query: MailListQuery): Promise<MailListResult> {
   const beforeDateMs = query.cursor ? Number(query.cursor) : undefined;
   if (query.q?.trim()) {
+    await enrichFromSearch(query);
+    // Fielded search is cross-folder; allow a larger page so from:/subject:
+    // filters aren't capped to the normal inbox window.
+    const searchLimit = Math.min(query.limit ?? 250, 500);
     const rows = searchMessageRows(query.q, {
       accountId: query.accountId,
-      limit,
+      limit: searchLimit * 3,
     });
     // Collapse to newest per thread
     const seen = new Set<string>();
@@ -1142,6 +1230,7 @@ export function listMail(query: MailListQuery): MailListResult {
       if (seen.has(key)) continue;
       seen.add(key);
       heads.push(r);
+      if (heads.length >= searchLimit) break;
     }
     return {
       messages: listHeadDtos(heads, false),
@@ -1149,6 +1238,7 @@ export function listMail(query: MailListQuery): MailListResult {
       total: heads.length,
     };
   }
+  const limit = Math.min(query.limit ?? 50, 100);
 
   const { rows, total } = listMessageRows({
     accountId: query.accountId,

@@ -2,6 +2,7 @@ import { app } from "electron";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { MailDb } from "@intray/native";
+import { parseSearchClauses } from "../../shared/searchQuery";
 
 /**
  * Typed mail-store façade over the Rust SQLite backend (`@intray/native`).
@@ -299,27 +300,26 @@ export function upsertSyncState(row: SyncStateRow): void {
   );
 }
 
-/** Keep optimistic local flag writes from being clobbered by a stale sync. */
+/**
+ * Brief shield after a user toggles read/star/folder locally. Sync can otherwise
+ * re-apply a stale provider snapshot (especially right after mark-as-read) and
+ * make the message look unread again on the next poll or app launch race.
+ */
+type LocalFlagGuard = {
+  at: number;
+  unread?: number;
+  starred?: number;
+  important?: number;
+  folder?: string;
+};
 const LOCAL_FLAG_GUARD_MS = 3 * 60_000;
-const localFlagGuards = new Map<
-  string,
-  {
-    at: number;
-    unread?: number;
-    starred?: number;
-    important?: number;
-    folder?: string;
-  }
->();
+const localFlagGuards = new Map<string, LocalFlagGuard>();
 
 export function noteLocalFlagWrite(
   id: string,
-  patch: {
-    unread?: number;
-    starred?: number;
-    important?: number;
-    folder?: string;
-  },
+  patch: Partial<
+    Pick<MessageRow, "unread" | "starred" | "important" | "folder">
+  >,
 ): void {
   const prev = localFlagGuards.get(id);
   localFlagGuards.set(id, {
@@ -339,12 +339,7 @@ function applyLocalFlagGuard(
     important: number;
     folder: string;
   },
-): {
-  unread: number;
-  starred: number;
-  important: number;
-  folder: string;
-} {
+): { unread: number; starred: number; important: number; folder: string } {
   const guard = localFlagGuards.get(id);
   if (!guard) return incoming;
   if (Date.now() - guard.at > LOCAL_FLAG_GUARD_MS) {
@@ -589,61 +584,239 @@ export function listMessageRows(opts: {
   return { rows, total };
 }
 
+function sanitizeLikeTerm(raw: string): string {
+  return raw.replace(/[%_]/g, "").trim();
+}
+
+function ftsTerms(raw: string): string[] {
+  return raw
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => t.replace(/["*]/g, "").replace(/'/g, ""))
+    .filter(Boolean);
+}
+
+/** Resolve a person query to emails + name tokens via the contacts table. */
+export function expandPersonQuery(value: string): {
+  raw: string;
+  emails: string[];
+  nameTokens: string[];
+} {
+  const raw = value.trim();
+  const emails = new Set<string>();
+  const nameTokens = raw.includes("@")
+    ? []
+    : raw
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2);
+
+  if (raw.includes("@")) emails.add(raw.toLowerCase());
+
+  const needle = raw.toLowerCase();
+  for (const c of listContacts(200)) {
+    const name = (c.name ?? "").toLowerCase();
+    const email = (c.email ?? "").toLowerCase();
+    if (!email) continue;
+    if (
+      email === needle ||
+      email.includes(needle) ||
+      name.includes(needle) ||
+      (nameTokens.length > 0 &&
+        nameTokens.every((t) => name.includes(t.toLowerCase())))
+    ) {
+      emails.add(email);
+    }
+  }
+
+  return { raw, emails: [...emails], nameTokens };
+}
+
+/** Build a SQL predicate for from_name / from_email matching a person query. */
+function personFromPredicate(
+  value: string,
+  params: unknown[],
+): string {
+  const { raw, emails, nameTokens } = expandPersonQuery(value);
+  const parts: string[] = [];
+  const like = `%${sanitizeLikeTerm(raw)}%`;
+  parts.push("(m.from_name LIKE ? OR m.from_email LIKE ?)");
+  params.push(like, like);
+
+  for (const email of emails) {
+    parts.push("LOWER(m.from_email) = ?");
+    params.push(email.toLowerCase());
+    parts.push("m.from_email LIKE ?");
+    params.push(`%${sanitizeLikeTerm(email)}%`);
+  }
+
+  if (nameTokens.length >= 1) {
+    const tokenParts = nameTokens.map(() => "m.from_name LIKE ?");
+    for (const t of nameTokens) {
+      params.push(`%${sanitizeLikeTerm(t)}%`);
+    }
+    // All tokens in the display name (Arianna + Kleynburg), or the first
+    // token alone so "Arianna" still hits shorter from_name values.
+    parts.push(`(${tokenParts.join(" AND ")})`);
+    if (nameTokens.length > 1) {
+      parts.push("m.from_name LIKE ?");
+      params.push(`%${sanitizeLikeTerm(nameTokens[0]!)}%`);
+      parts.push("m.from_email LIKE ?");
+      params.push(`%${sanitizeLikeTerm(nameTokens[0]!)}%`);
+    }
+  }
+
+  return `(${parts.join(" OR ")})`;
+}
+
+function personToPredicate(value: string, params: unknown[]): string {
+  const { raw, emails, nameTokens } = expandPersonQuery(value);
+  const parts: string[] = [];
+  const like = `%${sanitizeLikeTerm(raw)}%`;
+  parts.push("(m.to_json LIKE ? OR m.cc_json LIKE ?)");
+  params.push(like, like);
+  for (const email of emails) {
+    parts.push("(m.to_json LIKE ? OR m.cc_json LIKE ?)");
+    const e = `%${sanitizeLikeTerm(email)}%`;
+    params.push(e, e);
+  }
+  for (const t of nameTokens) {
+    parts.push("(m.to_json LIKE ? OR m.cc_json LIKE ?)");
+    const e = `%${sanitizeLikeTerm(t)}%`;
+    params.push(e, e);
+  }
+  return `(${parts.join(" OR ")})`;
+}
+
+/**
+ * Fielded search across the local store (not limited to the open folder).
+ * Supports from:/to:/subject:/tag:/has:/is: plus free-text FTS.
+ */
 export function searchMessageRows(
   q: string,
   opts: { accountId?: string; limit: number },
 ): MessageRow[] {
-  const terms = q
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((t) => t.replace(/["*]/g, "").replace(/'/g, ""));
-  if (!terms.length) return [];
+  const clauses = parseSearchClauses(q);
+  if (!clauses.length) return [];
 
-  // FTS5 prefix query — Rust owns the index; fall back to LIKE if MATCH fails.
-  const match = terms.map((t) => `"${t}"*`).join(" AND ");
-  const params: unknown[] = [match];
-  let accountClause = "";
+  const where: string[] = [];
+  const params: unknown[] = [];
+  let joinLabels = false;
+  let joinBodies = false;
+  const textParts: string[] = [];
+
   if (opts.accountId && opts.accountId !== "all") {
-    accountClause = "AND m.account_id = ?";
+    where.push("m.account_id = ?");
     params.push(opts.accountId);
   }
-  params.push(opts.limit);
 
-  try {
-    return all<MessageRow>(
-      `SELECT m.* FROM messages m
-       INNER JOIN messages_fts f ON f.message_id = m.id
-       WHERE f MATCH ?
-       ${accountClause}
-       ORDER BY m.date_ms DESC
-       LIMIT ?`,
-      params,
-    );
-  } catch {
-    const likeParams: unknown[] = [];
-    const where: string[] = [];
-    for (const term of terms) {
-      const like = `%${term}%`;
-      where.push(
-        `(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_name LIKE ? OR m.from_email LIKE ? OR IFNULL(b.text_plain, '') LIKE ?)`,
-      );
-      likeParams.push(like, like, like, like, like);
+  for (const clause of clauses) {
+    const value = clause.value.trim();
+    if (!value) continue;
+    const like = `%${sanitizeLikeTerm(value)}%`;
+
+    switch (clause.field) {
+      case "from":
+        where.push(personFromPredicate(value, params));
+        break;
+      case "to":
+        where.push(personToPredicate(value, params));
+        break;
+      case "subject":
+        where.push("m.subject LIKE ?");
+        params.push(like);
+        break;
+      case "tag":
+        joinLabels = true;
+        where.push("l.name LIKE ?");
+        params.push(like);
+        break;
+      case "has": {
+        const v = value.toLowerCase();
+        if (v.startsWith("attach")) {
+          where.push("m.has_attachment = 1");
+        } else if (v.startsWith("link")) {
+          where.push(
+            `(m.link_count > 0 OR m.snippet LIKE '%http%' OR m.snippet LIKE '%www.%')`,
+          );
+        } else if (v.startsWith("meet") || v === "calendar") {
+          joinBodies = true;
+          where.push(
+            `(IFNULL(b.text_plain, '') LIKE '%meet.%' OR IFNULL(b.text_plain, '') LIKE '%teams.microsoft%' OR m.snippet LIKE '%meet.%')`,
+          );
+        } else {
+          return [];
+        }
+        break;
+      }
+      case "is": {
+        const v = value.toLowerCase();
+        if (v === "unread") where.push("m.unread = 1");
+        else if (v === "read") where.push("m.unread = 0");
+        else if (v.startsWith("star")) where.push("m.starred = 1");
+        else if (v.startsWith("import")) where.push("m.important = 1");
+        else return [];
+        break;
+      }
+      case "text":
+      default:
+        textParts.push(value);
+        break;
     }
-    if (opts.accountId && opts.accountId !== "all") {
-      where.push("m.account_id = ?");
-      likeParams.push(opts.accountId);
-    }
-    likeParams.push(opts.limit);
-    return all<MessageRow>(
-      `SELECT m.* FROM messages m
-       LEFT JOIN bodies b ON b.message_id = m.id
-       WHERE ${where.join(" AND ")}
-       ORDER BY m.date_ms DESC
-       LIMIT ?`,
-      likeParams,
-    );
   }
+
+  const textQuery = textParts.join(" ").trim();
+  const terms = textQuery ? ftsTerms(textQuery) : [];
+  const ftsMatch = terms.length
+    ? terms.map((t) => `"${t}"*`).join(" AND ")
+    : null;
+
+  if (!where.length && !ftsMatch) return [];
+
+  const labelJoin = joinLabels
+    ? "LEFT JOIN labels l ON l.id = m.ui_label_id"
+    : "";
+  const bodyJoin = joinBodies
+    ? "LEFT JOIN bodies b ON b.message_id = m.id"
+    : "";
+
+  if (ftsMatch) {
+    try {
+      return all<MessageRow>(
+        `SELECT m.* FROM messages m
+         INNER JOIN messages_fts f ON f.message_id = m.id
+         ${labelJoin}
+         ${bodyJoin}
+         WHERE f MATCH ?
+         ${where.length ? `AND ${where.join(" AND ")}` : ""}
+         ORDER BY m.date_ms DESC
+         LIMIT ?`,
+        [ftsMatch, ...params, opts.limit],
+      );
+    } catch {
+      joinBodies = true;
+      for (const term of terms) {
+        const like = `%${sanitizeLikeTerm(term)}%`;
+        where.push(
+          `(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_name LIKE ? OR m.from_email LIKE ? OR IFNULL(b.text_plain, '') LIKE ?)`,
+        );
+        params.push(like, like, like, like, like);
+      }
+    }
+  }
+
+  if (!where.length) return [];
+
+  return all<MessageRow>(
+    `SELECT m.* FROM messages m
+     ${joinLabels ? "LEFT JOIN labels l ON l.id = m.ui_label_id" : ""}
+     ${joinBodies ? "LEFT JOIN bodies b ON b.message_id = m.id" : ""}
+     WHERE ${where.join(" AND ")}
+     ORDER BY m.date_ms DESC
+     LIMIT ?`,
+    [...params, opts.limit],
+  );
 }
 
 export function listThreadMessages(
@@ -808,6 +981,19 @@ export function listDueSends(nowMs: number): SendQueueRow[] {
      LIMIT 25`,
     [nowMs, nowMs],
   );
+}
+
+/**
+ * Earliest moment the outbox loop has work, or null when nothing is waiting.
+ * Lets the loop sleep instead of re-querying an empty queue twice a second.
+ */
+export function nextSendDueMs(): number | null {
+  const row = get<{ t: number | null }>(
+    `SELECT MIN(MAX(send_at_ms, COALESCE(next_attempt_at_ms, 0))) AS t
+     FROM send_queue
+     WHERE status = 'pending'`,
+  );
+  return typeof row?.t === "number" ? row.t : null;
 }
 
 /** Reset rows left in `sending` by a crash/quit so they are retried. */
@@ -997,10 +1183,20 @@ export function listDueSnoozes(nowMs: number): MessageRow[] {
   );
 }
 
+/** Earliest snooze that still has to wake the outbox loop, or null. */
+export function nextSnoozeDueMs(): number | null {
+  const row = get<{ t: number | null }>(
+    `SELECT MIN(snooze_until_ms) AS t FROM messages
+     WHERE folder = 'snoozed' AND snooze_until_ms IS NOT NULL`,
+  );
+  return typeof row?.t === "number" ? row.t : null;
+}
+
 export function recountUnread(accountId: string): number {
+  // Conversation count — matches the thread-collapsed list, not raw rows.
   const count =
     get<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM messages
+      `SELECT COUNT(DISTINCT thread_id) AS c FROM messages
        WHERE account_id = ? AND unread = 1 AND folder = 'inbox'`,
       [accountId],
     )?.c ?? 0;
@@ -1012,7 +1208,7 @@ export function recountUnread(accountId: string): number {
   return count;
 }
 
-/** Aggregate total + unread message counts per folder (and per UI label). */
+/** Aggregate total + unread conversation counts per folder (and per UI label). */
 export function countMessagesByFolder(accountId?: string | "all"): {
   folders: Array<{ folder: string; total: number; unread: number }>;
   labels: Array<{ labelId: string; total: number; unread: number }>;
@@ -1024,10 +1220,15 @@ export function countMessagesByFolder(accountId?: string | "all"): {
     params.push(accountId);
   }
 
+  // Unread = distinct threads (account-scoped key so unified "all" doesn't
+  // collapse same thread_id across accounts). Totals stay raw message rows.
+  const unreadExpr =
+    "COUNT(DISTINCT CASE WHEN unread = 1 THEN account_id || ':' || thread_id END)";
+
   const folders = all<{ folder: string; total: number; unread: number }>(
     `SELECT folder,
             COUNT(*) AS total,
-            SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread
+            ${unreadExpr} AS unread
      FROM messages
      ${accountClause}
      GROUP BY folder`,
@@ -1044,7 +1245,7 @@ export function countMessagesByFolder(accountId?: string | "all"): {
   const labels = all<{ labelId: string; total: number; unread: number }>(
     `SELECT ui_label_id AS labelId,
             COUNT(*) AS total,
-            SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread
+            ${unreadExpr} AS unread
      FROM messages
      ${labelWhere}
      GROUP BY ui_label_id`,
