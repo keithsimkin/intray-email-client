@@ -1,12 +1,12 @@
 import { BrandLockup } from "../Brand";
 import { siGithub, siX } from "simple-icons";
-import { GITHUB_URL, TWITTER_URL } from "./site";
+import { GITHUB_URL, TWITTER_URL, WINDOWS_DOWNLOAD_URL } from "./site";
 
 const links = [
   { href: "#", label: "Home" },
   { href: "#features", label: "Features" },
   { href: "#testimonials", label: "Testimonials" },
-  { href: "#download", label: "Download App" },
+  { href: WINDOWS_DOWNLOAD_URL, label: "Download App" },
 ];
 
 function SimpleIcon({

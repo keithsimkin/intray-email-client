@@ -1,7 +1,8 @@
 import Image from "next/image";
-import { ArrowUpRight, Heart, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, ShieldCheck } from "lucide-react";
 import { siGithub } from "simple-icons";
-import { GITHUB_URL, SUPPORT_MONTHLY_URL, SUPPORT_ONCE_URL } from "./site";
+import { SupportCheckoutCards } from "./SupportCheckout";
+import { GITHUB_URL } from "./site";
 
 function SimpleIcon({
   icon,
@@ -60,48 +61,7 @@ export function BottomCta() {
               support the project so we can keep shipping.
             </p>
 
-            <div className="mt-7 grid gap-3 sm:grid-cols-2">
-              <a
-                href={SUPPORT_MONTHLY_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group flex flex-col rounded-2xl border border-white/10 bg-[#1a1a1e] px-4 py-4 transition hover:border-white/25"
-              >
-                <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8a8f98]">
-                  Monthly
-                </span>
-                <span className="mt-1 font-display text-3xl tracking-wide text-white">
-                  $10<span className="text-lg text-[#8a8f98]">/mo</span>
-                </span>
-                <span className="mt-2 text-sm leading-snug text-[#9ca3af]">
-                  Ongoing support for builds, fixes, and local AI work.
-                </span>
-                <span className="mt-4 inline-flex w-fit items-center gap-1.5 rounded-full bg-[#760E0A] px-3.5 py-2 text-sm font-semibold text-white transition group-hover:brightness-110">
-                  Support monthly
-                </span>
-              </a>
-
-              <a
-                href={SUPPORT_ONCE_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group flex flex-col rounded-2xl border border-white/10 bg-[#1a1a1e] px-4 py-4 transition hover:border-white/25"
-              >
-                <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8a8f98]">
-                  One-time
-                </span>
-                <span className="mt-1 inline-flex items-center gap-2 font-display text-3xl tracking-wide text-white">
-                  Give once
-                  <Heart size={18} strokeWidth={2.2} className="text-[#c4453d]" />
-                </span>
-                <span className="mt-2 text-sm leading-snug text-[#9ca3af]">
-                  A one-time gift when a subscription isn&apos;t your style.
-                </span>
-                <span className="mt-4 inline-flex w-fit items-center gap-1.5 rounded-full border border-white/15 bg-transparent px-3.5 py-2 text-sm font-semibold text-white transition group-hover:border-white/35">
-                  Give once
-                </span>
-              </a>
-            </div>
+            <SupportCheckoutCards />
 
             <div className="mt-6 flex flex-wrap gap-3">
               <a
