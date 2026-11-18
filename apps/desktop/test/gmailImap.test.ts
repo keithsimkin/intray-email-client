@@ -6,6 +6,7 @@ import {
   gmailSyncMailboxes,
   normalizeGmailAppPassword,
   placementForGmail,
+  unreadFromImapSignals,
   GMAIL_APP_PASSWORD_URL,
 } from "../src/shared/gmailImap";
 
@@ -167,6 +168,21 @@ describe("Gmail folders", () => {
     expect(normalizeFolderPath("[Gmail]/Drafts")).toBe("drafts");
     expect(normalizeFolderPath("[Gmail]/Starred")).toBe("archive");
     expect(normalizeFolderPath("INBOX")).toBe("inbox");
+  });
+});
+
+describe("IMAP unread signals", () => {
+  test("prefers Gmail \\Unread over \\Seen when labels are present", () => {
+    expect(unreadFromImapSignals(["\\Seen"], ["\\Inbox", "\\Unread"])).toBe(1);
+    expect(unreadFromImapSignals([], ["\\Inbox", "\\Unread"])).toBe(1);
+    expect(unreadFromImapSignals([], ["\\Inbox"])).toBe(0);
+    expect(unreadFromImapSignals(["\\Seen"], ["\\Inbox"])).toBe(0);
+  });
+
+  test("falls back to \\Seen when labels are unavailable", () => {
+    expect(unreadFromImapSignals(["\\Seen"])).toBe(0);
+    expect(unreadFromImapSignals([])).toBe(1);
+    expect(unreadFromImapSignals(["\\Flagged"])).toBe(1);
   });
 });
 

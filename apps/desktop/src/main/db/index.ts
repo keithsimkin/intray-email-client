@@ -299,6 +299,76 @@ export function upsertSyncState(row: SyncStateRow): void {
   );
 }
 
+/** Keep optimistic local flag writes from being clobbered by a stale sync. */
+const LOCAL_FLAG_GUARD_MS = 3 * 60_000;
+const localFlagGuards = new Map<
+  string,
+  {
+    at: number;
+    unread?: number;
+    starred?: number;
+    important?: number;
+    folder?: string;
+  }
+>();
+
+export function noteLocalFlagWrite(
+  id: string,
+  patch: {
+    unread?: number;
+    starred?: number;
+    important?: number;
+    folder?: string;
+  },
+): void {
+  const prev = localFlagGuards.get(id);
+  localFlagGuards.set(id, {
+    at: Date.now(),
+    unread: patch.unread ?? prev?.unread,
+    starred: patch.starred ?? prev?.starred,
+    important: patch.important ?? prev?.important,
+    folder: patch.folder ?? prev?.folder,
+  });
+}
+
+function applyLocalFlagGuard(
+  id: string,
+  incoming: {
+    unread: number;
+    starred: number;
+    important: number;
+    folder: string;
+  },
+): {
+  unread: number;
+  starred: number;
+  important: number;
+  folder: string;
+} {
+  const guard = localFlagGuards.get(id);
+  if (!guard) return incoming;
+  if (Date.now() - guard.at > LOCAL_FLAG_GUARD_MS) {
+    localFlagGuards.delete(id);
+    return incoming;
+  }
+  const next = {
+    unread: guard.unread ?? incoming.unread,
+    starred: guard.starred ?? incoming.starred,
+    important: guard.important ?? incoming.important,
+    folder: guard.folder ?? incoming.folder,
+  };
+  // Provider caught up — drop the shield so later remote changes apply.
+  if (
+    (guard.unread == null || guard.unread === incoming.unread) &&
+    (guard.starred == null || guard.starred === incoming.starred) &&
+    (guard.important == null || guard.important === incoming.important) &&
+    (guard.folder == null || guard.folder === incoming.folder)
+  ) {
+    localFlagGuards.delete(id);
+  }
+  return next;
+}
+
 export function upsertMessage(
   row: MessageRow,
   opts?: { flagsOnly?: boolean },
@@ -308,15 +378,28 @@ export function upsertMessage(
     [row.account_id, row.provider_id],
   );
 
+  const guarded = existing
+    ? applyLocalFlagGuard(existing.id, {
+        unread: row.unread,
+        starred: row.starred,
+        important: row.important,
+        folder: row.folder,
+      })
+    : row;
+  const unread = existing ? guarded.unread : row.unread;
+  const starred = existing ? guarded.starred : row.starred;
+  const important = existing ? guarded.important : row.important;
+  const incomingFolder = existing ? guarded.folder : row.folder;
+
   // Gmail recent-window passes only carry flags/labels: never overwrite the
   // snippet or attachment state they did not fetch.
   if (opts?.flagsOnly) {
     if (!existing) return false;
     if (
-      existing.folder === row.folder &&
-      existing.unread === row.unread &&
-      existing.important === row.important &&
-      existing.starred === row.starred &&
+      existing.folder === incomingFolder &&
+      existing.unread === unread &&
+      existing.important === important &&
+      existing.starred === starred &&
       existing.label_ids_json === row.label_ids_json
     ) {
       return false;
@@ -326,10 +409,10 @@ export function upsertMessage(
        SET folder = ?, unread = ?, important = ?, starred = ?, label_ids_json = ?
        WHERE id = ?`,
       [
-        row.folder,
-        row.unread,
-        row.important,
-        row.starred,
+        incomingFolder,
+        unread,
+        important,
+        starred,
         row.label_ids_json,
         existing.id,
       ],
@@ -349,7 +432,7 @@ export function upsertMessage(
   const folder =
     existing?.folder === "snoozed" && snooze != null
       ? "snoozed"
-      : row.folder;
+      : incomingFolder;
 
   // A 30s poll re-reads envelopes that have not changed. Writing and
   // re-indexing them every time was pure disk work: bail out when the stored
@@ -366,9 +449,9 @@ export function upsertMessage(
     existing.to_json === row.to_json &&
     existing.cc_json === row.cc_json &&
     existing.date_ms === row.date_ms &&
-    existing.unread === row.unread &&
-    existing.important === row.important &&
-    existing.starred === row.starred &&
+    existing.unread === unread &&
+    existing.important === important &&
+    existing.starred === starred &&
     existing.has_attachment === row.has_attachment &&
     existing.label_ids_json === row.label_ids_json &&
     existing.ui_label_id === uiLabel &&
@@ -416,9 +499,9 @@ export function upsertMessage(
       row.to_json,
       row.cc_json,
       row.date_ms,
-      row.unread,
-      row.important,
-      row.starred,
+      unread,
+      important,
+      starred,
       row.has_attachment,
       row.label_ids_json,
       uiLabel,
@@ -640,6 +723,19 @@ export function updateMessageFlags(
         ? patch.snooze_until_ms
         : current.snooze_until_ms,
   };
+  if (
+    patch.folder !== undefined ||
+    patch.unread !== undefined ||
+    patch.important !== undefined ||
+    patch.starred !== undefined
+  ) {
+    noteLocalFlagWrite(id, {
+      folder: patch.folder,
+      unread: patch.unread,
+      important: patch.important,
+      starred: patch.starred,
+    });
+  }
   run(
     `UPDATE messages SET
        folder = ?, unread = ?, important = ?, starred = ?,

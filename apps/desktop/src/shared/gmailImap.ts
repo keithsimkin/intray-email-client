@@ -183,6 +183,24 @@ function hasFlag(flags: Iterable<string>, name: string): boolean {
   return false;
 }
 
+/**
+ * IMAP unread bit for the local store.
+ * When X-GM-LABELS is present, trust `\Unread` (same signal as Gmail's UNREAD
+ * label). Otherwise fall back to the standard `\Seen` flag.
+ */
+export function unreadFromImapSignals(
+  flags: Iterable<string>,
+  gmLabels?: Iterable<string> | null,
+): 0 | 1 {
+  if (gmLabels != null) {
+    for (const label of gmLabels) {
+      if (normToken(label) === "unread") return 1;
+    }
+    return 0;
+  }
+  return hasFlag(flags, "\\seen") ? 0 : 1;
+}
+
 function folderFromRole(role: MailboxRole): GmailPlacement["folder"] {
   switch (role) {
     case "inbox":
