@@ -57,6 +57,14 @@ function WindowsIcon({ size = 16 }: { size?: number }) {
   );
 }
 
+function AppleIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M16.7 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.2-2.8.9-3.5.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1 1-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.6.8 1.1 1.7 2.4 3 2.4 1.2 0 1.6-.8 3.1-.8s1.8.8 3.1.8c1.3 0 2.1-1.1 2.9-2.2.9-1.3 1.3-2.5 1.3-2.6-.1 0-2.5-1-2.5-3.8zM14.5 5.4c.6-.8 1.1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 .1 2-.5 2.6-1.3z" />
+    </svg>
+  );
+}
+
 function ProviderTile({ children, label }: { children: ReactNode; label: string }) {
   return (
     <span
@@ -182,21 +190,30 @@ export function Hero() {
         <ProviderRail />
 
         <p className="brand-rise brand-rise-delay-2 relative z-10 mt-6 max-w-lg text-sm leading-relaxed text-[#9ca3af] md:text-base">
-          Your AI subscriptions meet every inbox in one open-source Windows app — Superhuman speed,
-          no mail relay.
+          Your AI subscriptions meet every inbox in one open-source desktop app — Windows now, macOS
+          soon. Superhuman speed, no mail relay.
         </p>
 
         <div
           id="download"
           className="brand-rise brand-rise-delay-3 relative z-10 mt-7 flex flex-col items-center gap-3"
         >
-          <a
-            href={WINDOWS_DOWNLOAD_URL}
-            className="inline-flex items-center gap-2.5 rounded-full bg-[#760E0A] px-6 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_-18px_rgba(118,14,10,0.7)] transition hover:brightness-110"
-          >
-            <WindowsIcon />
-            Download for Windows
-          </a>
+          <div className="flex flex-col items-stretch gap-2.5 sm:flex-row sm:items-center">
+            <a
+              href={WINDOWS_DOWNLOAD_URL}
+              className="inline-flex items-center justify-center gap-2.5 rounded-full bg-[#760E0A] px-6 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_-18px_rgba(118,14,10,0.7)] transition hover:brightness-110"
+            >
+              <WindowsIcon />
+              Download for Windows
+            </a>
+            <span
+              className="inline-flex items-center justify-center gap-2.5 rounded-full border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white/55"
+              title="Apple Silicon build is on the way"
+            >
+              <AppleIcon />
+              macOS · Coming soon
+            </span>
+          </div>
           <a
             href={GITHUB_URL}
             className="inline-flex items-center gap-2 text-sm font-semibold text-[#9ca3af] transition hover:text-white"
