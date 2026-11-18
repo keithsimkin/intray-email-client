@@ -32,7 +32,7 @@ const DEMO_MAIL = [
     time: "18m",
     chip: "PS",
     chipColor: "#2563eb",
-    subject: "Ship notes for the desktop build",
+    subject: "Ship notes for the Windows build",
     snippet: "Tray flyout + OTP copy are ready for QA.",
     unread: true,
   },

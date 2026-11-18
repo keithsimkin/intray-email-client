@@ -1,5 +1,4 @@
 import type { MessageRow } from "../../db";
-import { unreadFromImapSignals } from "../../../shared/gmailImap";
 import type { ImapEnvelope } from "./client";
 
 export function imapEnvelopeToRow(
@@ -13,7 +12,21 @@ export function imapEnvelopeToRow(
     : `${env.uidValidity}:${env.uid}`;
   const threadId = env.gmThrId ? `gm:${env.gmThrId}` : env.threadId;
   const dateMs = env.date?.getTime() ?? Date.now();
-  const unread = unreadFromImapSignals(env.flags, env.gmLabels);
+  // Prefer Gmail's \\Unread label when X-GM-LABELS is present; \\Seen alone
+  // can lag or disagree after a flag write.
+  const unreadFromLabel = env.gmLabels
+    ? env.gmLabels.some(
+        (l) => l.replace(/^\\+/, "").toLowerCase() === "unread",
+      )
+    : null;
+  const unread =
+    unreadFromLabel != null
+      ? unreadFromLabel
+        ? 1
+        : 0
+      : env.flags.some((f) => f.toLowerCase() === "\\seen")
+        ? 0
+        : 1;
   const starred =
     env.starred != null
       ? env.starred

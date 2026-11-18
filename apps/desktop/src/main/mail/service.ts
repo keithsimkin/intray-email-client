@@ -789,7 +789,7 @@ async function pushAccountImapChange(
   });
 }
 
-/** Keep Gmail OAuth label_ids_json in sync when we clear/set UNREAD locally. */
+/** Keep Gmail label_ids_json in sync when we clear/set UNREAD locally. */
 function patchGmailLabelIdsJson(
   labelIdsJson: string,
   add: string[],
@@ -812,20 +812,11 @@ function threadRowsFor(row: MessageRow): MessageRow[] {
   return thread.length ? thread : [row];
 }
 
-function safeJsonArray(raw: string): string[] | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Apply unread locally to every message in the thread (list head + badges). */
 function setThreadUnreadLocal(
   account: AccountRow,
   row: MessageRow,
-  unread: number,
+  unread: 0 | 1,
 ): void {
   const oauthLabels = !usesImap(account);
   for (const m of threadRowsFor(row)) {
@@ -840,6 +831,15 @@ function setThreadUnreadLocal(
           }
         : {};
     updateMessageFlags(m.id, { unread, ...labelPatch });
+  }
+}
+
+function safeJsonArray(raw: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
 }
 

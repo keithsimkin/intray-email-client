@@ -318,7 +318,7 @@ function credentialGuide(account: Account) {
       kind: "oauth" as const,
       title: "Google sign-in",
       summary:
-        "This mailbox uses OAuth — not a password field. Tokens stay on this device.",
+        "This mailbox uses OAuth — not a password field. Tokens stay on this PC (DPAPI).",
       steps: [
         "Update sign-in / Reconnect opens Google in your browser and replaces the stored token.",
         "Revoke access anytime in Google Account → Security → Third-party access.",
@@ -339,7 +339,7 @@ function credentialGuide(account: Account) {
     steps: [
       `Create an app password in ${where}, then use Reconnect / Update sign-in — only the password is asked for; email and server settings stay.`,
       "Your everyday login password usually will not work once two-factor auth is enabled.",
-      "Secrets are encrypted with OS secure storage on this device — mail never routes through Intray servers.",
+      "Secrets are encrypted with Windows DPAPI on this PC — mail never routes through Intray servers.",
       "Remove wipes the stored app password and local copies of this mailbox.",
     ],
   };
@@ -904,7 +904,7 @@ export function SettingsModal({
               <>
                 <Block
                   title="Appearance"
-                  hint="Match the system, or lock light/dark. No glow effects."
+                  hint="Match Windows, or lock light/dark. No glow effects."
                 >
                   <Row title="Theme" hint="Light, dark, or follow the OS">
                     <Select
@@ -1132,7 +1132,7 @@ export function SettingsModal({
             {tab === "notifications" && (
               <>
                 <Block
-                  title="Desktop notifications"
+                  title="Windows notifications"
                   hint="Desktop toasts for snooze wakes, read receipts, and other reminders."
                   action={
                     <button
@@ -1155,7 +1155,7 @@ export function SettingsModal({
                 >
                   <Row
                     title="Show desktop notifications"
-                    hint="Uses system notification banners when Intray is in the background"
+                    hint="Uses Windows notification banners when Intray is in the background"
                   >
                     <Toggle
                       on={prefs.notifyDesktop}
@@ -1259,7 +1259,7 @@ export function SettingsModal({
                 <Block title="Badges">
                   <Row
                     title="Taskbar badge"
-                    hint="Unread badge on the dock or taskbar icon"
+                    hint="Unread overlay on the Windows taskbar icon"
                   >
                     <Select
                       value={prefs.taskbarBadge}
@@ -1291,7 +1291,7 @@ export function SettingsModal({
 
                 <Block title="Startup & tray">
                   <Row
-                    title="Launch at login"
+                    title="Start with Windows"
                     hint="Open Intray when you sign in (hidden to tray)"
                   >
                     <Toggle
@@ -1326,7 +1326,7 @@ export function SettingsModal({
                       onChange={(globalHotkey) => patch({ globalHotkey })}
                     />
                   </Row>
-                  <Row title="Quiet hours" hint="Mute desktop toasts overnight">
+                  <Row title="Quiet hours" hint="Mute Windows toasts overnight">
                     <Toggle
                       on={prefs.quietHours}
                       onChange={(quietHours) => patch({ quietHours })}
@@ -1653,8 +1653,8 @@ export function SettingsModal({
                           title={`${aiBridgeMeta[prefs.aiBridge].name} API key`}
                           hint={
                             secretStatus[secretId]
-                              ? "Provider API key saved on this device — not your email password. Paste a new key to replace."
-                              : "This is a provider API key (sk-…), not a mail account password. Stored only on this device with OS secure storage."
+                              ? "Provider API key saved on this PC (DPAPI) — not your email password. Paste a new key to replace."
+                              : "This is a provider API key (sk-…), not a mail account password. Stored only on this device with Windows DPAPI."
                           }
                         >
                           <input
@@ -2023,7 +2023,7 @@ export function SettingsModal({
               <>
                 <Block
                   title="Connected accounts"
-                  hint="Pick a mailbox to manage. Credentials stay on this device — mail never routes through Intray servers."
+                  hint="Pick a mailbox to manage. Credentials stay on this PC (Windows DPAPI) — mail never routes through Intray servers."
                 >
                   <div
                     className="bridge-icons"
@@ -2770,7 +2770,7 @@ export function SettingsModal({
               <>
                 <Block
                   title="Intray"
-                  hint="Unified mail — local-first, no mail relay."
+                  hint="Windows unified mail — local-first, no mail relay."
                 >
                   <Row title="Version" hint="Installed package version">
                     <span className="settings-version-value">

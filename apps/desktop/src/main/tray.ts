@@ -19,19 +19,13 @@ function loadTrayImage() {
     const path = join(base, "tray-icon.png");
     if (!existsSync(path)) continue;
     const img = nativeImage.createFromPath(path);
-    if (img.isEmpty()) continue;
-    // Template images follow the macOS menu-bar tint (light/dark).
-    if (process.platform === "darwin") img.setTemplateImage(true);
-    return img;
+    if (!img.isEmpty()) return img;
   }
 
   // Prefer the branded app icon over any Electron/default placeholder.
   const appIcon = loadAppIcon();
   if (appIcon) {
-    const size = process.platform === "darwin" ? 22 : 16;
-    const resized = appIcon.resize({ width: size, height: size });
-    if (process.platform === "darwin") resized.setTemplateImage(true);
-    return resized;
+    return appIcon.resize({ width: 16, height: 16 });
   }
 
   return nativeImage.createEmpty();

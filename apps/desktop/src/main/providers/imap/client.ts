@@ -496,9 +496,7 @@ export async function listRecentEnvelopes(
         meta.uidNext > opts.sinceUid + 1;
       const cursorCurrent =
         opts?.sinceUid != null && opts.sinceUidValidity === meta.uidValidity;
-      // Flag/label refresh is how reads/stars made in other clients show up
-      // without a new UID. Gmail and generic IMAP both need it.
-      const refresh = opts?.refreshRecent ?? 0;
+      const refresh = gmail ? (opts?.refreshRecent ?? 0) : 0;
 
       // The common quiet-mailbox case: nothing new has been assigned a UID
       // since the last pass. Re-fetching the last N envelopes here (with a 4KB
@@ -593,6 +591,80 @@ export async function listRecentEnvelopes(
   });
 }
 
+/**
+ * Server-side FROM search — pulls older mail the shallow inbox sync never
+ * indexed so from: filters aren't limited to the recent local window.
+ */
+export async function searchImapFrom(
+  accountId: string,
+  queries: string[],
+  opts?: { mailbox?: string; limit?: number; gmail?: boolean; role?: MailboxRole },
+): Promise<ImapEnvelope[]> {
+  const terms = [
+    ...new Set(
+      queries
+        .map((q) => q.trim())
+        .filter((q) => q.length >= 2),
+    ),
+  ].slice(0, 6);
+  if (!terms.length) return [];
+
+  const mailbox = opts?.mailbox ?? "INBOX";
+  const limit = Math.min(opts?.limit ?? 80, 150);
+  const gmail = opts?.gmail
+    ? { enabled: true as const, role: opts.role ?? ("inbox" as MailboxRole) }
+    : undefined;
+
+  return withImap(accountId, async (client) => {
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const meta = mailboxMeta(client);
+      const uidSet = new Set<number>();
+      for (const term of terms) {
+        try {
+          const found = await client.search({ from: term }, { uid: true });
+          if (!Array.isArray(found)) continue;
+          for (const uid of found) uidSet.add(Number(uid));
+        } catch {
+          /* server may not support FROM search */
+        }
+      }
+      if (!uidSet.size) return [];
+
+      const uids = [...uidSet]
+        .filter((uid) => Number.isFinite(uid) && uid > 0)
+        .sort((a, b) => b - a)
+        .slice(0, limit);
+      if (!uids.length) return [];
+
+      const byUid = new Map<number, ImapEnvelope>();
+      const range = uids.join(",");
+      for await (const msg of client.fetch(
+        range,
+        {
+          uid: true,
+          envelope: true,
+          flags: true,
+          bodyStructure: true,
+          source: { start: 0, maxLength: 2048 },
+          ...(gmail ? { labels: true, threadId: true } : {}),
+        },
+        { uid: true },
+      )) {
+        byUid.set(
+          msg.uid,
+          envelopeFromFetch(msg, mailbox, meta.uidValidity, gmail, false),
+        );
+      }
+      return [...byUid.values()].sort(
+        (a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0),
+      );
+    } finally {
+      lock.release();
+    }
+  });
+}
+
 export async function fetchMessageSource(
   accountId: string,
   mailbox: string,
@@ -630,10 +702,22 @@ export async function setImapFlags(
     const lock = await client.getMailboxLock(mailbox);
     try {
       if (opts.add?.length) {
-        await client.messageFlagsAdd(String(uid), opts.add, { uid: true });
+        const ok = await client.messageFlagsAdd(String(uid), opts.add, {
+          uid: true,
+        });
+        if (!ok) {
+          throw new Error(`IMAP did not add flags: ${opts.add.join(", ")}`);
+        }
       }
       if (opts.remove?.length) {
-        await client.messageFlagsRemove(String(uid), opts.remove, { uid: true });
+        const ok = await client.messageFlagsRemove(String(uid), opts.remove, {
+          uid: true,
+        });
+        if (!ok) {
+          throw new Error(
+            `IMAP did not remove flags: ${opts.remove.join(", ")}`,
+          );
+        }
       }
     } finally {
       lock.release();
@@ -780,7 +864,7 @@ export async function pushImapChange(
           break;
         case "read":
           addFlags.push("\\Seen");
-          // Gmail tracks unread via \Unread as well as \Seen.
+          // Gmail tracks unread via \\Unread as well as \\Seen.
           removeLabels.push("\\Unread");
           break;
         case "unread":
@@ -809,9 +893,7 @@ export async function pushImapChange(
           uid: true,
         });
         if (!ok) {
-          throw new Error(
-            `Gmail IMAP did not add flags: ${addFlags.join(", ")}`,
-          );
+          throw new Error(`Gmail IMAP did not add flags: ${addFlags.join(", ")}`);
         }
       }
       if (removeFlags.length) {
