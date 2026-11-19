@@ -19,6 +19,8 @@ import {
 } from "./mailApi";
 import { CalendarEventDialog } from "./CalendarEventDialog";
 import { GoogleCalendarBrand } from "./BrandIcon";
+import { BlurredEmails } from "./creatorBlur";
+import { EventNotes, EventTitle, MaskedAddress, PersonBits } from "./calendarMask";
 
 const HOUR_PX = 52;
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
@@ -409,7 +411,16 @@ export function CalendarWorkspace({
         <GoogleCalendarBrand size={28} />
         <div className="plugin-workspace-title">
           <h1>Google Calendar</h1>
-          <p>{accountEmail ? `${accountEmail} · Primary calendar` : "Primary calendar"}</p>
+          <p>
+            {accountEmail ? (
+              <>
+                <MaskedAddress email={accountEmail} />
+                {" · Primary calendar"}
+              </>
+            ) : (
+              "Primary calendar"
+            )}
+          </p>
         </div>
         <div className="cal-view-switch" role="group" aria-label="Calendar view">
           {VIEWS.map((option) => (
@@ -523,12 +534,15 @@ export function CalendarWorkspace({
                       className={`cal-allday-chip${selectedId === event.id ? " open" : ""}`}
                       onClick={() => setSelectedId(event.id)}
                     >
-                      {event.allDay
-                        ? event.title
-                        : `${new Date(event.startIso).toLocaleTimeString(undefined, {
+                      {event.allDay ? null : (
+                        <>
+                          {new Date(event.startIso).toLocaleTimeString(undefined, {
                             hour: "numeric",
                             minute: "2-digit",
-                          })} ${event.title}`}
+                          })}{" "}
+                        </>
+                      )}
+                      <EventTitle event={event} />
                     </button>
                   ))}
                   {extra > 0 ? (
@@ -588,8 +602,14 @@ export function CalendarWorkspace({
                                 minute: "2-digit",
                               })}
                         </span>
-                        <strong>{event.title}</strong>
-                        {event.location ? <em>{event.location}</em> : null}
+                        <strong>
+                          <EventTitle event={event} />
+                        </strong>
+                        {event.location ? (
+                          <em>
+                            <BlurredEmails text={event.location} />
+                          </em>
+                        ) : null}
                       </button>
                     ))}
                   </section>
@@ -641,7 +661,7 @@ export function CalendarWorkspace({
                       className={`cal-allday-chip${selectedId === event.id ? " open" : ""}`}
                       onClick={() => setSelectedId(event.id)}
                     >
-                      {event.title}
+                      <EventTitle event={event} />
                     </button>
                   ))}
                 </div>
@@ -714,13 +734,20 @@ export function CalendarWorkspace({
                             setSelectedId(event.id);
                           }}
                         >
-                          <strong>{event.title}</strong>
+                          <strong>
+                            <EventTitle event={event} />
+                          </strong>
                           <span>
                             {new Date(event.startIso).toLocaleTimeString(undefined, {
                               hour: "numeric",
                               minute: "2-digit",
                             })}
-                            {event.location ? ` · ${event.location}` : ""}
+                            {event.location ? (
+                              <>
+                                {" · "}
+                                <BlurredEmails text={event.location} />
+                              </>
+                            ) : null}
                           </span>
                         </button>
                       );
@@ -738,19 +765,29 @@ export function CalendarWorkspace({
 
         {selected ? (
           <aside className="plugin-inspector" aria-label="Event">
-            <h2>{selected.title}</h2>
+            <h2>
+              <EventTitle event={selected} />
+            </h2>
             <p>{formatWhen(selected)}</p>
-            {selected.location ? <p>{selected.location}</p> : null}
+            {selected.location ? (
+              <p>
+                <BlurredEmails text={selected.location} />
+              </p>
+            ) : null}
             {selected.organizer ? (
               <p>
-                Organizer · {selected.organizer.name || selected.organizer.email}
+                Organizer ·{" "}
+                <PersonBits
+                  name={selected.organizer.name}
+                  email={selected.organizer.email}
+                />
               </p>
             ) : null}
             {selected.attendees && selected.attendees.length > 0 ? (
               <ul className="cal-people">
                 {selected.attendees.slice(0, 12).map((person, index) => (
                   <li key={`${person.email ?? person.name ?? "guest"}-${index}`}>
-                    {person.name || person.email || "Someone"}
+                    <PersonBits name={person.name} email={person.email} />
                     {person.response
                       ? ` · ${
                           person.response === "accepted"
@@ -766,9 +803,7 @@ export function CalendarWorkspace({
                 ))}
               </ul>
             ) : null}
-            {selected.description ? (
-              <p className="cal-notes">{selected.description}</p>
-            ) : null}
+            {selected.description ? <EventNotes event={selected} /> : null}
             <div className="cal-links">
               {selected.meetLink ? (
                 <button

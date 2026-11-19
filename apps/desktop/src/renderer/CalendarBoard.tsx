@@ -22,6 +22,8 @@ import {
   CALENDAR_CHANGED,
 } from "./mailApi";
 import { CalendarEventDialog } from "./CalendarEventDialog";
+import { BlurredEmails } from "./creatorBlur";
+import { EventNotes, EventTitle, PersonBits } from "./calendarMask";
 
 const RESPONSE_LABEL: Record<string, string> = {
   accepted: "Accepted",
@@ -112,17 +114,6 @@ function personLabel(person?: { email?: string; name?: string }): string {
   return person?.name || person?.email || "";
 }
 
-function attendeeLabel(attendee: CalendarAttendee): string {
-  const name = attendee.name?.trim();
-  const email = attendee.email?.trim();
-  const who =
-    name && email && name.toLowerCase() !== email.toLowerCase()
-      ? `${name} · ${email}`
-      : name || email || "Someone";
-  const response = attendee.response ? RESPONSE_LABEL[attendee.response] : "";
-  return response ? `${who} · ${response}` : who;
-}
-
 function firstEventKey(
   rows: CalendarEventDto[],
   week: CalendarWeek,
@@ -203,32 +194,52 @@ function EventDetail({
   const guests = hasGuests(event, accountEmail);
   return (
     <div className="cal-detail">
-      <h3 className="cal-detail-title">{event.title}</h3>
+      <h3 className="cal-detail-title">
+        <EventTitle event={event} />
+      </h3>
       <p>{formatWhen(event)}</p>
       {event.status === "tentative" ? <p>Tentative</p> : null}
       {location ? (
         locationUrl ? (
           <button type="button" className="cal-link" onClick={() => openExternal(locationUrl)}>
-            {location}
+            <BlurredEmails text={location} />
           </button>
         ) : (
-          <p>{location}</p>
+          <p>
+            <BlurredEmails text={location} />
+          </p>
         )
       ) : null}
       {personLabel(event.organizer) ? (
-        <p>Organizer · {personLabel(event.organizer)}</p>
+        <p>
+          Organizer ·{" "}
+          <PersonBits
+            name={event.organizer?.name}
+            email={event.organizer?.email}
+          />
+        </p>
       ) : null}
       {shown.length > 0 ? (
         <ul className="cal-people">
-          {shown.map((attendee, index) => (
-            <li key={`${attendee.email ?? attendee.name ?? "person"}-${index}`}>
-              {attendeeLabel(attendee)}
-            </li>
-          ))}
+          {shown.map((attendee, index) => {
+            const response = attendee.response
+              ? RESPONSE_LABEL[attendee.response]
+              : "";
+            return (
+              <li key={`${attendee.email ?? attendee.name ?? "person"}-${index}`}>
+                <PersonBits
+                  name={attendee.name}
+                  email={attendee.email}
+                  both
+                />
+                {response ? ` · ${response}` : ""}
+              </li>
+            );
+          })}
           {extra > 0 ? <li>and {extra} more</li> : null}
         </ul>
       ) : null}
-      {event.description ? <p className="cal-notes">{event.description}</p> : null}
+      {event.description ? <EventNotes event={event} /> : null}
       <div className="cal-links">
         {event.meetLink ? (
           <button type="button" className="cal-link" onClick={() => openExternal(event.meetLink!)}>
@@ -584,9 +595,6 @@ export function CalendarBoard({
                       group.events.map((event) => {
                         const key = `${dayMs}:${event.id}`;
                         const open = selectedId === event.id;
-                        const meta = [event.location, event.meetLink ? "Meet" : ""]
-                          .filter(Boolean)
-                          .join(" · ");
                         return (
                           <button
                             key={key}
@@ -598,9 +606,17 @@ export function CalendarBoard({
                             <span className="cal-event-time">{rowTime(event)}</span>
                             <span className="cal-event-title">
                               {event.status === "tentative" ? "Tentative · " : ""}
-                              {event.title}
+                              <EventTitle event={event} />
                             </span>
-                            {meta ? <span className="cal-event-meta">{meta}</span> : null}
+                            {event.location || event.meetLink ? (
+                              <span className="cal-event-meta">
+                                {event.location ? (
+                                  <BlurredEmails text={event.location} />
+                                ) : null}
+                                {event.location && event.meetLink ? " · " : null}
+                                {event.meetLink ? "Meet" : null}
+                              </span>
+                            ) : null}
                           </button>
                         );
                       })
@@ -646,9 +662,6 @@ export function CalendarBoard({
                   group.events.map((event) => {
                     const key = `${dayMs}:${event.id}`;
                     const open = openKey === key;
-                    const meta = [event.location, event.meetLink ? "Meet" : ""]
-                      .filter(Boolean)
-                      .join(" · ");
                     return (
                       <div key={key} className="cal-item">
                         <button
@@ -660,10 +673,16 @@ export function CalendarBoard({
                           <span className="cal-event-time">{rowTime(event)}</span>
                           <span className="cal-event-title">
                             {event.status === "tentative" ? "Tentative · " : ""}
-                            {event.title}
+                            <EventTitle event={event} />
                           </span>
-                          {meta ? (
-                            <span className="cal-event-meta">{meta}</span>
+                          {event.location || event.meetLink ? (
+                            <span className="cal-event-meta">
+                              {event.location ? (
+                                <BlurredEmails text={event.location} />
+                              ) : null}
+                              {event.location && event.meetLink ? " · " : null}
+                              {event.meetLink ? "Meet" : null}
+                            </span>
                           ) : null}
                         </button>
                         {open ? <EventDetail {...detailProps(event)} /> : null}

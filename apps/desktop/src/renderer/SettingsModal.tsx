@@ -1277,9 +1277,9 @@ export function SettingsModal({
                       className="settings-section-btn"
                       onClick={() => {
                         void bridgeNotifyShow({
-                          title: "Snooze reminder",
+                          title: "Follow up",
                           body: prefs.notifyShowPreview
-                            ? "Follow up next week"
+                            ? "Time to follow up"
                             : "A snoozed message is back in your inbox",
                           silent: !prefs.notifySound,
                         });

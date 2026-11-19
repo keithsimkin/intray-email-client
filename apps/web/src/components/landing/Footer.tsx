@@ -1,13 +1,7 @@
 import { BrandLockup } from "../Brand";
 import { siGithub, siX } from "simple-icons";
-import { GITHUB_URL, TWITTER_URL, WINDOWS_DOWNLOAD_URL } from "./site";
-
-const links = [
-  { href: "#", label: "Home" },
-  { href: "#features", label: "Features" },
-  { href: "#testimonials", label: "Testimonials" },
-  { href: WINDOWS_DOWNLOAD_URL, label: "Download App" },
-];
+import { OsDownloadText } from "./platform";
+import { GITHUB_URL, TWITTER_URL } from "./site";
 
 function SimpleIcon({
   icon,
@@ -24,6 +18,12 @@ function SimpleIcon({
   );
 }
 
+const links = [
+  { href: "#", label: "Home" },
+  { href: "#features", label: "Features" },
+  { href: "#testimonials", label: "Testimonials" },
+];
+
 export function Footer() {
   return (
     <footer className="landing-light border-t border-white/10 bg-[#070708] px-5 pb-28 pt-10">
@@ -39,6 +39,9 @@ export function Footer() {
                 {l.label}
               </a>
             ))}
+            <OsDownloadText className="transition hover:text-white">
+              Download App
+            </OsDownloadText>
           </nav>
 
           <div className="flex items-center gap-2">
@@ -60,7 +63,7 @@ export function Footer() {
         </div>
 
         <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-white/10 pt-5 text-xs text-[#8a8f98] sm:flex-row">
-          <p>© 2026 Intray. Open source unified mail — Windows now, macOS soon.</p>
+          <p>© 2026 Intray. Open source unified mail — Windows, and macOS (untested).</p>
           <div className="flex gap-4">
             <a href="#" className="hover:text-white">
               Terms

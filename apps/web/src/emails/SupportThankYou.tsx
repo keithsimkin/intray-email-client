@@ -2,12 +2,14 @@ type SupportThankYouProps = {
   name?: string | null;
   kind: "payment" | "subscription";
   downloadUrl?: string;
+  macDownloadUrl?: string;
 };
 
 export function SupportThankYou({
   name,
   kind,
   downloadUrl = "https://intray.site/download",
+  macDownloadUrl = "https://intray.site/download?platform=mac",
 }: SupportThankYouProps) {
   const greeting = name?.trim() ? name.trim().split(/\s+/)[0] : "there";
   const headline =
@@ -79,7 +81,8 @@ export function SupportThankYou({
                 {body}
               </p>
               <p style={{ margin: "10px 0 0", fontSize: 15, lineHeight: 1.55, color: "#9ca3af" }}>
-                Grab the latest Windows build anytime — macOS is on the way.
+                Grab the latest Windows build anytime. The Mac build is on the same release and hasn’t
+                been tested yet.
               </p>
               <a
                 href={downloadUrl}
@@ -96,6 +99,19 @@ export function SupportThankYou({
                 }}
               >
                 Download for Windows
+              </a>
+              <a
+                href={macDownloadUrl}
+                style={{
+                  display: "block",
+                  marginTop: 14,
+                  color: "#9ca3af",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  textDecoration: "underline",
+                }}
+              >
+                Download for Mac (untested)
               </a>
               <p style={{ margin: "28px 0 0", fontSize: 13, lineHeight: 1.5, color: "#8a8f98" }}>
                 — The Intray team

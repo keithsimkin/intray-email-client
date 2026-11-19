@@ -1,6 +1,7 @@
 import { BrandLockup } from "../Brand";
-import { Cta, CtaGhost } from "./Buttons";
-import { GITHUB_URL, WINDOWS_DOWNLOAD_URL, nav } from "./site";
+import { CtaGhost } from "./Buttons";
+import { OsDownload } from "./platform";
+import { GITHUB_URL, nav } from "./site";
 
 export function Nav() {
   return (
@@ -29,9 +30,7 @@ export function Nav() {
           >
             Star us on GitHub
           </CtaGhost>
-          <Cta href={WINDOWS_DOWNLOAD_URL} className="!py-2 !px-4">
-            Download
-          </Cta>
+          <OsDownload className="!py-2 !px-4" />
         </div>
       </div>
     </header>

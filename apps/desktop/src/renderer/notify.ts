@@ -87,7 +87,7 @@ export async function notifySnoozeReturn(
 ): Promise<void> {
   if (!shouldDesktopNotify(prefs, "snooze")) return;
 
-  const title = "Snooze reminder";
+  const title = "Follow up";
   const body = prefs.notifyShowPreview
     ? message.subject || "A snoozed message is back in your inbox"
     : prefs.notifyShowSender

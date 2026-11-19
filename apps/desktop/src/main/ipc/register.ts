@@ -43,6 +43,7 @@ import {
   listContactDtos,
   listLabelDtos,
   listMail,
+  loadOlderMail,
   mutateMail,
   oauthStatus,
   reconnectAccount,
@@ -336,6 +337,20 @@ export function registerIpc(): void {
   ipcMain.handle("accounts:oauthStatus", () => oauthStatus());
 
   ipcMain.handle("mail:list", (_e, query: MailListQuery) => listMail(query));
+  ipcMain.handle(
+    "mail:loadOlder",
+    (
+      _e,
+      query: { accountId?: string | "all"; folder?: string } | undefined,
+    ) =>
+      loadOlderMail({
+        accountId:
+          query?.accountId === "all" || typeof query?.accountId === "string"
+            ? query.accountId
+            : undefined,
+        folder: typeof query?.folder === "string" ? query.folder : "inbox",
+      }),
+  );
   ipcMain.handle(
     "mail:folderCounts",
     (_e, accountId?: string | "all") => getFolderCounts(accountId),

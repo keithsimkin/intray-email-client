@@ -8,6 +8,7 @@ import {
   getAccountRow,
   getSyncState,
   listMessageMailboxRefs,
+  oldestMailboxUid,
   recountUnread,
   upsertSyncState,
   type MessageRow,
@@ -22,6 +23,7 @@ import {
 import { gmailMessageToRow } from "../providers/gmail/map";
 import {
   listImapMailboxes,
+  listOlderEnvelopes,
   listRecentEnvelopes,
   listStoredEnvelopeFlags,
   searchUnseenUids,
@@ -45,6 +47,10 @@ function rememberSender(row: MessageRow): void {
 const INITIAL_PAGE_SIZE = 50;
 const INITIAL_MAX_MESSAGES = 400;
 const IMAP_INBOX_LIMIT = 400;
+/** One scroll backward. The forward cursor is left where it is. */
+const OLDER_FETCH = 120;
+const OLDER_UID_SPAN = 800;
+const OLDER_EMPTY_PROBES = 8;
 const EMAIL_CONCURRENCY = 5;
 
 /**
@@ -670,6 +676,93 @@ async function syncImap(accountId: string): Promise<void> {
     historyId: `imap:${Date.now()}`,
     imapCursorJson: JSON.stringify(nextCursor),
   });
+}
+
+/**
+ * Lowest UID already considered for a mailbox. Empty spans don't store a row,
+ * so the stored minimum alone would probe the same hole forever.
+ */
+const olderFloor = new Map<string, { uid: number; uidValidity: number }>();
+
+function mailboxForBackfill(
+  targets: SyncMailbox[],
+  folder: string,
+): SyncMailbox | null {
+  if (folder === "inbox") {
+    return (
+      targets.find((box) => box.role === "all") ??
+      targets.find((box) => box.role === "inbox") ??
+      null
+    );
+  }
+  const direct = targets.find((box) => box.role === folder);
+  if (direct) return direct;
+  // Gmail keeps Sent and Drafts inside All Mail.
+  if (folder === "sent" || folder === "drafts") {
+    return targets.find((box) => box.role === "all") ?? null;
+  }
+  return null;
+}
+
+/**
+ * Index the next older window of one mailbox. Does not move the forward
+ * IMAP cursor, so the regular poll keeps fetching only new mail.
+ */
+export async function backfillOlderMail(
+  accountId: string,
+  folder: string,
+): Promise<{ added: number; exhausted: boolean }> {
+  if (folder === "snoozed" || folder.startsWith("label:")) {
+    return { added: 0, exhausted: true };
+  }
+  const gmail = isGmailImapAccount(accountId);
+  const targets = await imapTargets(accountId, gmail);
+  const box = mailboxForBackfill(targets, folder);
+  if (!box) return { added: 0, exhausted: true };
+
+  const stored = oldestMailboxUid(accountId, box.path);
+  if (!stored) return { added: 0, exhausted: true };
+
+  const key = `${accountId}\0${box.path}`;
+  const probed = olderFloor.get(key);
+  const probeUid =
+    probed && probed.uidValidity === stored.uidValidity ? probed.uid : null;
+  const before = Math.min(stored.uid, probeUid ?? stored.uid);
+  if (before <= 1) return { added: 0, exhausted: true };
+
+  const slice = await listOlderEnvelopes(accountId, {
+    mailbox: box.path,
+    beforeUid: before,
+    uidValidity: stored.uidValidity,
+    limit: OLDER_FETCH,
+    span: OLDER_UID_SPAN,
+    emptyProbes: OLDER_EMPTY_PROBES,
+    gmail,
+    role: box.role,
+  });
+  olderFloor.set(key, {
+    uid: slice.nextBefore,
+    uidValidity: slice.uidValidity || stored.uidValidity,
+  });
+
+  let added = 0;
+  for (const env of slice.envelopes) {
+    const row = imapEnvelopeToRow(accountId, env);
+    const wrote = indexIncomingMessage(
+      row,
+      {
+        messageId: env.messageId,
+        inReplyTo: env.inReplyTo,
+        references: env.references,
+      },
+      { providerThread: Boolean(env.gmThrId) },
+    );
+    if (!wrote || env.partial) continue;
+    rememberSender(row);
+    added += 1;
+  }
+  if (added) recountUnread(accountId);
+  return { added, exhausted: slice.exhausted };
 }
 
 export function startAccountPolling(

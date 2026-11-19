@@ -36,7 +36,7 @@ export function Testimonials() {
   const visible = [quotes[index % quotes.length], quotes[(index + 1) % quotes.length]];
 
   return (
-    <section id="testimonials" className="landing-light px-5 py-14 md:py-16">
+    <section id="testimonials" className="landing-light scroll-mt-24 px-5 py-14 md:py-16">
       <div className="mx-auto max-w-6xl rounded-[1.75rem] border border-white/10 bg-[#121214] px-6 py-10 md:px-10 md:py-12">
         <div className="grid gap-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-start">
           <div>

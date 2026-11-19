@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronLeft,
   ChevronRight,
@@ -205,7 +206,7 @@ function PdfView({ data }: { data: Uint8Array }) {
       <div className="attachment-preview-bar">
         <button
           type="button"
-          className="attachment-tool"
+          className="icon-btn"
           aria-label="Previous page"
           disabled={page <= 1}
           onClick={() => setPage((current) => Math.max(1, current - 1))}
@@ -217,7 +218,7 @@ function PdfView({ data }: { data: Uint8Array }) {
         </span>
         <button
           type="button"
-          className="attachment-tool"
+          className="icon-btn"
           aria-label="Next page"
           disabled={!pageCount || page >= pageCount}
           onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
@@ -227,7 +228,7 @@ function PdfView({ data }: { data: Uint8Array }) {
         <span className="attachment-preview-gap" />
         <button
           type="button"
-          className="attachment-tool"
+          className="icon-btn"
           aria-label="Zoom out"
           disabled={zoom <= 0.75}
           onClick={() => setZoom((current) => Math.max(0.75, Math.round((current - 0.25) * 100) / 100))}
@@ -236,7 +237,7 @@ function PdfView({ data }: { data: Uint8Array }) {
         </button>
         <button
           type="button"
-          className="attachment-tool"
+          className="icon-btn"
           aria-label="Zoom in"
           disabled={zoom >= 3}
           onClick={() => setZoom((current) => Math.min(3, Math.round((current + 0.25) * 100) / 100))}
@@ -280,23 +281,18 @@ export function AttachmentBar({
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [actionNote, setActionNote] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "open" | null>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const autoFor = useRef<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const titleId = useId();
 
   useEffect(() => {
-    if (autoFor.current === messageId) return;
-    autoFor.current = messageId;
     setOpenKey(null);
     setPreview(null);
     setNote(null);
-    if (files.length !== 1) return;
-    const only = files[0];
-    if (!only?.id) return;
-    const kind = kindOf(only);
-    if (kind === "other") return;
-    setOpenKey(only.id);
-  }, [messageId, files]);
+    setActionNote(null);
+  }, [messageId]);
 
   const openFile =
     files.find((file, index) => (file.id ?? `local-${index}`) === openKey) ?? null;
@@ -375,16 +371,25 @@ export function AttachmentBar({
   }, [bytes, openKind, preview?.contentType]);
 
   useEffect(() => {
+    if (!openKey) return;
+    const root = document.getElementById("root");
+    root?.setAttribute("inert", "");
+    document.body.setAttribute("data-attachment-preview", "");
+    dialogRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || !openKey) return;
-      const root = rootRef.current;
-      if (!root?.contains(document.activeElement)) return;
+      if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       setOpenKey(null);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.body.removeAttribute("data-attachment-preview");
+      root?.removeAttribute("inert");
+      returnFocus.current?.focus();
+    };
   }, [openKey]);
 
   const runAction = async (action: "save" | "open") => {
@@ -394,15 +399,16 @@ export function AttachmentBar({
         ? window.intray?.mail?.saveAttachment
         : window.intray?.mail?.openAttachment;
     if (!fn) {
-      setNote("Preview isn't available in this window.");
+      setActionNote("Preview isn't available in this window.");
       return;
     }
     setBusy(action);
+    setActionNote(null);
     try {
       const result: AttachmentActionResult = await fn(messageId, openFile.id);
-      if (result.error) setNote(result.error);
+      setActionNote(result.error ?? null);
     } catch {
-      setNote(action === "save" ? "Couldn't save this file." : "Couldn't open this file.");
+      setActionNote(action === "save" ? "Couldn't save this file." : "Couldn't open this file.");
     } finally {
       setBusy(null);
     }
@@ -410,8 +416,61 @@ export function AttachmentBar({
 
   const text = bytes && openKind === "text" ? textFromBytes(bytes) : null;
 
+  const previewBody = (
+    <>
+      {loading && (
+        <div className="attachment-preview-stage">
+          <p className="attachment-preview-note" role="status">
+            <Loader2 size={14} strokeWidth={2} className="spin" />
+            Loading preview…
+          </p>
+        </div>
+      )}
+
+      {!loading && note && (
+        <div className="attachment-preview-stage">
+          <p className="attachment-preview-note">{note}</p>
+        </div>
+      )}
+
+      {!loading && !note && openKind === "pdf" && bytes && <PdfView data={bytes} />}
+
+      {!loading && !note && openKind === "image" && objectUrl && (
+        <div className="attachment-preview-stage">
+          <img src={objectUrl} alt={openFile?.name ?? "Attachment"} />
+        </div>
+      )}
+
+      {!loading && !note && openKind === "audio" && objectUrl && (
+        <div className="attachment-preview-stage">
+          <audio controls src={objectUrl} />
+        </div>
+      )}
+
+      {!loading && !note && openKind === "video" && objectUrl && (
+        <div className="attachment-preview-stage">
+          <video controls src={objectUrl} />
+        </div>
+      )}
+
+      {!loading && !note && openKind === "text" && text && !text.binary && (
+        <div className="attachment-preview-stage">
+          <pre className="attachment-text">{text.text}</pre>
+        </div>
+      )}
+
+      {!loading && !note && openKind === "text" && text?.binary && (
+        <div className="attachment-preview-stage">
+          <p className="attachment-preview-note">
+            This file doesn't look like text. Save it, or open it in another app.
+          </p>
+        </div>
+      )}
+    </>
+  );
+
   return (
-    <div className="attachment-block" ref={rootRef}>
+    <div className="attachment-block">
       <div className="attachment-list">
         {files.map((file, index) => {
           const key = file.id ?? `local-${index}`;
@@ -423,10 +482,16 @@ export function AttachmentBar({
               type="button"
               className={`attachment${selected ? " on" : ""}`}
               aria-pressed={selected}
-              title={`Preview ${file.name}`}
-              onClick={() => {
+              aria-haspopup="dialog"
+              onClick={(event) => {
                 setNote(null);
-                setOpenKey(selected ? null : key);
+                setActionNote(null);
+                if (selected) {
+                  setOpenKey(null);
+                  return;
+                }
+                returnFocus.current = event.currentTarget;
+                setOpenKey(key);
               }}
             >
               <span className={`attachment-icon kind-${kind}`}>{glyph(kind)}</span>
@@ -442,93 +507,69 @@ export function AttachmentBar({
         })}
       </div>
 
-      {openFile && (
-        <div className="attachment-preview" role="region" aria-label={`Preview ${openFile.name}`}>
-          <div className="attachment-preview-bar">
-            <strong className="attachment-preview-name">{openFile.name}</strong>
-            <span className="attachment-preview-gap" />
-            {openFile.id && (
-              <>
-                <button
-                  type="button"
-                  className="attachment-tool"
-                  aria-label="Save attachment"
-                  disabled={busy !== null}
-                  onClick={() => void runAction("save")}
-                >
-                  <Download size={14} strokeWidth={1.75} />
-                </button>
-                <button
-                  type="button"
-                  className="attachment-tool"
-                  aria-label="Open attachment"
-                  disabled={busy !== null}
-                  onClick={() => void runAction("open")}
-                >
-                  <ExternalLink size={14} strokeWidth={1.75} />
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              className="attachment-tool"
-              aria-label="Close preview"
-              onClick={() => setOpenKey(null)}
+      {openFile &&
+        createPortal(
+          <div
+            className="modal-root attachment-pop-root"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setOpenKey(null);
+            }}
+          >
+            <div
+              className="attachment-pop"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby={titleId}
+              ref={dialogRef}
+              tabIndex={-1}
             >
-              <X size={14} strokeWidth={1.75} />
-            </button>
-          </div>
-
-          {loading && (
-            <div className="attachment-preview-stage">
-              <p className="attachment-preview-note" role="status">
-                <Loader2 size={14} strokeWidth={2} className="spin" />
-                Loading preview…
-              </p>
+              <div className="attachment-preview-bar">
+                <h2 id={titleId} className="attachment-preview-name">
+                  {openFile.name}
+                </h2>
+                <span className="attachment-preview-gap" />
+                {openFile.id && (
+                  <>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Save"
+                      disabled={busy !== null}
+                      onClick={() => void runAction("save")}
+                    >
+                      <Download size={15} strokeWidth={1.75} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Open in another app"
+                      disabled={busy !== null}
+                      onClick={() => void runAction("open")}
+                    >
+                      <ExternalLink size={15} strokeWidth={1.75} />
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Close"
+                  onClick={() => setOpenKey(null)}
+                >
+                  <X size={15} strokeWidth={1.75} />
+                </button>
+              </div>
+              {actionNote && (
+                <p className="attachment-action-note" role="status">
+                  {actionNote}
+                </p>
+              )}
+              {previewBody}
             </div>
-          )}
-
-          {!loading && note && openKind !== "pdf" && (
-            <div className="attachment-preview-stage">
-              <p className="attachment-preview-note">{note}</p>
-            </div>
-          )}
-
-          {!loading && !note && openKind === "pdf" && bytes && <PdfView data={bytes} />}
-
-          {!loading && !note && openKind === "image" && objectUrl && (
-            <div className="attachment-preview-stage">
-              <img src={objectUrl} alt={openFile.name} />
-            </div>
-          )}
-
-          {!loading && !note && openKind === "audio" && objectUrl && (
-            <div className="attachment-preview-stage">
-              <audio controls src={objectUrl} />
-            </div>
-          )}
-
-          {!loading && !note && openKind === "video" && objectUrl && (
-            <div className="attachment-preview-stage">
-              <video controls src={objectUrl} />
-            </div>
-          )}
-
-          {!loading && !note && openKind === "text" && text && !text.binary && (
-            <div className="attachment-preview-stage">
-              <pre className="attachment-text">{text.text}</pre>
-            </div>
-          )}
-
-          {!loading && !note && openKind === "text" && text?.binary && (
-            <div className="attachment-preview-stage">
-              <p className="attachment-preview-note">
-                This file doesn't look like text. Save it, or open it in another app.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

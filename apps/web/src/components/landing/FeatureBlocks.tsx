@@ -51,7 +51,6 @@ type Feature = {
   title: string;
   body: string;
   span: string;
-  id?: string;
   visual: ReactNode;
 };
 
@@ -90,14 +89,13 @@ const features: Feature[] = [
     title: "No mail relay",
     body: "TLS straight to providers. AI talks only to the model you pick — never through an Intray cloud.",
     span: "",
-    id: "privacy",
     visual: <PrivacyVisual />,
   },
 ];
 
 export function UnifiedFeatures() {
   return (
-    <section id="features" className="landing-light px-5 pb-6 pt-14 md:pt-16">
+    <section id="features" className="landing-light scroll-mt-24 px-5 pb-6 pt-14 md:pt-16">
       <div className="mx-auto max-w-6xl">
         <div className="grid items-start gap-5 md:grid-cols-2 md:gap-10">
           <h2 className="font-display text-[clamp(2rem,4.5vw,3.25rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
@@ -115,7 +113,6 @@ export function UnifiedFeatures() {
           {features.map((f) => (
             <article
               key={f.title}
-              id={f.id}
               className={`group relative flex w-[82%] shrink-0 snap-start flex-col overflow-hidden rounded-2xl border border-white/10 sm:w-auto ${f.span}`}
               style={{ background: L.mutedSurface, color: L.fg }}
             >
@@ -391,6 +388,54 @@ function PrivacyVisual() {
         </div>
       </div>
     </div>
+  );
+}
+
+const privacyPoints = [
+  {
+    title: "No mail relay",
+    body: "The app on your PC opens TLS straight to Gmail, Outlook, iCloud, and IMAP. Intray does not run a mail server, and your messages are not stored on one.",
+  },
+  {
+    title: "AI stays yours",
+    body: "Drafts and summaries go to Claude, OpenAI, Grok, Gemini, or local Ollama — the model you pick, with your key or CLI login. Nothing is sent through an Intray cloud.",
+  },
+  {
+    title: "On this machine",
+    body: "The inbox, labels, and search live in the desktop app. Intray has no account to upload them to.",
+  },
+] as const;
+
+export function Privacy() {
+  return (
+    <section id="privacy" className="landing-light scroll-mt-24 px-5 py-14 md:py-16">
+      <div className="mx-auto max-w-6xl">
+        <div className="grid items-start gap-5 md:grid-cols-2 md:gap-10">
+          <h2 className="font-display text-[clamp(2rem,4.5vw,3.25rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
+            Privacy.
+            <br />
+            Your mail never touches us.
+          </h2>
+          <p className="max-w-md text-sm leading-relaxed text-[#9ca3af] md:pt-2 md:text-[15px]">
+            Intray is a desktop app. Your provider is on one side, the model you already
+            use is on the other, and no Intray service sits in between.
+          </p>
+        </div>
+        <div className="mt-10 grid gap-4 md:grid-cols-3">
+          {privacyPoints.map((point) => (
+            <article
+              key={point.title}
+              className="rounded-2xl border border-white/10 bg-[#121214] px-5 py-5"
+            >
+              <h3 className="text-[17px] font-semibold tracking-[-0.01em] text-white">
+                {point.title}
+              </h3>
+              <p className="mt-2 text-[13px] leading-relaxed text-[#9ca3af]">{point.body}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
