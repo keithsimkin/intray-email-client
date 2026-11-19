@@ -17,8 +17,10 @@ import {
   User,
   X,
 } from "lucide-react";
+import { BlurredEmails, useCreatorBlur } from "./creatorBlur";
 import { filterContacts, useContacts, type Contact } from "./contacts";
 import type { Label } from "./data/mock";
+import { MatchText } from "./SearchHighlight";
 import {
   HAS_SUGGESTIONS,
   IS_SUGGESTIONS,
@@ -26,10 +28,28 @@ import {
   makeToken,
   parseSearchInput,
   parseSlashDraft,
+  serializeSearch,
   slashFieldChoices,
   type SearchField,
   type SearchToken,
 } from "./searchQuery";
+
+export type SearchHit = {
+  id: string;
+  from: string;
+  email: string;
+  subject: string;
+  snippet: string;
+  time: string;
+  folder: string;
+};
+
+export type RecentOpen = {
+  id: string;
+  from: string;
+  subject: string;
+  time: string;
+};
 
 type PendingField = Exclude<SearchField, "text">;
 
@@ -78,18 +98,37 @@ function contactTokenValue(contact: Contact) {
   return contact.email?.trim() || contact.name;
 }
 
+function folderLabel(folder: string) {
+  if (!folder) return "Mail";
+  return folder.slice(0, 1).toUpperCase() + folder.slice(1);
+}
+
 export function SearchBar({
   tokens,
   onTokensChange,
   labels,
   inputRef,
   placeholder = "Search mail — /from, /subject, or pick a person…",
+  hits = [],
+  hitsLoading = false,
+  recentSearches = [],
+  recentOpens = [],
+  onOpenHit,
+  onQueryChange,
+  onPickRecent,
 }: {
   tokens: SearchToken[];
   onTokensChange: (next: SearchToken[]) => void;
   labels: Label[];
   inputRef?: RefObject<HTMLInputElement | null>;
   placeholder?: string;
+  hits?: SearchHit[];
+  hitsLoading?: boolean;
+  recentSearches?: string[];
+  recentOpens?: RecentOpen[];
+  onOpenHit?: (id: string) => void;
+  onQueryChange?: (query: string) => void;
+  onPickRecent?: (query: string) => void;
 }) {
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -262,9 +301,77 @@ export function SearchBar({
     slashChoices,
   ]);
 
+  const effectivePending: PendingField | null =
+    pending ?? (slash && !slash.choosing && slash.field ? slash.field : null);
+
+  const liveSearchText = useMemo(() => {
+    const base = serializeSearch(tokens);
+    if (pending) return base;
+    if (draft.trimStart().startsWith("/")) {
+      const slashParsed = parseSlashDraft(draft);
+      if (slashParsed.field && slashParsed.rest && !slashParsed.choosing) {
+        return [base, `${slashParsed.field}:${slashParsed.rest}`]
+          .filter(Boolean)
+          .join(" ");
+      }
+      return base;
+    }
+    const extra = draft.trim();
+    return [base, extra].filter(Boolean).join(" ");
+  }, [tokens, draft, pending]);
+
+  const sentQuery = useRef<string | null>(null);
+  useEffect(() => {
+    if (sentQuery.current === liveSearchText) return;
+    sentQuery.current = liveSearchText;
+    onQueryChange?.(liveSearchText);
+  }, [liveSearchText, onQueryChange]);
+
+  type PaletteRow =
+    | { kind: "hit"; id: string; hit: SearchHit }
+    | { kind: "recent"; query: string }
+    | { kind: "open"; open: RecentOpen }
+    | { kind: "suggestion"; suggestion: Suggestion };
+
+  const showMailHits =
+    !pending && !slashChoosing && !effectivePending && liveSearchText.trim().length > 0;
+
+  const palette = useMemo(() => {
+    const rows: PaletteRow[] = [];
+    if (slashChoosing || effectivePending) {
+      for (const suggestion of suggestions) {
+        rows.push({ kind: "suggestion", suggestion });
+      }
+      return rows;
+    }
+    if (!liveSearchText.trim()) {
+      for (const query of recentSearches) rows.push({ kind: "recent", query });
+      for (const open of recentOpens) rows.push({ kind: "open", open });
+      for (const suggestion of suggestions) {
+        rows.push({ kind: "suggestion", suggestion });
+      }
+      return rows;
+    }
+    for (const hit of hits) rows.push({ kind: "hit", id: hit.id, hit });
+    for (const suggestion of suggestions) {
+      if (suggestion.kind === "contact" || suggestion.kind === "commit") {
+        rows.push({ kind: "suggestion", suggestion });
+      }
+    }
+    return rows;
+  }, [
+    suggestions,
+    slashChoosing,
+    effectivePending,
+    liveSearchText,
+    recentSearches,
+    recentOpens,
+    hits,
+  ]);
+
   useEffect(() => {
     setActiveIdx(0);
-  }, [suggestions.length, pending, draft]);
+  }, [suggestions.length, pending, draft, hits.length, liveSearchText]);
 
   const resolvePersonValue = (raw: string) => {
     const trimmed = raw.trim();
@@ -375,6 +482,18 @@ export function SearchBar({
     }
   };
 
+  const pickRecent = (query: string) => {
+    setDraft("");
+    setPending(null);
+    onPickRecent?.(query);
+    localInputRef.current?.focus();
+  };
+
+  const openHit = (id: string) => {
+    onOpenHit?.(id);
+    setOpen(false);
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Escape") {
       if (pending) {
@@ -385,6 +504,12 @@ export function SearchBar({
       if (draft) {
         e.preventDefault();
         setDraft("");
+        return;
+      }
+      if (tokens.length) {
+        e.preventDefault();
+        onTokensChange([]);
+        setOpen(false);
         return;
       }
       setOpen(false);
@@ -420,7 +545,7 @@ export function SearchBar({
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setOpen(true);
-      setActiveIdx((i) => Math.min(i + 1, Math.max(suggestions.length - 1, 0)));
+      setActiveIdx((i) => Math.min(i + 1, Math.max(palette.length - 1, 0)));
       return;
     }
 
@@ -431,9 +556,22 @@ export function SearchBar({
     }
 
     if (e.key === "Enter" || e.key === "Tab") {
-      if (open && suggestions[activeIdx]) {
+      const row = open ? palette[activeIdx] : undefined;
+      if (row) {
         e.preventDefault();
-        applySuggestion(suggestions[activeIdx]);
+        if (row.kind === "hit") {
+          openHit(row.hit.id);
+          return;
+        }
+        if (row.kind === "open") {
+          openHit(row.open.id);
+          return;
+        }
+        if (row.kind === "recent") {
+          pickRecent(row.query);
+          return;
+        }
+        applySuggestion(row.suggestion);
         return;
       }
       if (draft.trim()) {
@@ -449,11 +587,9 @@ export function SearchBar({
       ? "Add another filter… (/subject)"
       : placeholder;
 
-  const showFilterGrid = !pending && !slashChoosing && !draft.trim();
+  const showFilterGrid =
+    !pending && !slashChoosing && !draft.trim() && !liveSearchText.trim();
   const showSlashMenu = !pending && slashChoosing;
-  const effectivePending: PendingField | null =
-    pending ??
-    (slash && !slash.choosing && slash.field ? slash.field : null);
 
   return (
     <div className={`search-bar${open ? " open" : ""}`} ref={rootRef}>
@@ -479,7 +615,9 @@ export function SearchBar({
               <span key={t.id} className={`search-chip field-${t.field}`}>
                 {Icon && <Icon size={11} strokeWidth={2} />}
                 <em>{fieldLabel(t.field)}</em>
-                <span>{t.value}</span>
+                <span>
+                  <BlurredEmails text={t.value} />
+                </span>
                 <button
                   type="button"
                   className="search-chip-x"
@@ -540,8 +678,11 @@ export function SearchBar({
               <div className="search-filter-grid">
                 {ADD_FILTERS.map((f, i) => {
                   const Icon = f.icon;
-                  const idx = suggestions.findIndex(
-                    (s) => s.kind === "filter" && s.field === f.field,
+                  const idx = palette.findIndex(
+                    (row) =>
+                      row.kind === "suggestion" &&
+                      row.suggestion.kind === "filter" &&
+                      row.suggestion.field === f.field,
                   );
                   const active = idx === activeIdx;
                   return (
@@ -650,12 +791,11 @@ export function SearchBar({
                             {s.contact.initials}
                           </span>
                         )}
-                        <span className="search-suggest-meta">
-                          <strong>{s.contact.name}</strong>
-                          <small>
-                            {fieldLabel(effectivePending)} · {s.contact.email}
-                          </small>
-                        </span>
+                        <SearchPerson
+                          name={s.contact.name}
+                          email={s.contact.email}
+                          prefix={fieldLabel(effectivePending)}
+                        />
                       </button>
                     );
                   }
@@ -734,7 +874,167 @@ export function SearchBar({
             </div>
           )}
 
-          {!pending && !slashChoosing && !effectivePending && draft.trim() && (
+          {showMailHits && (
+            <div className="search-panel-section">
+              <div className="search-panel-label">Mail</div>
+              <div className="search-suggest-list">
+                {hits.map((hit) => {
+                  const idx = palette.findIndex(
+                    (row) => row.kind === "hit" && row.id === hit.id,
+                  );
+                  const active = idx === activeIdx;
+                  return (
+                    <button
+                      key={hit.id}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      className={`search-hit${active ? " active" : ""}`}
+                      onMouseEnter={() => setActiveIdx(idx)}
+                      onClick={() => openHit(hit.id)}
+                    >
+                      <span className="search-hit-top">
+                        <strong>
+                          <BlurredEmails text={hit.from} />
+                        </strong>
+                        <small>
+                          {folderLabel(hit.folder)} · {hit.time}
+                        </small>
+                      </span>
+                      <span className="search-hit-subject">
+                        <MatchText text={hit.subject} />
+                      </span>
+                      {hit.snippet ? (
+                        <span className="search-hit-snippet">
+                          <MatchText text={hit.snippet} />
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+                {hits.length === 0 && (
+                  <div className="search-suggest-empty">
+                    {hitsLoading ? "Searching mail…" : "No mail matches yet"}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {showMailHits &&
+            palette.some((row) => row.kind === "suggestion") && (
+              <div className="search-panel-section">
+                <div className="search-suggest-list">
+                  {palette.map((row, i) => {
+                    if (row.kind !== "suggestion") return null;
+                    const suggestion = row.suggestion;
+                    const active = i === activeIdx;
+                    if (suggestion.kind === "contact") {
+                      return (
+                        <button
+                          key={`hit-person-${suggestion.contact.email}`}
+                          type="button"
+                          role="option"
+                          aria-selected={active}
+                          className={`search-suggest${active ? " active" : ""}`}
+                          onMouseEnter={() => setActiveIdx(i)}
+                          onClick={() => applySuggestion(suggestion)}
+                        >
+                          <User size={14} strokeWidth={1.75} />
+                          <SearchPerson
+                            name={suggestion.contact.name}
+                            email={suggestion.contact.email}
+                            prefix="From"
+                          />
+                        </button>
+                      );
+                    }
+                    if (suggestion.kind !== "commit") return null;
+                    return (
+                      <button
+                        key={`hit-commit-${suggestion.value}`}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        className={`search-suggest${active ? " active" : ""}`}
+                        onMouseEnter={() => setActiveIdx(i)}
+                        onClick={() => applySuggestion(suggestion)}
+                      >
+                        <Search size={14} strokeWidth={1.75} />
+                        <span className="search-suggest-meta">
+                          <strong>
+                            {suggestion.field === "text"
+                              ? `Keep “${suggestion.value}” as a filter`
+                              : `${fieldLabel(suggestion.field)}: ${suggestion.value}`}
+                          </strong>
+                          <small>Enter opens the highlighted mail</small>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          {showFilterGrid && (recentSearches.length > 0 || recentOpens.length > 0) && (
+            <div className="search-panel-section">
+              <div className="search-panel-label">Recent</div>
+              <div className="search-suggest-list">
+                {recentSearches.map((query) => {
+                  const idx = palette.findIndex(
+                    (row) => row.kind === "recent" && row.query === query,
+                  );
+                  const active = idx === activeIdx;
+                  return (
+                    <button
+                      key={`recent-${query}`}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      className={`search-suggest${active ? " active" : ""}`}
+                      onMouseEnter={() => setActiveIdx(idx)}
+                      onClick={() => pickRecent(query)}
+                    >
+                      <Search size={14} strokeWidth={1.75} />
+                      <span className="search-suggest-meta">
+                        <strong>{query}</strong>
+                        <small>Recent search</small>
+                      </span>
+                    </button>
+                  );
+                })}
+                {recentOpens.map((open) => {
+                  const idx = palette.findIndex(
+                    (row) => row.kind === "open" && row.open.id === open.id,
+                  );
+                  const active = idx === activeIdx;
+                  return (
+                    <button
+                      key={`open-${open.id}`}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      className={`search-suggest${active ? " active" : ""}`}
+                      onMouseEnter={() => setActiveIdx(idx)}
+                      onClick={() => openHit(open.id)}
+                    >
+                      <Search size={14} strokeWidth={1.75} />
+                      <span className="search-suggest-meta">
+                        <strong>
+                          <BlurredEmails text={open.subject} />
+                        </strong>
+                        <small>
+                          <BlurredEmails text={open.from} /> · {open.time}
+                        </small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!showMailHits && !pending && !slashChoosing && !effectivePending && draft.trim() && (
             <div className="search-panel-section">
               <div className="search-panel-label">Search</div>
               <div className="search-suggest-list">
@@ -770,10 +1070,11 @@ export function SearchBar({
                               {s.contact.initials}
                             </span>
                           )}
-                          <span className="search-suggest-meta">
-                            <strong>{s.contact.name}</strong>
-                            <small>From · {s.contact.email}</small>
-                          </span>
+                          <SearchPerson
+                            name={s.contact.name}
+                            email={s.contact.email}
+                            prefix="From"
+                          />
                         </button>
                       );
                     }
@@ -809,5 +1110,31 @@ export function SearchBar({
         </div>
       )}
     </div>
+  );
+}
+
+function SearchPerson({
+  name,
+  email,
+  prefix,
+}: {
+  name: string;
+  email: string;
+  prefix: string;
+}) {
+  const blur = useCreatorBlur();
+  const kind = blur.kindForEmail(email);
+  return (
+    <span className="search-suggest-meta">
+      <strong className={blur.blurName(kind) ? "creator-blur" : undefined}>
+        {name}
+      </strong>
+      <small>
+        {prefix} ·{" "}
+        <span className={blur.blurAddress(kind) ? "creator-blur" : undefined}>
+          {email}
+        </span>
+      </small>
+    </span>
   );
 }

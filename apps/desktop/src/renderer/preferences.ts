@@ -1,3 +1,5 @@
+import type { CreatorBlurId } from "./creatorMode";
+import { sanitizeCreatorBlur } from "./creatorMode";
 import type { ShortcutAction, ShortcutPackId } from "./shortcuts";
 
 export type ThemeMode = "dark" | "light" | "system";
@@ -111,6 +113,10 @@ export type Preferences = {
   analytics: boolean;
   crashReports: boolean;
   lockWithWindowsHello: boolean;
+
+  // Creator mode — on-screen blur for recordings. Mail is not modified.
+  creatorMode: boolean;
+  creatorBlur: CreatorBlurId[];
 };
 
 const KEY = "intray.preferences.v2";
@@ -225,6 +231,10 @@ export const defaultPreferences: Preferences = {
   analytics: false,
   crashReports: false,
   lockWithWindowsHello: false,
+
+  creatorMode: false,
+  /** One click of Creator mode blurs every address until the user narrows it. */
+  creatorBlur: ["addresses"],
 };
 
 export const accentColors: Record<AccentId, string> = {
@@ -397,6 +407,14 @@ export function loadPreferences(): Preferences {
     delete parsed.trustedImageSenders;
     if (typeof parsed.downloadRemoteImages !== "boolean") {
       parsed.downloadRemoteImages = defaultPreferences.downloadRemoteImages;
+    }
+    if (typeof saved.creatorMode !== "boolean") {
+      parsed.creatorMode = defaultPreferences.creatorMode;
+    }
+    if (saved.creatorBlur !== undefined) {
+      parsed.creatorBlur = sanitizeCreatorBlur(saved.creatorBlur);
+    } else {
+      parsed.creatorBlur = defaultPreferences.creatorBlur;
     }
     // Notifications shifted from inbox arrivals → snooze / read reminders.
     if (

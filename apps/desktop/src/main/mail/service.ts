@@ -11,6 +11,7 @@ import {
   deleteAccount,
   deleteIdentity,
   deleteMessageById,
+  attachmentMetaKnown,
   getAccountRow,
   getBody,
   getIdentityByEmail,
@@ -34,12 +35,23 @@ import {
   upsertIdentity,
   upsertLabel,
   upsertMessage,
+  upsertRfcHeaders,
   getSyncState,
   upsertSyncState,
   type AccountIdentityRow,
   type AccountRow,
   type MessageRow,
 } from "../db";
+import {
+  indexIncomingMessage,
+  readStoredRfc,
+  rfcFromGmail,
+} from "./threadIndex";
+import {
+  buildReplyReferences,
+  normalizeRfcHeaders,
+  type NormalizedRfc,
+} from "./threading";
 import {
   accountUsesImap,
   isGmailImapAccount,
@@ -74,6 +86,7 @@ import {
 } from "../providers/gmail/oauth";
 import {
   closeImapConnections,
+  fetchImapThreadingHeaders,
   fetchMessageSource,
   findSentMessage,
   parsedToBodies,
@@ -84,13 +97,20 @@ import {
   type ImapChangeAction,
 } from "../providers/imap/client";
 import { imapEnvelopeToRow, mailboxMetaFromRow } from "../providers/imap/map";
+import {
+  attachmentDtos,
+  filesFromCompose,
+  filesFromGmail,
+  filesFromParsed,
+  rememberAttachments,
+} from "./attachments";
 import { presetFor } from "../providers/imap/presets";
 import {
   gmailAppPasswordFormatError,
   isGmailImapTarget,
   normalizeGmailAppPassword,
 } from "../../shared/gmailImap";
-import { parseSearchClauses } from "../../shared/searchQuery";
+import { parseSearchClauses, stripMatchMarkers } from "../../shared/searchQuery";
 import { assertAddressList, buildMessageId, buildRawMessage } from "./mime";
 import { sanitizeEmailHtml } from "./sanitize";
 import {
@@ -139,6 +159,38 @@ function broadcastMailUpdated(message: MessageDto): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("mail:updated", { message });
   }
+}
+
+function notifySearchReady(q: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("mail:search-ready", { q });
+  }
+}
+
+const enrichInflight = new Set<string>();
+const enrichDoneAt = new Map<string, number>();
+
+function scheduleSearchEnrich(query: MailListQuery): void {
+  const q = query.q?.trim();
+  if (!q || !parseSearchClauses(q).some((clause) => clause.field === "from")) {
+    return;
+  }
+  const key = `${query.accountId ?? "all"}:${q}`;
+  const doneAt = enrichDoneAt.get(key) ?? 0;
+  if (Date.now() - doneAt < 60_000) return;
+  if (enrichInflight.has(key)) return;
+  enrichInflight.add(key);
+  void enrichFromSearch(query)
+    .then((changed) => {
+      enrichDoneAt.set(key, Date.now());
+      if (changed) notifySearchReady(q);
+    })
+    .catch(() => {
+      enrichDoneAt.set(key, Date.now());
+    })
+    .finally(() => {
+      enrichInflight.delete(key);
+    });
 }
 
 function withTimeout<T>(
@@ -192,17 +244,26 @@ async function downloadBodyForRow(
 ): Promise<void> {
   if (!usesImap(account)) {
     const full = await getMessageFull(row.account_id, row.provider_id);
-    if (getBody(row.id)) return;
-    // Body only — never re-upsert flags here. Opening a message races
-    // mark-as-read; a stale UNREAD snapshot would undo the local write.
-    const bodies = bodiesFromGmail(full);
-    upsertBody({
-      message_id: row.id,
-      text_plain: bodies.text ?? null,
-      text_html: bodies.html ?? null,
-      fetched_at: new Date().toISOString(),
-    });
-    if (bodies.text) updateFtsBody(row.id, bodies.text);
+    if (!getBody(row.id)) {
+      // Body only — never re-upsert flags here. Opening a message races
+      // mark-as-read; a stale UNREAD snapshot would undo the local write.
+      const bodies = bodiesFromGmail(full);
+      upsertBody({
+        message_id: row.id,
+        text_plain: bodies.text ?? null,
+        text_html: bodies.html ?? null,
+        fetched_at: new Date().toISOString(),
+      });
+      if (bodies.text) updateFtsBody(row.id, bodies.text);
+    }
+    const files = filesFromGmail(full);
+    if (files) {
+      try {
+        rememberAttachments(row.id, files);
+      } catch (error) {
+        console.warn("attachment index failed", error);
+      }
+    }
     return;
   }
 
@@ -214,15 +275,21 @@ async function downloadBodyForRow(
     meta.uid,
     { lane: opts?.background ? "bulk" : "interactive" },
   );
-  if (getBody(row.id)) return;
-  const bodies = parsedToBodies(parsed);
-  upsertBody({
-    message_id: row.id,
-    text_plain: bodies.text,
-    text_html: bodies.html,
-    fetched_at: new Date().toISOString(),
-  });
-  if (bodies.text) updateFtsBody(row.id, bodies.text);
+  if (!getBody(row.id)) {
+    const bodies = parsedToBodies(parsed);
+    upsertBody({
+      message_id: row.id,
+      text_plain: bodies.text,
+      text_html: bodies.html,
+      fetched_at: new Date().toISOString(),
+    });
+    if (bodies.text) updateFtsBody(row.id, bodies.text);
+  }
+  try {
+    rememberAttachments(row.id, filesFromParsed(parsed));
+  } catch (error) {
+    console.warn("attachment index failed", error);
+  }
 }
 
 async function ensureBodyForRow(
@@ -266,6 +333,49 @@ async function ensureBodyForRow(
   });
 
   bucket.set(row.id, task);
+  return task;
+}
+
+const attachmentFetches = new Map<string, Promise<void>>();
+
+/** Older cached bodies predate file indexing. Fetch the source once and store it. */
+async function ensureAttachmentsForRow(
+  row: MessageRow,
+  account: AccountRow | undefined,
+  opts?: { background?: boolean },
+): Promise<void> {
+  if (!account || row.has_attachment !== 1) return;
+  if (attachmentMetaKnown(row.id)) return;
+  const pending = bodyFetches.get(row.id) ?? bodyPrefetches.get(row.id);
+  if (pending) {
+    await pending;
+    if (attachmentMetaKnown(row.id)) return;
+  }
+  if (!getBody(row.id)) {
+    await ensureBodyForRow(row, account, opts);
+    if (attachmentMetaKnown(row.id)) return;
+  }
+  const existing = attachmentFetches.get(row.id);
+  if (existing) return existing;
+  const task = (async () => {
+    try {
+      await withTimeout(
+        downloadBodyForRow(row, account, opts),
+        90_000,
+        "Attachment fetch",
+      );
+    } catch {
+      if (usesImap(account)) {
+        closeImapConnections(
+          row.account_id,
+          opts?.background ? "bulk" : "interactive",
+        );
+      }
+    }
+  })().finally(() => {
+    if (attachmentFetches.get(row.id) === task) attachmentFetches.delete(row.id);
+  });
+  attachmentFetches.set(row.id, task);
   return task;
 }
 
@@ -334,6 +444,14 @@ function backfillThreadBodies(
     if (missing.length) {
       await mapLimit(missing, BODY_FETCH_CONCURRENCY, async (r) => {
         await ensureBodyForRow(r, account);
+      });
+    }
+    const needFiles = rows.filter(
+      (r) => r.has_attachment === 1 && !attachmentMetaKnown(r.id),
+    );
+    if (needFiles.length) {
+      await mapLimit(needFiles, BODY_FETCH_CONCURRENCY, async (r) => {
+        await ensureAttachmentsForRow(r, account);
       });
     }
     const waiting = [...(threadBackfillHeads.get(threadKey) ?? [])];
@@ -517,10 +635,15 @@ function parseRecipients(json: string): RecipientDto[] {
 
 function rowToThreadMessage(
   row: MessageRow,
-  body?: { text_plain: string | null; text_html: string | null },
+  body?: {
+    text_plain: string | null;
+    text_html: string | null;
+    attachments_json?: string | null;
+  },
 ): ThreadMessageDto {
-  const text = body?.text_plain?.trim();
+  const text = body?.text_plain?.replace(/\r\n/g, "\n").trim();
   const html = sanitizeEmailHtml(body?.text_html).trim();
+  const attachments = attachmentDtos(body?.attachments_json);
   return {
     id: row.id,
     from: row.from_name,
@@ -532,8 +655,12 @@ function rowToThreadMessage(
     to: parseRecipients(row.to_json),
     cc: parseRecipients(row.cc_json),
     noTrackers: true,
+    // HTML mail used to drop text/plain. Quick reply then saw only the
+    // stylesheet at the top of the HTML part and reported no body.
     body: html ? undefined : text ? text.split(/\n+/).filter(Boolean) : ["(No body yet)"],
+    bodyText: text ? text.slice(0, 12_000) : undefined,
     bodyHtml: html || undefined,
+    ...(attachments?.length ? { attachments } : {}),
   };
 }
 
@@ -550,6 +677,18 @@ function rowsToMessageDto(
 ): MessageDto {
   const label = head.ui_label_id ? getLabel(head.ui_label_id) : undefined;
   const links = threadLinkCount(threadRows);
+  const latest = threadRows[threadRows.length - 1] ?? head;
+  // A reply lives in Sent, so the inbox row is still the other person.
+  // The snippet and time follow the reply, the way a conversation client does.
+  const youReplied =
+    head.folder !== "sent" &&
+    head.folder !== "snoozed" &&
+    latest.id !== head.id &&
+    latest.folder === "sent" &&
+    latest.date_ms >= head.date_ms;
+  const preview = youReplied
+    ? `You: ${latest.snippet || head.snippet}`
+    : head.snippet;
   return {
     id: head.id,
     accountId: head.account_id,
@@ -559,7 +698,7 @@ function rowsToMessageDto(
     avatarUrl: lookupAvatarUrl(head.from_email),
     email: head.from_email,
     subject: head.subject,
-    preview: head.snippet,
+    preview,
     time:
       head.folder === "snoozed" && head.snooze_until_ms
         ? `Until ${new Date(head.snooze_until_ms).toLocaleString(undefined, {
@@ -568,7 +707,7 @@ function rowsToMessageDto(
             hour: "numeric",
             minute: "2-digit",
           })}`
-        : formatRelativeTime(head.date_ms),
+        : formatRelativeTime(youReplied ? latest.date_ms : head.date_ms),
     // Thread is unread if any message in it is — matches sidebar badges
     // (conversation counts) and avoids "all rows look read, badge still high".
     unread: threadRows.some((r) => r.unread === 1) || head.unread === 1,
@@ -1117,6 +1256,20 @@ export async function clearAccountAvatar(
 /** One warm-up per folder view. Later refreshes must not re-download bodies. */
 const warmedListKeys = new Set<string>();
 
+/** Newest activity in the conversation, including a reply that lives in Sent. */
+function sortHeadsByActivity(heads: MessageRow[]): MessageRow[] {
+  const scored = heads.map((head) => {
+    const thread = listThreadMessages(head.account_id, head.thread_id);
+    const latest = thread.reduce(
+      (max, row) => Math.max(max, row.date_ms),
+      head.date_ms,
+    );
+    return { head, latest };
+  });
+  scored.sort((a, b) => b.latest - a.latest);
+  return scored.map((item) => item.head);
+}
+
 function listHeadDtos(
   heads: MessageRow[],
   warmMissing: boolean,
@@ -1141,14 +1294,14 @@ function listHeadDtos(
  * window. Expand names via contacts, then ask the provider for matching FROM
  * envelopes and index them before the local query runs.
  */
-async function enrichFromSearch(query: MailListQuery): Promise<void> {
+async function enrichFromSearch(query: MailListQuery): Promise<boolean> {
   const q = query.q?.trim();
-  if (!q) return;
+  if (!q) return false;
   const fromValues = parseSearchClauses(q)
     .filter((c) => c.field === "from")
     .map((c) => c.value.trim())
     .filter(Boolean);
-  if (!fromValues.length) return;
+  if (!fromValues.length) return false;
 
   const searchTerms = new Set<string>();
   for (const value of fromValues) {
@@ -1158,7 +1311,8 @@ async function enrichFromSearch(query: MailListQuery): Promise<void> {
     for (const token of expanded.nameTokens) searchTerms.add(token);
   }
   const terms = [...searchTerms].slice(0, 8);
-  if (!terms.length) return;
+  if (!terms.length) return false;
+  let changed = false;
 
   const accounts = listAccountRows().filter((a) => {
     if (query.accountId && query.accountId !== "all") {
@@ -1180,8 +1334,19 @@ async function enrichFromSearch(query: MailListQuery): Promise<void> {
           });
           for (const env of envelopes) {
             const row = imapEnvelopeToRow(account.id, env);
-            const wrote = upsertMessage(row);
-            if (wrote) noteSender(row.from_email, row.from_name);
+            const wrote = indexIncomingMessage(
+              row,
+              {
+                messageId: env.messageId,
+                inReplyTo: env.inReplyTo,
+                references: env.references,
+              },
+              { providerThread: Boolean(env.gmThrId) },
+            );
+            if (wrote) {
+              changed = true;
+              noteSender(row.from_email, row.from_name);
+            }
           }
           return;
         }
@@ -1196,8 +1361,20 @@ async function enrichFromSearch(query: MailListQuery): Promise<void> {
               try {
                 const meta = await getMessageMeta(account.id, m.id);
                 const row = gmailMessageToRow(account.id, meta);
-                const wrote = upsertMessage(row);
-                if (wrote) noteSender(row.from_email, row.from_name);
+                const headers = rfcFromGmail(meta);
+                const wrote = indexIncomingMessage(
+                  row,
+                  {
+                    messageId: headers.rfcMessageId,
+                    inReplyTo: headers.inReplyTo,
+                    references: headers.references,
+                  },
+                  { providerThread: true },
+                );
+                if (wrote) {
+                  changed = true;
+                  noteSender(row.from_email, row.from_name);
+                }
               } catch {
                 /* skip one bad id */
               }
@@ -1209,31 +1386,45 @@ async function enrichFromSearch(query: MailListQuery): Promise<void> {
       }
     }),
   );
+  return changed;
 }
 
 export async function listMail(query: MailListQuery): Promise<MailListResult> {
   const beforeDateMs = query.cursor ? Number(query.cursor) : undefined;
   if (query.q?.trim()) {
-    await enrichFromSearch(query);
+    const q = query.q.trim();
+    scheduleSearchEnrich(query);
     // Fielded search is cross-folder; allow a larger page so from:/subject:
-    // filters aren't capped to the normal inbox window.
+    // filters aren't capped to the normal inbox window. Local results return
+    // immediately. Provider from: hits arrive on mail:search-ready.
     const searchLimit = Math.min(query.limit ?? 250, 500);
-    const rows = searchMessageRows(query.q, {
+    const matches = searchMessageRows(q, {
       accountId: query.accountId,
       limit: searchLimit * 3,
     });
-    // Collapse to newest per thread
+    // Keep the best-ranked message in each thread. Date is already the tie-break.
     const seen = new Set<string>();
     const heads: MessageRow[] = [];
-    for (const r of rows) {
-      const key = `${r.account_id}:${r.thread_id}`;
+    const snippets = new Map<string, string>();
+    for (const match of matches) {
+      const key = `${match.row.account_id}:${match.row.thread_id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      heads.push(r);
+      heads.push(match.row);
+      if (match.snippet) snippets.set(match.row.id, match.snippet);
       if (heads.length >= searchLimit) break;
     }
+    const messages = listHeadDtos(heads, false).map((message) => {
+      const marked = snippets.get(message.id);
+      if (!marked) return message;
+      return {
+        ...message,
+        preview: stripMatchMarkers(marked),
+        matchPreview: marked,
+      };
+    });
     return {
-      messages: listHeadDtos(heads, false),
+      messages,
       nextCursor: null,
       total: heads.length,
     };
@@ -1264,10 +1455,11 @@ export async function listMail(query: MailListQuery): Promise<MailListResult> {
     warmedListKeys.add(warmKey);
     warm = true;
   }
-  const messages = listHeadDtos(heads, warm);
-
   const nextCursor =
-    heads.length > 0 ? String(heads[heads.length - 1].date_ms) : null;
+    heads.length > 0
+      ? String(Math.min(...heads.map((head) => head.date_ms)))
+      : null;
+  const messages = listHeadDtos(sortHeadsByActivity(heads), warm);
 
   return { messages, nextCursor, total };
 }
@@ -1314,6 +1506,21 @@ export async function getMail(
   // Reader expands the latest message by default (thread is date ASC).
   const primary = rows[rows.length - 1] ?? head;
   await ensureBodyForRow(primary, account);
+  // A body downloaded just now already indexed its files. Cached bodies from
+  // before previews existed need a second fetch — don't hold the reader for it.
+  const needFiles = rows.filter(
+    (r) => r.has_attachment === 1 && !attachmentMetaKnown(r.id),
+  );
+  if (needFiles.length) {
+    void mapLimit(needFiles, BODY_FETCH_CONCURRENCY, async (r) => {
+      await ensureAttachmentsForRow(r, account);
+    })
+      .then(() => {
+        const next = buildMessageDto(messageId);
+        if (next) broadcastMailUpdated(next);
+      })
+      .catch(() => undefined);
+  }
 
   const dto = buildMessageDto(messageId);
   if (!dto) return null;
@@ -1525,12 +1732,127 @@ export async function mutateMail(
 
 type SendOptions = { messageId?: string; retry?: boolean };
 
+type ReplyContext = {
+  parentId: string;
+  threadId: string;
+  /** Parent Message-ID, written as In-Reply-To on the reply. */
+  inReplyTo: string | null;
+  /** Ancestor ids, root first, including the parent. */
+  references: string[];
+  /** Gmail API thread id. Omitted unless In-Reply-To names a message in it. */
+  gmailThreadId?: string;
+};
+
+function recordOutgoingRfc(
+  row: MessageRow,
+  rfcMessageId: string | undefined,
+  context: ReplyContext | null,
+): void {
+  const headers = normalizeRfcHeaders({
+    messageId: rfcMessageId,
+    inReplyTo: context?.inReplyTo,
+    references: context?.references,
+  });
+  if (!headers.rfcMessageId && !headers.inReplyTo && !headers.references.length) {
+    return;
+  }
+  upsertRfcHeaders({
+    messageId: row.id,
+    accountId: row.account_id,
+    rfcMessageId: headers.rfcMessageId,
+    inReplyTo: headers.inReplyTo,
+    references: headers.references,
+  });
+}
+
+async function fetchParentRfc(
+  account: AccountRow,
+  parent: MessageRow,
+): Promise<NormalizedRfc | null> {
+  if (parent.provider_id.startsWith("local-sent:")) {
+    return readStoredRfc(parent.id);
+  }
+  if (!usesImap(account)) {
+    const meta = await getMessageMeta(account.id, parent.provider_id);
+    return rfcFromGmail(meta);
+  }
+  const mailbox = mailboxMetaFromRow(parent);
+  if (!mailbox) return null;
+  const raw = await fetchImapThreadingHeaders(
+    account.id,
+    mailbox.mailbox,
+    mailbox.uid,
+  );
+  return normalizeRfcHeaders(raw);
+}
+
+/** Join a reply to the conversation the user is reading, and build its headers. */
+async function loadReplyContext(
+  account: AccountRow,
+  draft: ComposeDraft,
+): Promise<ReplyContext | null> {
+  const parentId = draft.replyToMessageId;
+  if (!parentId) return null;
+  const parent = getMessageRow(parentId);
+  if (!parent || parent.account_id !== account.id) return null;
+
+  let stored = readStoredRfc(parent.id);
+  if (!stored?.rfcMessageId) {
+    const fetched = await withTimeout(
+      fetchParentRfc(account, parent),
+      12_000,
+      "Reply headers",
+    ).catch(() => null);
+    if (
+      fetched &&
+      (fetched.rfcMessageId || fetched.inReplyTo || fetched.references.length)
+    ) {
+      upsertRfcHeaders({
+        messageId: parent.id,
+        accountId: parent.account_id,
+        rfcMessageId: fetched.rfcMessageId,
+        inReplyTo: fetched.inReplyTo,
+        references: fetched.references,
+      });
+      stored = fetched;
+    }
+  }
+
+  const references = buildReplyReferences(stored);
+  const inReplyTo = stored?.rfcMessageId ?? null;
+  const gmailThreadId =
+    !usesImap(account) && inReplyTo && /^[A-Za-z0-9]+$/.test(parent.thread_id)
+      ? parent.thread_id
+      : undefined;
+  return {
+    parentId: parent.id,
+    threadId: parent.thread_id,
+    inReplyTo,
+    references,
+    gmailThreadId,
+  };
+}
+
+/** The open conversation, with the reply already in it. */
+async function dtoForReply(
+  context: ReplyContext | null,
+  sentId: string,
+): Promise<MessageDto> {
+  const anchor = context?.parentId ?? sentId;
+  const dto = (await getMail(anchor)) ?? (await getMail(sentId));
+  if (!dto) throw new Error("Sent message missing from store");
+  broadcastMailUpdated(dto);
+  return dto;
+}
+
 /** Local sent copy used until the provider sync indexes the real message. */
 function persistSentDraft(
   account: AccountRow,
   draft: ComposeDraft,
   providerId: string,
   from?: { fromName: string; fromEmail: string },
+  context?: ReplyContext | null,
+  rfcMessageId?: string,
 ): MessageRow {
   const now = Date.now();
   const resolved = from ?? resolveSendFrom(account, draft);
@@ -1539,7 +1861,7 @@ function persistSentDraft(
   const row: MessageRow = {
     id: `${account.id}:${providerId}`,
     account_id: account.id,
-    thread_id: providerId,
+    thread_id: context?.threadId || providerId,
     provider_id: providerId,
     folder: "sent",
     subject: draft.subject || "(no subject)",
@@ -1572,6 +1894,12 @@ function persistSentDraft(
     text_html: draft.bodyHtml ?? null,
     fetched_at: new Date().toISOString(),
   });
+  try {
+    rememberAttachments(row.id, filesFromCompose(draft.attachments));
+  } catch (error) {
+    console.warn("attachment index failed", error);
+  }
+  recordOutgoingRfc(row, rfcMessageId, context ?? null);
   return row;
 }
 
@@ -1579,13 +1907,30 @@ async function storeGmailSent(
   account: AccountRow,
   draft: ComposeDraft,
   gmailId: string,
+  context: ReplyContext | null,
+  rfcMessageId?: string,
 ): Promise<MessageDto> {
   // Once Gmail accepted the message, indexing failure must never surface as a
   // send failure — the outbox would retry and duplicate the mail.
   try {
     const full = await getMessageFull(account.id, gmailId);
     const row = gmailMessageToRow(account.id, full);
+    if (context?.threadId) row.thread_id = context.threadId;
     upsertMessage(row);
+    const fromServer = rfcFromGmail(full);
+    const headers = normalizeRfcHeaders({
+      messageId: fromServer.rfcMessageId ?? rfcMessageId,
+      inReplyTo: fromServer.inReplyTo ?? context?.inReplyTo,
+      references: fromServer.references.length
+        ? fromServer.references
+        : context?.references,
+    });
+    recordOutgoingRfc(row, headers.rfcMessageId ?? undefined, {
+      parentId: context?.parentId ?? row.id,
+      threadId: row.thread_id,
+      inReplyTo: headers.inReplyTo,
+      references: headers.references,
+    });
     const bodies = bodiesFromGmail(full);
     upsertBody({
       message_id: row.id,
@@ -1593,15 +1938,30 @@ async function storeGmailSent(
       text_html: bodies.html ?? null,
       fetched_at: new Date().toISOString(),
     });
-    const dto = await getMail(row.id);
-    if (dto) return dto;
+    try {
+      const fromDraft = filesFromCompose(draft.attachments);
+      if (fromDraft.length) {
+        rememberAttachments(row.id, fromDraft);
+      } else {
+        const files = filesFromGmail(full);
+        if (files) rememberAttachments(row.id, files);
+      }
+    } catch (error) {
+      console.warn("attachment index failed", error);
+    }
+    return dtoForReply(context, row.id);
   } catch {
     /* fall back to the local sent copy */
   }
-  const row = persistSentDraft(account, draft, gmailId);
-  const dto = await getMail(row.id);
-  if (!dto) throw new Error("Sent message missing from store");
-  return dto;
+  const row = persistSentDraft(
+    account,
+    draft,
+    gmailId,
+    undefined,
+    context,
+    rfcMessageId,
+  );
+  return dtoForReply(context, row.id);
 }
 
 export async function sendMail(
@@ -1637,6 +1997,7 @@ export async function sendMail(
 
   const from = resolveSendFrom(account, safeDraft);
   const messageId = opts.messageId ?? buildMessageId(from.fromEmail);
+  const context = await loadReplyContext(account, safeDraft);
 
   if (!usesImap(account)) {
     // Idempotency: on a retry, check whether Gmail already has this Message-ID
@@ -1645,7 +2006,9 @@ export async function sendMail(
       const existing = await findMessageIdByRfc822(account.id, messageId).catch(
         () => null,
       );
-      if (existing) return storeGmailSent(account, safeDraft, existing);
+      if (existing) {
+        return storeGmailSent(account, safeDraft, existing, context, messageId);
+      }
     }
 
     const built = buildRawMessage({
@@ -1657,24 +2020,46 @@ export async function sendMail(
       text: draft.bodyText,
       html: draft.bodyHtml,
       messageId,
+      inReplyTo: context?.inReplyTo ?? undefined,
+      references: context?.references,
       attachments: draft.attachments?.map((a) => ({
         filename: a.filename,
         contentType: a.contentType,
         contentBase64: a.contentBase64,
       })),
     });
-    const sent = await sendRawMessage(account.id, built.raw);
-    return storeGmailSent(account, safeDraft, sent.id);
+    let sent: { id: string };
+    try {
+      sent = await sendRawMessage(
+        account.id,
+        built.raw,
+        context?.gmailThreadId,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A stale thread id must not fail the send. Headers still thread it.
+      if (context?.gmailThreadId && /→ 400/.test(message)) {
+        sent = await sendRawMessage(account.id, built.raw);
+      } else {
+        throw error;
+      }
+    }
+    return storeGmailSent(account, safeDraft, sent.id, context, messageId);
   }
 
   // Same idempotency idea for SMTP, using the Sent folder when the provider
   // supports header search.
   if (opts.retry && (await findSentMessage(account.id, messageId))) {
     const providerId = `local-sent:${messageId.replace(/[<>\s]/g, "")}`;
-    const row = persistSentDraft(account, safeDraft, providerId, from);
-    const dto = await getMail(row.id);
-    if (!dto) throw new Error("Sent message missing from store");
-    return dto;
+    const row = persistSentDraft(
+      account,
+      safeDraft,
+      providerId,
+      from,
+      context,
+      messageId,
+    );
+    return dtoForReply(context, row.id);
   }
 
   await sendSmtp(account.id, {
@@ -1687,15 +2072,22 @@ export async function sendMail(
     bodyText: draft.bodyText,
     bodyHtml: draft.bodyHtml,
     messageId,
+    inReplyTo: context?.inReplyTo ?? undefined,
+    references: context?.references,
     attachments: draft.attachments,
   });
 
   const providerId = `local-sent:${messageId.replace(/[<>\s]/g, "")}`;
-  const row = persistSentDraft(account, safeDraft, providerId, from);
+  const row = persistSentDraft(
+    account,
+    safeDraft,
+    providerId,
+    from,
+    context,
+    messageId,
+  );
   void syncAccount(account.id).catch(() => undefined);
-  const dto = await getMail(row.id);
-  if (!dto) throw new Error("Sent message missing from store");
-  return dto;
+  return dtoForReply(context, row.id);
 }
 
 export async function triggerSync(accountId?: string): Promise<void> {

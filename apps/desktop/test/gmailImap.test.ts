@@ -172,14 +172,16 @@ describe("Gmail folders", () => {
 });
 
 describe("IMAP unread signals", () => {
-  test("prefers Gmail \\Unread over \\Seen when labels are present", () => {
-    expect(unreadFromImapSignals(["\\Seen"], ["\\Inbox", "\\Unread"])).toBe(1);
+  test("trusts \\Seen even when Gmail still lists \\Unread", () => {
+    // Mail read in Gmail on the web keeps a stale \Unread label; \Seen is the
+    // truth, otherwise the message looks unread again after the next sync.
+    expect(unreadFromImapSignals(["\\Seen"], ["\\Inbox", "\\Unread"])).toBe(0);
     expect(unreadFromImapSignals([], ["\\Inbox", "\\Unread"])).toBe(1);
-    expect(unreadFromImapSignals([], ["\\Inbox"])).toBe(0);
+    expect(unreadFromImapSignals([], ["\\Inbox"])).toBe(1);
     expect(unreadFromImapSignals(["\\Seen"], ["\\Inbox"])).toBe(0);
   });
 
-  test("falls back to \\Seen when labels are unavailable", () => {
+  test("works when labels are unavailable", () => {
     expect(unreadFromImapSignals(["\\Seen"])).toBe(0);
     expect(unreadFromImapSignals([])).toBe(1);
     expect(unreadFromImapSignals(["\\Flagged"])).toBe(1);

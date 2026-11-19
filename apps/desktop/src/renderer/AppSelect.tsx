@@ -27,6 +27,10 @@ type Props<T extends string> = {
   compact?: boolean;
   /** Optional trailing node outside the menu (e.g. account chip). */
   trailing?: ReactNode;
+  /** Blur the detail line (creator mode — own addresses). */
+  detailBlurred?: boolean;
+  /** Blur the selected name (creator mode). */
+  labelBlurred?: boolean;
 };
 
 type MenuPos = {
@@ -45,6 +49,8 @@ export function AppSelect<T extends string>({
   className,
   compact,
   trailing,
+  detailBlurred = false,
+  labelBlurred = false,
 }: Props<T>) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -203,9 +209,17 @@ export function AppSelect<T extends string>({
                     <span className="app-select-leading">{o.leading}</span>
                   ) : null}
                   <span className="app-select-copy">
-                    <span className="app-select-label">{o.label}</span>
+                    <span
+                      className={`app-select-label${labelBlurred ? " creator-blur" : ""}`}
+                    >
+                      {o.label}
+                    </span>
                     {o.detail ? (
-                      <span className="app-select-detail">{o.detail}</span>
+                      <span
+                        className={`app-select-detail${detailBlurred ? " creator-blur" : ""}`}
+                      >
+                        {o.detail}
+                      </span>
                     ) : null}
                   </span>
                   {isSelected ? (
@@ -251,9 +265,17 @@ export function AppSelect<T extends string>({
           <span className="app-select-leading">{selected.leading}</span>
         ) : null}
         <span className="app-select-copy">
-          <span className="app-select-label">{selected?.label ?? "Select"}</span>
+          <span
+            className={`app-select-label${labelBlurred ? " creator-blur" : ""}`}
+          >
+            {selected?.label ?? "Select"}
+          </span>
           {selected?.detail ? (
-            <span className="app-select-detail">{selected.detail}</span>
+            <span
+              className={`app-select-detail${detailBlurred ? " creator-blur" : ""}`}
+            >
+              {selected.detail}
+            </span>
           ) : null}
         </span>
         <ChevronDown size={14} strokeWidth={1.75} className="app-select-caret" />

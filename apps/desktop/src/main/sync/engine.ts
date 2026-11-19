@@ -3,13 +3,16 @@ import { noteSender } from "../avatars";
 import { accountUsesImap, isGmailImapAccount } from "../crypto/credentials";
 import {
   deleteMessageByProviderId,
+  applyServerUnread,
+  deleteRedundantMailboxRows,
   getAccountRow,
   getSyncState,
+  listMessageMailboxRefs,
   recountUnread,
-  upsertMessage,
   upsertSyncState,
   type MessageRow,
 } from "../db";
+import { indexIncomingMessage, rfcFromGmail } from "../mail/threadIndex";
 import {
   getMessageMeta,
   getProfile,
@@ -17,8 +20,14 @@ import {
   listMessageIds,
 } from "../providers/gmail/client";
 import { gmailMessageToRow } from "../providers/gmail/map";
-import { listImapMailboxes, listRecentEnvelopes } from "../providers/imap/client";
+import {
+  listImapMailboxes,
+  listRecentEnvelopes,
+  listStoredEnvelopeFlags,
+  searchUnseenUids,
+} from "../providers/imap/client";
 import { imapEnvelopeToRow } from "../providers/imap/map";
+import { normalizeFolderPath } from "../providers/imap/presets";
 import {
   explainGmailImapError,
   gmailSyncMailboxes,
@@ -152,7 +161,16 @@ async function ingestGmailIds(
     try {
       const meta = await getMessageMeta(accountId, id);
       const row = gmailMessageToRow(accountId, meta);
-      upsertMessage(row);
+      const headers = rfcFromGmail(meta);
+      indexIncomingMessage(
+        row,
+        {
+          messageId: headers.rfcMessageId,
+          inReplyTo: headers.inReplyTo,
+          references: headers.references,
+        },
+        { providerThread: true },
+      );
       rememberSender(row);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -337,6 +355,85 @@ function recentRefreshBudget(
   return box.role === "all" ? 80 : 20;
 }
 
+/**
+ * Full flag reconciliation cadence. Reading mail in Gmail's web UI (or any
+ * other client) changes no UIDs, so without re-reading the flags of messages
+ * we already stored, an old message stays unread in Intray forever.
+ */
+const RECONCILE_MIN_MS = 5 * 60_000;
+const reconcileAt = new Map<string, number>();
+
+function reconcileDue(accountId: string): boolean {
+  const now = Date.now();
+  const last = reconcileAt.get(accountId) ?? 0;
+  if (now - last < RECONCILE_MIN_MS) return false;
+  reconcileAt.set(accountId, now);
+  return true;
+}
+
+/** Mailbox role for a stored row, including mailboxes we no longer sync. */
+function storedMailboxRole(path: string, targets: SyncMailbox[]): MailboxRole {
+  const target = targets.find((box) => box.path === path);
+  if (target) return target.role;
+  switch (normalizeFolderPath(path)) {
+    case "sent":
+      return "sent";
+    case "drafts":
+      return "drafts";
+    case "junk":
+      return "junk";
+    case "trash":
+      return "trash";
+    case "inbox":
+      return "inbox";
+    default:
+      return "other";
+  }
+}
+
+/**
+ * Re-read flags/labels for every stored IMAP message, grouped by mailbox.
+ * Bounded by how much mail the local store actually keeps.
+ */
+async function reconcileImapFlags(
+  accountId: string,
+  gmail: boolean,
+  targets: SyncMailbox[],
+): Promise<void> {
+  const byMailbox = new Map<string, number[]>();
+  for (const ref of listMessageMailboxRefs(accountId)) {
+    const uids = byMailbox.get(ref.mailbox) ?? [];
+    uids.push(ref.uid);
+    byMailbox.set(ref.mailbox, uids);
+  }
+
+  for (const [mailbox, uids] of byMailbox) {
+    try {
+      const envelopes = await listStoredEnvelopeFlags(accountId, {
+        mailbox,
+        uids,
+        gmail,
+        role: storedMailboxRole(mailbox, targets),
+      });
+      for (const env of envelopes) {
+        const row = imapEnvelopeToRow(accountId, env);
+        indexIncomingMessage(
+          row,
+          {
+            messageId: env.messageId,
+            inReplyTo: env.inReplyTo,
+            references: env.references,
+          },
+          { providerThread: Boolean(env.gmThrId), flagsOnly: true },
+        );
+      }
+    } catch {
+      // Mailbox removed or renamed since it was indexed: leave those rows
+      // alone rather than failing the whole sync pass.
+    }
+  }
+}
+
 /** Resolved mailbox targets are stable; LIST on every poll is wasted I/O. */
 const imapTargetsCache = new Map<string, { at: number; targets: SyncMailbox[] }>();
 const IMAP_TARGETS_TTL_MS = 10 * 60_000;
@@ -407,6 +504,48 @@ function mailboxIsCritical(box: SyncMailbox, targets: SyncMailbox[]): boolean {
   return box.role === "inbox" || box.path.toUpperCase() === "INBOX";
 }
 
+/**
+ * Make local unread match the server. Gmail is asked for unseen mail that is
+ * still in the inbox (All Mail UIDs). Every other inbox, including leftover
+ * Gmail INBOX copies, is an ordinary UNSEEN search. A rejected search leaves
+ * local state alone.
+ */
+async function syncServerReadState(
+  accountId: string,
+  gmail: boolean,
+  targets: SyncMailbox[],
+): Promise<void> {
+  const boxes = new Map<string, { gmailInbox: boolean }>();
+  for (const box of targets) {
+    if (gmail && box.role === "all") boxes.set(box.path, { gmailInbox: true });
+    else if (box.role === "inbox" || box.path.toUpperCase() === "INBOX") {
+      boxes.set(box.path, { gmailInbox: false });
+    }
+  }
+  if (gmail) {
+    for (const ref of listMessageMailboxRefs(accountId)) {
+      if (ref.mailbox.toUpperCase() === "INBOX" && !boxes.has(ref.mailbox)) {
+        boxes.set(ref.mailbox, { gmailInbox: false });
+      }
+    }
+  }
+
+  for (const [mailbox, opts] of boxes) {
+    try {
+      const uids = await searchUnseenUids(accountId, mailbox, opts);
+      if (!uids) continue;
+      applyServerUnread(
+        accountId,
+        mailbox,
+        new Set(uids),
+        opts.gmailInbox ? "gmail-inbox" : "mailbox",
+      );
+    } catch {
+      // Connection or search failed. Keep the previous read bits.
+    }
+  }
+}
+
 async function syncImap(accountId: string): Promise<void> {
   setStatus(accountId, {
     status: "syncing",
@@ -450,7 +589,18 @@ async function syncImap(accountId: string): Promise<void> {
       });
       for (const env of slice.envelopes) {
         const row = imapEnvelopeToRow(accountId, env);
-        const wrote = upsertMessage(row, { flagsOnly: env.partial === true });
+        const wrote = indexIncomingMessage(
+          row,
+          {
+            messageId: env.messageId,
+            inReplyTo: env.inReplyTo,
+            references: env.references,
+          },
+          {
+            providerThread: Boolean(env.gmThrId),
+            flagsOnly: env.partial === true,
+          },
+        );
         if (!wrote) continue;
         if (!env.partial) rememberSender(row);
         total += 1;
@@ -480,6 +630,25 @@ async function syncImap(accountId: string): Promise<void> {
   for (const path of Object.keys(nextCursor)) {
     if (!targets.some((box) => box.path === path)) delete nextCursor[path];
   }
+
+  // Read/star changes made elsewhere produce no new UID, so re-read the flags
+  // of what we already store. Gmail also drops duplicate copies left behind by
+  // an older sync that indexed a different mailbox for the same message.
+  try {
+    if (gmail && targets.some((box) => box.role === "all")) {
+      deleteRedundantMailboxRows(
+        accountId,
+        targets.map((box) => box.path),
+      );
+    }
+    if (reconcileDue(accountId)) {
+      await reconcileImapFlags(accountId, gmail, targets);
+    }
+  } catch {
+    // Flag refresh is best-effort. The unseen search below is what the badge uses.
+  }
+  // Authoritative read bit: the server's UNSEEN set, not "never opened here".
+  await syncServerReadState(accountId, gmail, targets);
 
   // A failing Sent folder shouldn't mask a healthy inbox, but a failing inbox
   // (or Gmail All Mail) must surface as an account error so the poller backs

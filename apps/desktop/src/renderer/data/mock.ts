@@ -42,8 +42,12 @@ export type Recipient = {
 };
 
 export type MailAttachment = {
+  id?: string;
   name: string;
   size: string;
+  bytes?: number;
+  contentType?: string;
+  kind?: "image" | "pdf" | "text" | "audio" | "video" | "other";
 };
 
 export type MailMeeting = {
@@ -67,6 +71,8 @@ export type ThreadMessage = {
   noTrackers?: boolean;
   /** Plain paragraphs when no HTML */
   body?: string[];
+  /** text/plain part. Present for HTML mail so AI can read it without the stylesheet. */
+  bodyText?: string;
   /** HTML email body (newsletters, rich mail) */
   bodyHtml?: string;
   /** @deprecated prefer attachments[] */
@@ -99,6 +105,8 @@ export type Message = {
   email: string;
   subject: string;
   preview: string;
+  /** Matching passage with \u0001 \u0002 around the words that hit. */
+  matchPreview?: string;
   time: string;
   unread: boolean;
   important: boolean;

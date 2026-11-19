@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bell,
   Bot,
+  Clapperboard,
   Download,
   ExternalLink,
   FileText,
@@ -63,6 +64,15 @@ import {
   hasIntrayBridge,
 } from "./mailApi";
 import { ProviderLogo, providerById, type ProviderId } from "./providers";
+import {
+  CREATOR_BLUR_OPTIONS,
+  shouldBlurAddress,
+  shouldBlurName,
+  shouldBlurPreview,
+  shouldBlurSubject,
+  type CreatorBlurId,
+  type MailKind,
+} from "./creatorMode";
 import {
   accentColors,
   aiBridgeMeta,
@@ -223,6 +233,7 @@ function Select<T extends string | number>({
 
 type TabId =
   | "appearance"
+  | "creator"
   | "inbox"
   | "notifications"
   | "compose"
@@ -240,6 +251,7 @@ const SETTINGS_TABS: {
   group: string;
 }[] = [
   { id: "appearance", label: "Appearance", Icon: Moon, group: "Workspace" },
+  { id: "creator", label: "Creator", Icon: Clapperboard, group: "Workspace" },
   { id: "inbox", label: "Inbox", Icon: LayoutGrid, group: "Mail" },
   { id: "notifications", label: "Notifications", Icon: Bell, group: "Mail" },
   { id: "compose", label: "Compose", Icon: FileText, group: "Mail" },
@@ -343,6 +355,124 @@ function credentialGuide(account: Account) {
       "Remove wipes the stored app password and local copies of this mailbox.",
     ],
   };
+}
+
+function CreatorSettings({
+  prefs,
+  patch,
+}: {
+  prefs: Preferences;
+  patch: (partial: Partial<Preferences>) => void;
+}) {
+  const previewPrefs = {
+    creatorMode: true as const,
+    creatorBlur: prefs.creatorBlur,
+  };
+  const mask = (kind: MailKind, field: "name" | "address" | "subject" | "preview") => {
+    if (field === "name") return shouldBlurName(previewPrefs, kind);
+    if (field === "address") return shouldBlurAddress(previewPrefs, kind);
+    if (field === "subject") return shouldBlurSubject(previewPrefs, kind);
+    return shouldBlurPreview(previewPrefs, kind);
+  };
+  const toggleBlur = (id: CreatorBlurId, on: boolean) => {
+    const next = on
+      ? prefs.creatorBlur.includes(id)
+        ? prefs.creatorBlur
+        : [...prefs.creatorBlur, id]
+      : prefs.creatorBlur.filter((item) => item !== id);
+    patch({ creatorBlur: next });
+  };
+
+  return (
+    <>
+      <div className="creator-intro">
+        <Clapperboard size={15} strokeWidth={1.75} />
+        <p>
+          Blur names and addresses on screen while you record or share. The mail
+          itself is not changed, and Settings stays readable.
+        </p>
+      </div>
+      <Block
+        title="Creator mode"
+        hint="One click applies the options below across the inbox, reader, and compose window. Click the clapperboard in the title bar to flip it while you record."
+      >
+        <Row
+          title="Creator mode"
+          hint={
+            prefs.creatorMode
+              ? "On — matching details are blurred."
+              : "Off — the inbox is fully readable."
+          }
+        >
+          <Toggle
+            on={prefs.creatorMode}
+            onChange={(creatorMode) => {
+              if (creatorMode && prefs.creatorBlur.length === 0) {
+                patch({ creatorMode: true, creatorBlur: ["addresses"] });
+                return;
+              }
+              patch({ creatorMode });
+            }}
+          />
+        </Row>
+      </Block>
+      <Block
+        title="What to blur"
+        hint="Turn on several at once. All email addresses already includes personal, marketing, and your accounts. Use Personal or Marketing on their own when you want the other kind to stay sharp."
+      >
+        {CREATOR_BLUR_OPTIONS.map((option) => (
+          <Row key={option.id} title={option.title} hint={option.hint}>
+            <Toggle
+              on={prefs.creatorBlur.includes(option.id)}
+              onChange={(on) => toggleBlur(option.id, on)}
+            />
+          </Row>
+        ))}
+        <div className="creator-preview" aria-hidden>
+          <div className="creator-preview-row">
+            <span className={mask("personal", "name") ? "creator-blur" : undefined}>
+              Ava Martin
+            </span>
+            <span className={mask("personal", "address") ? "creator-blur" : undefined}>
+              ava@northwind.io
+            </span>
+          </div>
+          <div className="creator-preview-row">
+            <span className={mask("marketing", "name") ? "creator-blur" : undefined}>
+              GitHub
+            </span>
+            <span
+              className={mask("marketing", "address") ? "creator-blur" : undefined}
+            >
+              noreply@github.com
+            </span>
+          </div>
+          <div className="creator-preview-row">
+            <span className={mask("own", "name") ? "creator-blur" : undefined}>
+              You
+            </span>
+            <span className={mask("own", "address") ? "creator-blur" : undefined}>
+              you@gmail.com
+            </span>
+          </div>
+          <div className="creator-preview-row">
+            <span className={mask("personal", "subject") ? "creator-blur" : undefined}>
+              Subject · Thursday review
+            </span>
+          </div>
+          <div className="creator-preview-row">
+            <span className={mask("personal", "preview") ? "creator-blur" : undefined}>
+              Preview · Sending the latest draft
+            </span>
+          </div>
+        </div>
+        <p className="settings-inline-note creator-preview-note">
+          Preview uses the options above. The inbox changes only while creator
+          mode is on.
+        </p>
+      </Block>
+    </>
+  );
 }
 
 export function SettingsModal({
@@ -965,7 +1095,10 @@ export function SettingsModal({
                       ]}
                     />
                   </Row>
-                  <Row title="Reading width">
+                  <Row
+                    title="Reading width"
+                    hint="Narrow keeps a short column. Medium and Wide use the width of the pane."
+                  >
                     <Select
                       value={prefs.readingWidth}
                       onChange={(readingWidth) => patch({ readingWidth })}
@@ -1038,6 +1171,10 @@ export function SettingsModal({
                   </Row>
                 </Block>
               </>
+            )}
+
+            {tab === "creator" && (
+              <CreatorSettings prefs={prefs} patch={patch} />
             )}
 
             {tab === "inbox" && (

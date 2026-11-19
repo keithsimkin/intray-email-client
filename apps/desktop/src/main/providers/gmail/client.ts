@@ -151,7 +151,7 @@ export async function getMessageMeta(
 ): Promise<GmailMessage> {
   return gmailFetch(
     accountId,
-    `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Date`,
+    `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Message-ID&metadataHeaders=In-Reply-To&metadataHeaders=References`,
   );
 }
 
@@ -160,6 +160,23 @@ export async function getMessageFull(
   id: string,
 ): Promise<GmailMessage> {
   return gmailFetch(accountId, `/messages/${id}?format=full`);
+}
+
+/** Bytes for one Gmail attachment id. `format=full` omits larger parts. */
+export async function getMessageAttachment(
+  accountId: string,
+  messageId: string,
+  attachmentId: string,
+): Promise<Buffer> {
+  const res = await gmailFetch<{ data?: string }>(
+    accountId,
+    `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { signal: AbortSignal.timeout(120_000) },
+  );
+  const data = res.data ?? "";
+  if (!data) return Buffer.alloc(0);
+  const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized, "base64");
 }
 
 export async function getProfile(
@@ -228,14 +245,19 @@ export async function deleteMessageForever(
 export async function sendRawMessage(
   accountId: string,
   rawRfc822: string,
+  threadId?: string,
 ): Promise<{ id: string; threadId: string; labelIds?: string[] }> {
   const raw = Buffer.from(rawRfc822)
     .toString("base64url")
     .replace(/=+$/, "");
+  const payload: { raw: string; threadId?: string } = { raw };
+  // Gmail keeps the reply in the open conversation only when this matches
+  // a message named by In-Reply-To or References.
+  if (threadId && /^[A-Za-z0-9]+$/.test(threadId)) payload.threadId = threadId;
   return gmailFetch(accountId, "/messages/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ raw }),
+    body: JSON.stringify(payload),
   });
 }
 

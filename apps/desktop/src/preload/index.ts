@@ -21,6 +21,8 @@ import type {
   MailMutateAction,
   MailMutateOptions,
   McpStatus,
+  AttachmentActionResult,
+  AttachmentPreviewResult,
   MessageDto,
   AccountDto,
   AppUpdateStatus,
@@ -29,6 +31,18 @@ import type {
   SyncStatus,
   UpdateAccountInput,
 } from "../shared/types";
+import type {
+  CalendarEventDto,
+  CalendarEventInput,
+  CalendarEventUpdate,
+  CalendarRange,
+  CalendarRsvp,
+  NotionSaveInput,
+  NotionSaveResult,
+  NotionTarget,
+  PluginId,
+  PluginStatus,
+} from "../shared/plugins";
 
 const api = {
   getAppInfo: () =>
@@ -140,6 +154,24 @@ const api = {
       ) as Promise<MailFolderCounts>,
     get: (id: string) =>
       ipcRenderer.invoke("mail:get", id) as Promise<MessageDto | null>,
+    previewAttachment: (messageId: string, attachmentId: string) =>
+      ipcRenderer.invoke(
+        "mail:previewAttachment",
+        messageId,
+        attachmentId,
+      ) as Promise<AttachmentPreviewResult>,
+    saveAttachment: (messageId: string, attachmentId: string) =>
+      ipcRenderer.invoke(
+        "mail:saveAttachment",
+        messageId,
+        attachmentId,
+      ) as Promise<AttachmentActionResult>,
+    openAttachment: (messageId: string, attachmentId: string) =>
+      ipcRenderer.invoke(
+        "mail:openAttachment",
+        messageId,
+        attachmentId,
+      ) as Promise<AttachmentActionResult>,
     mutate: (
       id: string,
       action: MailMutateAction,
@@ -189,6 +221,14 @@ const api = {
       ipcRenderer.on("mail:updated", listener);
       return () => ipcRenderer.removeListener("mail:updated", listener);
     },
+    onSearchReady: (cb: (payload: { q: string }) => void) => {
+      const listener = (
+        _: Electron.IpcRendererEvent,
+        payload: { q: string },
+      ) => cb(payload);
+      ipcRenderer.on("mail:search-ready", listener);
+      return () => ipcRenderer.removeListener("mail:search-ready", listener);
+    },
   },
 
   labels: {
@@ -199,6 +239,65 @@ const api = {
 
   contacts: {
     list: () => ipcRenderer.invoke("contacts:list") as Promise<ContactDto[]>,
+  },
+
+  plugins: {
+    list: () =>
+      ipcRenderer.invoke("plugins:list") as Promise<PluginStatus[]>,
+    connectCalendar: () =>
+      ipcRenderer.invoke("plugins:connectCalendar") as Promise<PluginStatus[]>,
+    connectNotion: (token: string) =>
+      ipcRenderer.invoke(
+        "plugins:connectNotion",
+        token,
+      ) as Promise<PluginStatus[]>,
+    disconnect: (id: PluginId) =>
+      ipcRenderer.invoke("plugins:disconnect", id) as Promise<PluginStatus[]>,
+    setEnabled: (id: PluginId, enabled: boolean) =>
+      ipcRenderer.invoke(
+        "plugins:setEnabled",
+        id,
+        enabled,
+      ) as Promise<PluginStatus[]>,
+    calendarEvents: (range: CalendarRange) =>
+      ipcRenderer.invoke(
+        "plugins:calendarEvents",
+        range,
+      ) as Promise<CalendarEventDto[]>,
+    calendarCreate: (input: CalendarEventInput) =>
+      ipcRenderer.invoke(
+        "plugins:calendarCreate",
+        input,
+      ) as Promise<CalendarEventDto>,
+    calendarUpdate: (input: CalendarEventUpdate) =>
+      ipcRenderer.invoke(
+        "plugins:calendarUpdate",
+        input,
+      ) as Promise<CalendarEventDto>,
+    calendarDelete: (id: string, notifyGuests: boolean) =>
+      ipcRenderer.invoke(
+        "plugins:calendarDelete",
+        id,
+        notifyGuests,
+      ) as Promise<void>,
+    calendarRespond: (id: string, response: CalendarRsvp) =>
+      ipcRenderer.invoke(
+        "plugins:calendarRespond",
+        id,
+        response,
+      ) as Promise<CalendarEventDto>,
+    notionTargets: () =>
+      ipcRenderer.invoke("plugins:notionTargets") as Promise<NotionTarget[]>,
+    notionSetTarget: (target: NotionTarget) =>
+      ipcRenderer.invoke(
+        "plugins:notionSetTarget",
+        target,
+      ) as Promise<PluginStatus[]>,
+    notionSave: (input: NotionSaveInput) =>
+      ipcRenderer.invoke(
+        "plugins:notionSave",
+        input,
+      ) as Promise<NotionSaveResult>,
   },
 
   ai: {
@@ -212,6 +311,12 @@ const api = {
       >,
     complete: (req: AiCompleteRequest) =>
       ipcRenderer.invoke("ai:complete", req) as Promise<AiCompleteResponse>,
+    warm: (opts?: { bridgePath?: string; model?: string }) =>
+      ipcRenderer.invoke(
+        "ai:warm",
+        opts?.bridgePath,
+        opts?.model,
+      ) as Promise<boolean>,
     secretsStatus: () =>
       ipcRenderer.invoke("ai:secretsStatus") as Promise<
         Record<AiSecretId, boolean>

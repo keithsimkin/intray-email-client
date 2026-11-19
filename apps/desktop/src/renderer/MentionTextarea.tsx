@@ -15,6 +15,7 @@ import {
   useContacts,
   type Contact,
 } from "./contacts";
+import { blurClass, useCreatorBlur } from "./creatorBlur";
 import type { Recipient } from "./data/mock";
 
 type Props = Omit<
@@ -48,6 +49,7 @@ export function MentionTextarea({
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
 
   const contacts = useContacts();
+  const blur = useCreatorBlur();
   const exclude = new Set(excludeEmails.map((e) => e.toLowerCase()));
   const matches = open ? filterContacts(query, exclude, 6, contacts) : [];
 
@@ -185,8 +187,24 @@ export function MentionTextarea({
                 </span>
               )}
               <span className="mention-meta">
-                <strong>{c.name}</strong>
-                <span>{c.email}</span>
+                <strong
+                  className={
+                    blur.blurName(blur.kindForEmail(c.email))
+                      ? "creator-blur"
+                      : undefined
+                  }
+                >
+                  {c.name}
+                </strong>
+                <span
+                  className={
+                    blur.blurAddress(blur.kindForEmail(c.email))
+                      ? "creator-blur"
+                      : undefined
+                  }
+                >
+                  {c.email}
+                </span>
               </span>
             </button>
           ))}
@@ -237,6 +255,7 @@ export function RecipientChips({
   const textRedoRef = useRef<string[]>([]);
 
   const contacts = useContacts();
+  const blur = useCreatorBlur();
   const excluded = useMemo(() => {
     const set = new Set(excludeEmails.map((e) => e.toLowerCase()));
     for (const p of people) set.add(p.email.toLowerCase());
@@ -294,18 +313,28 @@ export function RecipientChips({
         <span className="recipient-chips-label">{label}</span>
       )}
       <div className="recipient-chips-list">
-        {people.map((p) => (
-          <button
-            key={p.email}
-            type="button"
-            className="recipient-chip"
-            title={`Remove ${p.email}`}
-            onClick={() => onRemove(p.email)}
-          >
-            {p.name}
-            <span aria-hidden>×</span>
-          </button>
-        ))}
+        {people.map((p) => {
+          const kind = blur.kindForEmail(p.email);
+          return (
+            <button
+              key={p.email}
+              type="button"
+              className="recipient-chip"
+              title={blur.blurAddress(kind) ? "Remove" : `Remove ${p.email}`}
+              onClick={() => onRemove(p.email)}
+            >
+              <span
+                className={blurClass(
+                  "recipient-chip-name",
+                  blur.blurName(kind),
+                )}
+              >
+                {p.name}
+              </span>
+              <span aria-hidden>×</span>
+            </button>
+          );
+        })}
         {onAdd && (
           <div className="recipient-input-wrap">
             <input
@@ -433,8 +462,24 @@ export function RecipientChips({
                         </span>
                       )}
                       <span className="recipient-predict-meta">
-                        <strong>{c.name}</strong>
-                        <span>{c.email}</span>
+                        <strong
+                          className={
+                            blur.blurName(blur.kindForEmail(c.email))
+                              ? "creator-blur"
+                              : undefined
+                          }
+                        >
+                          {c.name}
+                        </strong>
+                        <span
+                          className={
+                            blur.blurAddress(blur.kindForEmail(c.email))
+                              ? "creator-blur"
+                              : undefined
+                          }
+                        >
+                          {c.email}
+                        </span>
                       </span>
                       {i === active && (
                         <Check

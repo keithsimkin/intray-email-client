@@ -1,12 +1,14 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, Menu } from "electron";
 import { join } from "node:path";
 import { loadAppIcon, resolveAppIconPath } from "./app-icon";
 import { chromeThemeOptions } from "./chrome-theme";
 import {
   backfillLinkCounts,
+  backfillSearchIndex,
   closeDb,
   initDb,
   listAccountRows,
+  repairSeenMessages,
   runDbMaintenance,
 } from "./db";
 import { loadDesktopEnv } from "./env";
@@ -22,6 +24,7 @@ import { startPollingAll, stopAllPolling } from "./sync/engine";
 import { startMailWatch, stopAllWatches } from "./sync/watch";
 import { createTray } from "./tray";
 import { refreshMissingAvatars } from "./avatars";
+import { stopCursorAgent } from "./ai/bridge";
 import { startAppUpdater } from "./updater";
 
 loadDesktopEnv();
@@ -118,10 +121,36 @@ function createWindow(opts?: { show?: boolean }): BrowserWindow {
     openExternalSafely(url);
   });
 
-  // No feature in Intray needs camera/mic/geolocation/clipboard reads.
+  // Camera, mic, and location stay off. Clipboard must stay allowed:
+  // denying clipboard-read / clipboard-sanitized-write blocks Ctrl+C,
+  // Ctrl+V, and the right-click edit menu for the whole window.
   win.webContents.session.setPermissionRequestHandler(
-    (_contents, _permission, callback) => callback(false),
+    (_contents, permission, callback) => {
+      callback(
+        permission === "clipboard-read" ||
+          permission === "clipboard-sanitized-write",
+      );
+    },
   );
+
+  win.webContents.on("context-menu", (_event, params) => {
+    if (!params.isEditable && !params.selectionText) return;
+    const flags = params.editFlags;
+    const template = params.isEditable
+      ? [
+          { role: "cut" as const, enabled: flags.canCut },
+          { role: "copy" as const, enabled: flags.canCopy },
+          { role: "paste" as const, enabled: flags.canPaste },
+          { type: "separator" as const },
+          { role: "selectAll" as const, enabled: flags.canSelectAll },
+        ]
+      : [
+          { role: "copy" as const, enabled: flags.canCopy },
+          { type: "separator" as const },
+          { role: "selectAll" as const, enabled: flags.canSelectAll },
+        ];
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -135,6 +164,21 @@ function createWindow(opts?: { show?: boolean }): BrowserWindow {
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
   await initDb();
+  // Rebuild the search index before the window asks for mail. A current
+  // index returns immediately; an upgraded database fills once, here.
+  try {
+    backfillSearchIndex();
+  } catch (error) {
+    console.warn("search backfill skipped", error);
+  }
+  // Drop badge counts for mail another client already marked \Seen, before
+  // the window asks for accounts. The poll then fills in rows whose flags
+  // were never stored.
+  try {
+    repairSeenMessages();
+  } catch (error) {
+    console.warn("seen repair skipped", error);
+  }
   registerIpc();
   // Wire updater before the window can invoke check-for-updates IPC.
   startAppUpdater();
@@ -155,6 +199,11 @@ app.whenReady().then(async () => {
   // longer because it rewrites the file and takes the database lock.
   linkBackfillTimer = setTimeout(() => {
     linkBackfillTimer = null;
+    try {
+      backfillSearchIndex();
+    } catch (error) {
+      console.warn("search backfill skipped", error);
+    }
     try {
       backfillLinkCounts();
     } catch (error) {
@@ -198,6 +247,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  stopCursorAgent();
   if (linkBackfillTimer) {
     clearTimeout(linkBackfillTimer);
     linkBackfillTimer = null;

@@ -2,6 +2,12 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { accessSync, constants } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import { usageLimitMessage } from "../../shared/aiError";
+import {
+  cursorAcpClient,
+  cursorAcpShouldFallback,
+  stopCursorAcp,
+} from "./cursorAcp";
 import { parseCursorModelList } from "./cursorModels";
 import { parseGrokModelList } from "./grokModels";
 import { loadAiSecret, type AiSecretId } from "./secretAccess";
@@ -772,7 +778,8 @@ async function cliPrompt(
   const blocked =
     /credit balance is too low|usage limit reached|not logged in|authentication required|please log in|login required|actionrequirederror/i;
   if ((code && code !== 0 && !stdout.trim()) || blocked.test(detail)) {
-    throw new Error(detail || `${provider} exited with code ${code}`);
+    const limit = usageLimitMessage(detail);
+    throw new Error(limit || detail || `${provider} exited with code ${code}`);
   }
   if (!text) throw new Error(`Empty output from ${provider}`);
   return { text, provider };
@@ -900,6 +907,20 @@ const CLI_PROVIDERS = new Set<AiProviderId>([
   "cursor",
   "opencode",
 ]);
+
+/** Start the shared Cursor process before the first summary or reply. */
+export function warmCursorAgent(
+  bridgePath?: string,
+  model?: string,
+): Promise<void> {
+  const bin = resolveCursorAgent(bridgePath);
+  if (!bin) return Promise.resolve();
+  return cursorAcpClient().warm(commandForSpawn(bin, ["acp"]), model);
+}
+
+export function stopCursorAgent(): void {
+  stopCursorAcp();
+}
 
 export async function completeAi(
   input: AiCompleteInput,
@@ -1033,8 +1054,25 @@ export async function completeAi(
     case "cursor": {
       const bin = resolveCursorAgent(input.bridgePath);
       if (!bin) throw new Error("Cursor agent CLI not found");
-      // ask mode keeps mail assist read-only; pass prompt as argv (not stdin).
-      // ask = read-only. --trust only acknowledges the temp cwd, not this repo.
+      // One ACP process stays open across summaries and replies. Ask mode is
+      // read-only, and the client rejects tool calls. If that session cannot
+      // start, fall back to a one-shot process in the temp directory.
+      const launch = commandForSpawn(bin, ["acp"]);
+      try {
+        const text = await cursorAcpClient().complete({
+          launch,
+          model,
+          prompt: input.prompt,
+          system,
+        });
+        return { text, provider: "cursor", model };
+      } catch (error) {
+        if (!cursorAcpShouldFallback(error)) throw error;
+        console.warn(
+          "Cursor agent session unavailable; starting a one-shot process",
+          error instanceof Error ? error.message : error,
+        );
+      }
       const args = ["-p", "--mode", "ask", "--trust", "--output-format", "text"];
       if (model) args.push("--model", model);
       return cliPrompt("cursor", bin, args, input.prompt, system, {

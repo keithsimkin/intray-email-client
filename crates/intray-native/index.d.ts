@@ -23,7 +23,7 @@ export declare class MailDb {
   get(sql: string, params?: JsonParams | undefined | null): JsonValue | null
   all(sql: string, params?: JsonParams | undefined | null): Array<JsonValue>
   /** Upsert FTS index for a message (headers + optional body text). */
-  upsertFts(messageId: string, subject: string, snippet: string, fromName: string, fromEmail: string, body?: string | undefined | null): void
+  upsertFts(messageId: string, subject: string, snippet: string, fromName: string, fromEmail: string, body?: string | undefined | null, recipients?: string | undefined | null, attachments?: string | undefined | null): void
   deleteFts(messageId: string): void
   /**
    * Cheap periodic upkeep: refresh SQLite's planner statistics. Safe to run on

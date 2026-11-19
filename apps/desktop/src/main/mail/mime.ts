@@ -34,6 +34,10 @@ export type RawMessageInput = {
   messageId?: string;
   date?: Date;
   replyTo?: string;
+  /** Parent Message-ID (`<id@host>`). Threading header, not Reply-To. */
+  inReplyTo?: string;
+  /** Ancestor Message-IDs, root first. The last entry is the parent. */
+  references?: string[];
 };
 
 export type RawMessage = {
@@ -163,6 +167,35 @@ export function buildMessageId(fromEmail: string, token?: string): string {
     "",
   );
   return `<${id}.${Date.now().toString(36)}@${domain}>`;
+}
+
+/** Accept only a single message id, always wrapped in angles. */
+function normalizeAngleId(value: string): string | null {
+  const cleaned = String(value)
+    .replace(/[\u0000\r\n\t]+/g, " ")
+    .trim();
+  const bracketed = cleaned.match(/<([^<>\s]+)>/);
+  const id = (bracketed?.[1] ?? cleaned.replace(/^<|>$/g, "")).trim();
+  if (!id || /[\s<>]/.test(id) || id.length > 998) return null;
+  return `<${id}>`;
+}
+
+function foldTokenHeader(name: string, tokens: string[]): string {
+  const lines: string[] = [];
+  let current = `${name}:`;
+  for (const token of tokens) {
+    if (
+      current.length + 1 + token.length > MAX_LINE &&
+      current !== `${name}:`
+    ) {
+      lines.push(current);
+      current = ` ${token}`;
+    } else {
+      current += ` ${token}`;
+    }
+  }
+  if (current.trim()) lines.push(current);
+  return lines.join(CRLF);
 }
 
 function foldHeader(name: string, value: string): string {
@@ -356,6 +389,16 @@ export function buildRawMessage(input: RawMessageInput): RawMessage {
   headers.push(`Subject: ${encodeHeaderValue(subject)}`);
   headers.push(`Date: ${formatDateHeader(date)}`);
   headers.push(`Message-ID: ${messageId}`);
+  const inReplyTo = input.inReplyTo
+    ? normalizeAngleId(input.inReplyTo)
+    : null;
+  if (inReplyTo) headers.push(`In-Reply-To: ${inReplyTo}`);
+  const references = (input.references ?? [])
+    .map((id) => normalizeAngleId(id))
+    .filter((id): id is string => Boolean(id));
+  if (references.length) {
+    headers.push(foldTokenHeader("References", references));
+  }
   headers.push("MIME-Version: 1.0");
   headers.push(...root.headers);
 

@@ -1,3 +1,5 @@
+import { emailHtmlToText } from "../../shared/htmlText";
+
 /**
  * Defence-in-depth sanitizer for untrusted email HTML.
  *
@@ -89,14 +91,5 @@ export function sanitizeEmailHtml(input: string | null | undefined): string {
 
 /** Strip tags to plain text (used for search previews and MCP output). */
 export function htmlToText(input: string | null | undefined): string {
-  return sanitizeEmailHtml(input)
-    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, " ")
-    .trim();
+  return emailHtmlToText(input);
 }

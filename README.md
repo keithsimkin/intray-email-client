@@ -56,6 +56,7 @@ It is inspired by Mac-only clients like [Bloop](https://bloop.email/), built for
   - [Connect IMAP accounts](#connect-imap-accounts)
   - [AI providers](#ai-providers)
   - [MCP server](#mcp-server)
+  - [Plugins](#plugins)
   - [Build installers](#build-installers)
   - [Auto-updates (GitHub Releases)](#auto-updates-github-releases)
 - [Marketing site](#marketing-site)
@@ -292,6 +293,17 @@ Toggle MCP under **Settings → AI & agents**, and use **Rotate access token** t
 
 Hardening: the listener binds to `127.0.0.1` only; requests with an `Origin` or `Sec-Fetch-Mode` header (i.e. browser pages) are rejected before auth; `Host` is validated; CORS is not granted; bodies are capped at 1 MB and tool arguments are clamped. If the default port is taken, Intray falls back to an ephemeral port and shows the new URL in Settings.
 
+### Plugins
+
+**Add plugin** on the account rail offers two optional add-ons. Intray works without either of them. Each one can be turned off without logging out. Logging out is separate and removes the saved sign-in.
+
+| Plugin | What it needs | What it does with a message |
+| --- | --- | --- |
+| Google Calendar | The same Google OAuth client as Gmail, with the Calendar API enabled | Shows the week on the open message, and can add that email as an event |
+| Notion | An internal integration token, plus one database or page shared with it | Save the thread as a page (subject, sender, date, and message text) |
+
+Credentials stay on this device. To ask for another tool, or to add one in the desktop app, see [docs/PLUGINS.md](docs/PLUGINS.md).
+
 ### Build installers
 
 **Windows (x64 NSIS)** — from the repo root:
@@ -502,6 +514,7 @@ Use GitHub Issues for bugs and proposals. Prefer a small reproduction or screens
 | --- | --- |
 | [PRODUCT-PLAN.md](PRODUCT-PLAN.md) | Product pillars, architecture, phased delivery |
 | [docs/BLOOP-RESEARCH-BRIEF.md](docs/BLOOP-RESEARCH-BRIEF.md) | Competitive / research brief |
+| [docs/PLUGINS.md](docs/PLUGINS.md) | Google Calendar, Notion, and how to add a plugin |
 | [docs/ui-ref/](docs/ui-ref/) | UI reference frames and screenshots |
 | [SECURITY.md](SECURITY.md) | Threat model and vulnerability reporting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to develop and submit changes |

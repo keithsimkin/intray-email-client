@@ -10,12 +10,18 @@ import {
   type ListedMailbox,
   type MailboxRole,
 } from "../../../shared/gmailImap";
+import { mailSnippet } from "../../../shared/mailSnippet";
 import { normalizeFolderPath } from "./presets";
+import { imapUidSet } from "./uidSet";
 
 export type ImapEnvelope = {
   uid: number;
   uidValidity: number;
   messageId?: string;
+  /** Parent Message-ID from the IMAP ENVELOPE (In-Reply-To). */
+  inReplyTo?: string;
+  /** Ancestor Message-IDs from ENVELOPE REFERENCES, root first. */
+  references?: string[];
   threadId: string;
   flags: string[];
   date: Date | null;
@@ -379,15 +385,19 @@ function envelopeFromFetch(
   const fromName = fromAddr?.name || fromEmail.split("@")[0];
   const subject = env?.subject || "(no subject)";
   const flags = [...(msg.flags ?? [])].map(String);
-  const snippetSource = msg.source
-    ? msg.source.toString("utf8").replace(/\s+/g, " ").slice(0, 180)
-    : "";
+  const snippetSource = msg.source ? mailSnippet(msg.source.toString("utf8")) : "";
   const messageId = env?.messageId || undefined;
+  const inReplyTo =
+    (env as { inReplyTo?: string } | undefined)?.inReplyTo || undefined;
   const refs =
     (env as { references?: string | string[] } | undefined)?.references ?? [];
-  const refList = Array.isArray(refs) ? refs : [refs];
+  const refList = (Array.isArray(refs) ? refs : [refs]).filter(
+    (id): id is string => Boolean(id),
+  );
+  // Root of the References chain, then In-Reply-To, then this message.
+  // The store may still join a partial chain onto an existing conversation.
   const threadKey =
-    refList[0] || messageId || `uid-${uidValidity}-${msg.uid}`;
+    refList[0] || inReplyTo || messageId || `uid-${uidValidity}-${msg.uid}`;
 
   const to =
     env?.to?.map((a) => ({
@@ -426,6 +436,8 @@ function envelopeFromFetch(
     uid: msg.uid,
     uidValidity,
     messageId,
+    inReplyTo,
+    references: refList,
     threadId: String(threadKey),
     flags,
     date: date && !Number.isNaN(date.getTime()) ? date : null,
@@ -592,6 +604,101 @@ export async function listRecentEnvelopes(
 }
 
 /**
+ * Re-read flags/labels for messages already in the local store.
+ *
+ * Incremental sync only looks at new UIDs, and the recent refresh covers a
+ * short window, so read/star changes made in another mail app never reached
+ * older messages — they stayed unread in Intray forever. Fetching flags for
+ * the UIDs we actually store is bounded (a few hundred per mailbox) and
+ * catches every provider-side change.
+ */
+export async function listStoredEnvelopeFlags(
+  accountId: string,
+  opts: {
+    mailbox: string;
+    uids: number[];
+    gmail?: boolean;
+    role?: MailboxRole;
+    chunkSize?: number;
+  },
+): Promise<ImapEnvelope[]> {
+  const uids = [
+    ...new Set(opts.uids.filter((uid) => Number.isFinite(uid) && uid > 0)),
+  ].sort((a, b) => a - b);
+  if (!uids.length) return [];
+  const gmail = opts.gmail
+    ? { enabled: true as const, role: opts.role ?? "other" }
+    : undefined;
+  const chunkSize = Math.max(1, opts.chunkSize ?? 250);
+
+  return withImap(accountId, async (client) => {
+    const lock = await client.getMailboxLock(opts.mailbox);
+    try {
+      const meta = mailboxMeta(client);
+      const query = {
+        uid: true,
+        flags: true,
+        envelope: true,
+        ...(gmail ? { labels: true, threadId: true } : {}),
+      };
+      const out: ImapEnvelope[] = [];
+      for (let i = 0; i < uids.length; i += chunkSize) {
+        const set = imapUidSet(uids.slice(i, i + chunkSize));
+        if (!set) continue;
+        for await (const msg of client.fetch(set, query, { uid: true })) {
+          out.push(
+            envelopeFromFetch(
+              msg,
+              opts.mailbox,
+              meta.uidValidity,
+              gmail,
+              true,
+            ),
+          );
+        }
+      }
+      return out;
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/**
+ * UIDs the server currently considers unread in `mailbox`.
+ *
+ * `\Seen` is the read bit other clients set. Gmail's `is:unread` label is not
+ * used here, because mail read on the web often keeps a stale `\Unread` label.
+ *
+ * `gmailInbox` limits the search to Gmail's Inbox label while All Mail is
+ * selected, so archived unseen mail is not counted as inbox unread.
+ *
+ * Returns null when the server rejects the search. An empty array means there
+ * is nothing unread — callers must not treat those the same.
+ */
+export async function searchUnseenUids(
+  accountId: string,
+  mailbox: string,
+  opts?: { gmailInbox?: boolean },
+): Promise<number[] | null> {
+  return withImap(accountId, async (client) => {
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const found = await client.search(
+        opts?.gmailInbox
+          ? { gmraw: "in:inbox", seen: false }
+          : { seen: false },
+        { uid: true },
+      );
+      if (!Array.isArray(found)) return null;
+      return found.filter((uid) => Number.isFinite(uid) && uid > 0);
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/**
  * Server-side FROM search — pulls older mail the shallow inbox sync never
  * indexed so from: filters aren't limited to the recent local window.
  */
@@ -659,6 +766,42 @@ export async function searchImapFrom(
       return [...byUid.values()].sort(
         (a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0),
       );
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** Message-ID / In-Reply-To / References for a reply, without downloading the body. */
+export async function fetchImapThreadingHeaders(
+  accountId: string,
+  mailbox: string,
+  uid: number,
+): Promise<{ messageId?: string; inReplyTo?: string; references: string[] }> {
+  return withImapInteractive(accountId, async (client) => {
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const msg = await client.fetchOne(
+        String(uid),
+        { envelope: true, uid: true },
+        { uid: true },
+      );
+      if (!msg || typeof msg === "boolean") {
+        throw new Error("Message headers missing");
+      }
+      const env = msg.envelope;
+      const refs =
+        (env as { references?: string | string[] } | undefined)?.references ??
+        [];
+      const refList = (Array.isArray(refs) ? refs : [refs]).filter(
+        (id): id is string => Boolean(id),
+      );
+      return {
+        messageId: env?.messageId || undefined,
+        inReplyTo:
+          (env as { inReplyTo?: string } | undefined)?.inReplyTo || undefined,
+        references: refList,
+      };
     } finally {
       lock.release();
     }
@@ -978,6 +1121,10 @@ export async function sendSmtp(
     bodyText: string;
     bodyHtml?: string;
     messageId?: string;
+    /** Parent Message-ID, so the recipient threads this reply. */
+    inReplyTo?: string;
+    /** Ancestor Message-IDs, root first, including the parent. */
+    references?: string[];
     attachments?: {
       filename: string;
       contentType: string;
@@ -1020,6 +1167,8 @@ export async function sendSmtp(
       text: draft.bodyText,
       html: draft.bodyHtml?.trim() ? draft.bodyHtml : undefined,
       messageId: draft.messageId?.replace(/^<|>$/g, ""),
+      inReplyTo: draft.inReplyTo,
+      references: draft.references,
       attachments: draft.attachments?.map((a) => ({
         filename: a.filename.replace(/[\r\n"]/g, ""),
         contentType: a.contentType || "application/octet-stream",
