@@ -91,6 +91,11 @@ export type Preferences = {
   spellcheck: boolean;
   /** Embed open pixel on send; show when / when recipients open */
   trackOpens: boolean;
+  /**
+   * Register Intray as the OS mailto app. Links inside Intray always compose
+   * here; this only changes what other programs do.
+   */
+  handleMailto: boolean;
 
   // AI (local bridges — no Intray AI subscription)
   aiBridge: AiBridgeId;
@@ -212,6 +217,7 @@ export const defaultPreferences: Preferences = {
   },
   spellcheck: true,
   trackOpens: false,
+  handleMailto: true,
 
   aiBridge: "openai",
   aiBridgePath: "",
@@ -407,6 +413,9 @@ export function loadPreferences(): Preferences {
     delete parsed.trustedImageSenders;
     if (typeof parsed.downloadRemoteImages !== "boolean") {
       parsed.downloadRemoteImages = defaultPreferences.downloadRemoteImages;
+    }
+    if (typeof parsed.handleMailto !== "boolean") {
+      parsed.handleMailto = defaultPreferences.handleMailto;
     }
     if (typeof saved.creatorMode !== "boolean") {
       parsed.creatorMode = defaultPreferences.creatorMode;

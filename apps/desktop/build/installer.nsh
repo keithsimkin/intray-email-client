@@ -16,3 +16,10 @@
   !define MUI_WELCOMEPAGE_TEXT "Intray will be removed from this PC.$\r$\n$\r$\nDownloaded mail and saved keys stay in your user profile."
   !insertmacro MUI_UNPAGE_WELCOME
 !macroend
+
+!macro customUnInstall
+  DeleteRegKey HKCU "Software\Clients\Mail\Intray"
+  DeleteRegKey HKCU "Software\Classes\Intray.mailto"
+  DeleteRegValue HKCU "Software\RegisteredApplications" "Intray"
+  ClearErrors
+!macroend

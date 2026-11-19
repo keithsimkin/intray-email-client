@@ -8,6 +8,11 @@ publish:
   repo: intray-email-client
   releaseType: release
 copyright: Copyright © 2026 Intray contributors
+# Lets browsers and other apps hand mailto: links to a packaged Intray.
+protocols:
+  - name: Intray Mail
+    schemes:
+      - mailto
 artifactName: Intray-${version}-${os}-${arch}.${ext}
 compression: normal
 npmRebuild: false

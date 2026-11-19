@@ -6,6 +6,7 @@ import {
   gmailSyncMailboxes,
   normalizeGmailAppPassword,
   placementForGmail,
+  smtpSocketFor,
   unreadFromImapSignals,
   GMAIL_APP_PASSWORD_URL,
 } from "../src/shared/gmailImap";
@@ -189,14 +190,42 @@ describe("IMAP unread signals", () => {
 });
 
 describe("Gmail preset", () => {
-  test("uses IMAP 993 and SMTP 465", () => {
+  test("uses IMAP 993 and SMTP 587", () => {
     const preset = presetFor("gmail");
     expect(preset).toMatchObject({
       provider: "gmail",
       imapHost: "imap.gmail.com",
       imapPort: 993,
       smtpHost: "smtp.gmail.com",
-      smtpPort: 465,
+      smtpPort: 587,
+    });
+  });
+});
+
+describe("Gmail SMTP socket", () => {
+  test("sends saved port 465 accounts over STARTTLS on 587", () => {
+    expect(smtpSocketFor("smtp.gmail.com", 465)).toEqual({
+      port: 587,
+      secure: false,
+    });
+    expect(smtpSocketFor(" SMTP.GMAIL.COM ", 465)).toEqual({
+      port: 587,
+      secure: false,
+    });
+  });
+
+  test("leaves an explicit 587 and other providers alone", () => {
+    expect(smtpSocketFor("smtp.gmail.com", 587)).toEqual({
+      port: 587,
+      secure: false,
+    });
+    expect(smtpSocketFor("smtp.mail.me.com", 587)).toEqual({
+      port: 587,
+      secure: false,
+    });
+    expect(smtpSocketFor("smtp.example.com", 465)).toEqual({
+      port: 465,
+      secure: true,
     });
   });
 });

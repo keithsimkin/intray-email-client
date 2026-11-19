@@ -7,6 +7,7 @@ import {
   explainImapAuthError,
   isGmailImapTarget,
   placementForGmail,
+  smtpSocketFor,
   type ListedMailbox,
   type MailboxRole,
 } from "../../../shared/gmailImap";
@@ -1258,14 +1259,14 @@ export async function sendSmtp(
   if (!creds || creds.provider !== "imap") {
     throw new Error("IMAP/SMTP credentials missing");
   }
-  const implicitTls = creds.smtpPort === 465;
+  const socket = smtpSocketFor(creds.smtpHost, creds.smtpPort);
   const transport = nodemailer.createTransport({
     host: creds.smtpHost,
-    port: creds.smtpPort,
-    secure: implicitTls,
+    port: socket.port,
+    secure: socket.secure,
     // On 587/25 a failed STARTTLS must abort rather than silently send in the
     // clear with the account password attached.
-    requireTLS: !implicitTls,
+    requireTLS: !socket.secure,
     tls: { minVersion: "TLSv1.2", rejectUnauthorized: true },
     auth: {
       user: creds.username || creds.email,

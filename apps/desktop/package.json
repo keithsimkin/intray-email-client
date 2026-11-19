@@ -1,7 +1,7 @@
 {
   "name": "@intray/desktop",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Intray — unified mail for Windows and macOS",
   "main": "./out/main/index.js",
   "repository": {

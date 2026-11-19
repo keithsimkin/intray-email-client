@@ -1074,6 +1074,23 @@ button {
   color: var(--fg);
 }
 
+/* Update control — only rendered once an update has been detected. */
+.rail-update {
+  color: var(--accent);
+}
+
+.rail-update:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.rail-update .badge {
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 8px;
+  min-width: 18px;
+}
+
 .plugin-workspace {
   display: flex;
   flex-direction: column;

@@ -19,6 +19,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Download,
   Eraser,
   FileText,
   Folder,
@@ -44,6 +45,7 @@ import {
   RefreshCw,
   Reply,
   ReplyAll,
+  RotateCw,
   Send,
   Settings,
   ShieldCheck,
@@ -169,23 +171,29 @@ import {
   type ShortcutPackId,
 } from "./shortcuts";
 import { SettingsModal } from "./SettingsModal";
+import { updateControl } from "./updateControl";
 import {
   accountDtoToUi,
   bridgeAccounts,
   bridgeCancelSend,
+  bridgeClaimMailto,
   bridgeCreateLabel,
+  bridgeDownloadUpdate,
   bridgeFolderCounts,
   bridgeGetMail,
   bridgeHasRealAccounts,
+  bridgeInstallUpdate,
   bridgeListContacts,
   bridgeListLabels,
   bridgeListMail,
   bridgeLoadOlder,
   bridgeMutateMail,
   bridgeOnAvatarUpdated,
+  bridgeOnMailtoOpen,
   bridgeOnNotifyOpen,
   bridgeOnSendFlushed,
   bridgeOnSyncProgress,
+  bridgeOnUpdateStatus,
   bridgeOnMailUpdated,
   bridgeOnSearchReady,
   bridgeOnUnsnoozed,
@@ -193,11 +201,14 @@ import {
   bridgeSendLater,
   bridgeSendMail,
   bridgeSetChromeTheme,
+  bridgeSetMailtoHandler,
   bridgeSync,
+  bridgeUpdateStatus,
   isAuthFailureMessage,
   messageDtoToUi,
   warmCursorAgent,
 } from "./mailApi";
+import { parseMailto } from "../shared/mailto";
 import { mergeSentIntoList, unionThreads } from "./threadMerge";
 import {
   badgeCountForMode,
@@ -209,7 +220,11 @@ import {
   type PluginId,
   type PluginStatus,
 } from "../shared/plugins";
-import type { MailFolderCounts, SyncStatus } from "../shared/types";
+import type {
+  AppUpdateStatus,
+  MailFolderCounts,
+  SyncStatus,
+} from "../shared/types";
 
 type MailAction =
   | "reply"
@@ -979,6 +994,9 @@ function AccountRail({
   onAdd,
   onSettings,
   onPlugins,
+  updateStatus,
+  onDownloadUpdate,
+  onRestartUpdate,
   plugins,
   activePluginId,
   onOpenPlugin,
@@ -997,11 +1015,15 @@ function AccountRail({
   onAdd: () => void;
   onSettings: () => void;
   onPlugins: () => void;
+  updateStatus: AppUpdateStatus;
+  onDownloadUpdate: () => void;
+  onRestartUpdate: () => void;
   plugins: Array<{ id: PluginId; name: string }>;
   activePluginId: PluginId | null;
   onOpenPlugin: (id: PluginId) => void;
 }) {
   const blur = useCreatorBlur();
+  const update = updateControl(updateStatus);
   const snoozeLabel =
     snoozeCount > 0 ? `Snoozed, ${snoozeCount}` : "Snoozed";
   return (
@@ -1111,6 +1133,29 @@ function AccountRail({
       <div className="rail-spacer" />
       <div className="rail-section">
         <span className="rail-label">Apps</span>
+        {update.visible && (
+          <button
+            type="button"
+            className={`rail-btn rail-update${update.action === "restart" ? " ready" : ""}`}
+            aria-label={update.label}
+            title={update.label}
+            disabled={update.action === "busy"}
+            onClick={
+              update.action === "restart" ? onRestartUpdate : onDownloadUpdate
+            }
+          >
+            {update.action === "restart" ? (
+              <RotateCw size={16} strokeWidth={1.75} />
+            ) : update.action === "busy" ? (
+              <Loader2 size={16} strokeWidth={1.75} className="spin" />
+            ) : (
+              <Download size={16} strokeWidth={1.75} />
+            )}
+            {typeof update.percent === "number" && (
+              <span className="badge">{update.percent}%</span>
+            )}
+          </button>
+        )}
         {plugins.map((plugin) => {
           const open = activePluginId === plugin.id;
           return (
@@ -4707,6 +4752,8 @@ function ComposeModal({
   showAi,
   live,
   initialTo,
+  initialCc,
+  initialBcc,
   initialSubject = "",
   initialBody = "",
   title = "New message",
@@ -4720,6 +4767,8 @@ function ComposeModal({
   showAi: boolean;
   live: boolean;
   initialTo?: Recipient[];
+  initialCc?: Recipient[];
+  initialBcc?: Recipient[];
   initialSubject?: string;
   initialBody?: string;
   title?: string;
@@ -4752,10 +4801,10 @@ function ComposeModal({
   const from = sendable.find((s) => s.key === fromKey) ?? fallbackFrom;
   const fromLoggedOut = Boolean(from.loggedOut);
   const [to, setTo] = useState<Recipient[]>(() => initialTo ?? []);
-  const [cc, setCc] = useState<Recipient[]>([]);
-  const [bcc, setBcc] = useState<Recipient[]>([]);
-  const [showCc, setShowCc] = useState(false);
-  const [showBcc, setShowBcc] = useState(false);
+  const [cc, setCc] = useState<Recipient[]>(() => initialCc ?? []);
+  const [bcc, setBcc] = useState<Recipient[]>(() => initialBcc ?? []);
+  const [showCc, setShowCc] = useState(() => (initialCc?.length ?? 0) > 0);
+  const [showBcc, setShowBcc] = useState(() => (initialBcc?.length ?? 0) > 0);
   const [subject, setSubject] = useState(initialSubject);
   const [body, setBody] = useState(initialBody);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -5493,8 +5542,11 @@ export default function App() {
   const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[]>([]);
   const [pluginDialogOpen, setPluginDialogOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composeNonce, setComposeNonce] = useState(0);
   const [composeDraft, setComposeDraft] = useState<{
     to?: Recipient[];
+    cc?: Recipient[];
+    bcc?: Recipient[];
     subject?: string;
     body?: string;
     title?: string;
@@ -5529,16 +5581,21 @@ export default function App() {
 
   const openCompose = (opts?: {
     to?: Recipient[];
+    cc?: Recipient[];
+    bcc?: Recipient[];
     subject?: string;
     body?: string;
     title?: string;
   }) => {
     setComposeDraft({
       to: opts?.to?.length ? opts.to : undefined,
+      cc: opts?.cc?.length ? opts.cc : undefined,
+      bcc: opts?.bcc?.length ? opts.bcc : undefined,
       subject: opts?.subject,
       body: opts?.body,
       title: opts?.title,
     });
+    setComposeNonce((n) => n + 1);
     setComposeOpen(true);
   };
 
@@ -5546,6 +5603,55 @@ export default function App() {
     setComposeOpen(false);
     setComposeDraft({});
   };
+
+  const openComposeRef = useRef(openCompose);
+  openComposeRef.current = openCompose;
+
+  useEffect(() => {
+    const recent = { url: "", at: 0 };
+    const openUrl = (raw: string) => {
+      const draft = parseMailto(raw);
+      if (!draft) return;
+      const now = Date.now();
+      if (recent.url === raw && now - recent.at < 800) return;
+      recent.url = raw;
+      recent.at = now;
+      openComposeRef.current({
+        to: draft.to,
+        cc: draft.cc,
+        bcc: draft.bcc,
+        subject: draft.subject,
+        body: draft.body,
+      });
+    };
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a");
+      const href = anchor?.getAttribute("href") ?? "";
+      if (!anchor || !/^mailto:/i.test(href.trim())) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // The signature's own address sits inside the draft. Opening another
+      // compose would throw away what they're writing.
+      if (anchor.closest(".compose-form")) return;
+      openUrl(href);
+    };
+    document.addEventListener("click", onClick, true);
+    const off = bridgeOnMailtoOpen(openUrl);
+    void bridgeClaimMailto().then((url) => {
+      if (url) openUrl(url);
+    });
+    void bridgeSetMailtoHandler(prefs.handleMailto);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      off();
+    };
+    // Saved preference wins over the startup default. The toggle writes both.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [reauthAccount, setReauthAccount] = useState<Account | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(
@@ -5554,7 +5660,27 @@ export default function App() {
   const [onboardingAccountLinked, setOnboardingAccountLinked] = useState(false);
   const [cheatOpen, setCheatOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
+    state: "idle",
+    currentVersion: "",
+    packaged: false,
+  });
   const [alert, setAlert] = useState<AlertRequest | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void bridgeUpdateStatus().then((status) => {
+      if (!cancelled) setUpdateStatus(status);
+    });
+    const stop = bridgeOnUpdateStatus((status) => {
+      if (!cancelled) setUpdateStatus(status);
+    });
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, []);
+
   const alertResolveRef = useRef<((ok: boolean) => void) | null>(null);
   const [chord, setChord] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -6474,6 +6600,23 @@ export default function App() {
   const showToast = (text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(null), 2200);
+  };
+
+  const downloadAppUpdate = async () => {
+    try {
+      setUpdateStatus(await bridgeDownloadUpdate());
+    } catch {
+      showToast("Could not start the update download");
+    }
+  };
+
+  const restartForUpdate = async () => {
+    // The main process confirms the restart, then installs without setup prompts.
+    try {
+      await bridgeInstallUpdate();
+    } catch {
+      showToast("Could not restart to install the update");
+    }
   };
 
   const loadDemoWorkspace = () => {
@@ -7875,6 +8018,9 @@ export default function App() {
           onAdd={() => setAddAccountOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onPlugins={() => setPluginsOpen(true)}
+          updateStatus={updateStatus}
+          onDownloadUpdate={() => void downloadAppUpdate()}
+          onRestartUpdate={() => void restartForUpdate()}
           plugins={PLUGIN_CATALOG.filter((entry) =>
             pluginStatuses.some(
               (status) =>
@@ -8235,12 +8381,15 @@ export default function App() {
       )}
       {composeOpen && (
         <ComposeModal
+          key={composeNonce}
           account={account}
           accounts={accounts}
           prefs={prefs}
           showAi={showAi}
           live={live}
           initialTo={composeDraft.to}
+          initialCc={composeDraft.cc}
+          initialBcc={composeDraft.bcc}
           initialSubject={composeDraft.subject}
           initialBody={composeDraft.body}
           title={composeDraft.title}

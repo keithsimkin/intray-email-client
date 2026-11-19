@@ -348,7 +348,7 @@ export function PluginModal({
     window.open(href, "_blank", "noopener,noreferrer");
     setRequestNotice(
       target === "email"
-        ? "Opening your mail app with the request…"
+        ? "Opening a new message with the request…"
         : "Opening a prefilled GitHub issue…",
     );
   };
