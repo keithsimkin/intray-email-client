@@ -10,7 +10,8 @@ export default function ThanksPage() {
       </h1>
       <p className="mt-3 max-w-md text-sm leading-relaxed text-[#9ca3af] md:text-[15px]">
         Your support helps keep Intray open source and shipping. Check your inbox
-        for a thank-you note, then grab the Windows build — macOS is coming soon.
+        for a thank-you note, then grab the Windows build — or the Mac build, which
+        hasn’t been tested yet.
       </p>
       <Link
         href="/"

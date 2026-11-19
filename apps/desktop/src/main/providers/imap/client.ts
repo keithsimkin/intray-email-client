@@ -604,6 +604,128 @@ export async function listRecentEnvelopes(
 }
 
 /**
+ * Messages older than `beforeUid`, newest first, at most `limit`.
+ *
+ * The forward sync cursor only moves upward. Scrolling the list calls this to
+ * walk the mailbox backward without moving that cursor. Empty UID spans (gaps
+ * from expunge) are probed a few times so one scroll doesn't stop on a hole.
+ */
+export async function listOlderEnvelopes(
+  accountId: string,
+  opts: {
+    mailbox: string;
+    beforeUid: number;
+    uidValidity?: number;
+    limit?: number;
+    span?: number;
+    emptyProbes?: number;
+    gmail?: boolean;
+    role?: MailboxRole;
+  },
+): Promise<{
+  envelopes: ImapEnvelope[];
+  nextBefore: number;
+  exhausted: boolean;
+  uidValidity: number;
+}> {
+  const mailbox = opts.mailbox;
+  const limit = opts.limit ?? 120;
+  const span = opts.span ?? 800;
+  const emptyProbes = opts.emptyProbes ?? 8;
+  const gmail = opts.gmail
+    ? { enabled: true as const, role: opts.role ?? "other" }
+    : undefined;
+  const fullQuery = {
+    uid: true,
+    flags: true,
+    envelope: true,
+    bodyStructure: true,
+    source: { start: 0, maxLength: 4096 },
+    ...(gmail ? { labels: true, threadId: true } : {}),
+  };
+
+  return withImap(accountId, async (client) => {
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const meta = mailboxMeta(client);
+      if (
+        opts.uidValidity &&
+        meta.uidValidity &&
+        opts.uidValidity !== meta.uidValidity
+      ) {
+        return {
+          envelopes: [],
+          nextBefore: 1,
+          exhausted: true,
+          uidValidity: meta.uidValidity,
+        };
+      }
+      if (!meta.exists || opts.beforeUid <= 1) {
+        return {
+          envelopes: [],
+          nextBefore: 1,
+          exhausted: true,
+          uidValidity: meta.uidValidity,
+        };
+      }
+
+      let probe = opts.beforeUid;
+      let attempts = 0;
+      while (probe > 1 && attempts < emptyProbes) {
+        attempts += 1;
+        const start = Math.max(1, probe - span);
+        const found = await client.search(
+          { uid: `${start}:${probe - 1}` },
+          { uid: true },
+        );
+        const uids = (Array.isArray(found) ? found : [])
+          .filter((uid) => Number.isFinite(uid) && uid >= start && uid < probe)
+          .sort((a, b) => a - b);
+        if (!uids.length) {
+          if (start === 1) {
+            return {
+              envelopes: [],
+              nextBefore: 1,
+              exhausted: true,
+              uidValidity: meta.uidValidity,
+            };
+          }
+          probe = start;
+          continue;
+        }
+
+        const take = uids.slice(-limit);
+        const range = imapUidSet(take);
+        const envelopes: ImapEnvelope[] = [];
+        if (range) {
+          for await (const msg of client.fetch(range, fullQuery, { uid: true })) {
+            envelopes.push(
+              envelopeFromFetch(msg, mailbox, meta.uidValidity, gmail, false),
+            );
+          }
+        }
+        const lowest = take[0] ?? start;
+        return {
+          envelopes,
+          nextBefore: lowest,
+          exhausted: start === 1 && take.length === uids.length,
+          uidValidity: meta.uidValidity,
+        };
+      }
+
+      return {
+        envelopes: [],
+        nextBefore: Math.max(1, probe),
+        exhausted: probe <= 1,
+        uidValidity: meta.uidValidity,
+      };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/**
  * Re-read flags/labels for messages already in the local store.
  *
  * Incremental sync only looks at new UIDs, and the recent refresh covers a

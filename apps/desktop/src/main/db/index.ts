@@ -12,6 +12,7 @@ import {
   labelJsonHasSeen,
   type ServerUnreadMode,
 } from "../../shared/serverUnread";
+import { threadHeadPageSql } from "./threadHeads";
 
 /**
  * Typed mail-store façade over the Rust SQLite backend (`@intray/native`).
@@ -854,6 +855,60 @@ export function listMessageRows(opts: {
   return { rows, total };
 }
 
+/**
+ * One page of thread heads. `limit` is the page size; the query reads one
+ * extra row so the caller can tell whether another local page exists.
+ */
+export function listThreadHeadPage(opts: {
+  accountId?: string;
+  folder?: string;
+  filter?: "important" | "other" | "all";
+  limit: number;
+  before?: { dateMs: number; id: string } | null;
+}): { rows: MessageRow[]; total: number; hasMore: boolean } {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (opts.accountId && opts.accountId !== "all") {
+    where.push("account_id = ?");
+    params.push(opts.accountId);
+  }
+  if (opts.folder) {
+    where.push("folder = ?");
+    params.push(opts.folder);
+  }
+  if (opts.filter === "important") where.push("important = 1");
+  else if (opts.filter === "other") where.push("important = 0");
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const total =
+    get<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM messages ${whereSql}`,
+      params,
+    )?.c ?? 0;
+
+  const page = threadHeadPageSql({ ...opts, limit: opts.limit + 1 });
+  const rows = all<MessageRow>(page.sql, page.params);
+  const hasMore = rows.length > opts.limit;
+  return { rows: hasMore ? rows.slice(0, opts.limit) : rows, total, hasMore };
+}
+
+/** Oldest stored message in a folder, used to ask the provider for mail before it. */
+export function oldestMessageMs(opts: {
+  accountId: string;
+  folder?: string;
+}): number | null {
+  const where = ["account_id = ?"];
+  const params: unknown[] = [opts.accountId];
+  if (opts.folder) {
+    where.push("folder = ?");
+    params.push(opts.folder);
+  }
+  const row = get<{ t: number | null }>(
+    `SELECT MIN(date_ms) AS t FROM messages WHERE ${where.join(" AND ")}`,
+    params,
+  );
+  return typeof row?.t === "number" ? row.t : null;
+}
+
 function sanitizeLikeTerm(raw: string): string {
   return raw.replace(/[%_]/g, "").trim();
 }
@@ -1521,6 +1576,21 @@ export function listMessageMailboxRefs(accountId: string): MessageMailboxRef[] {
     }
   }
   return out;
+}
+
+/** Lowest UID already stored for a mailbox, so older-mail backfill starts below it. */
+export function oldestMailboxUid(
+  accountId: string,
+  mailbox: string,
+): { uid: number; uidValidity: number } | null {
+  let best: { uid: number; uidValidity: number } | null = null;
+  for (const ref of listMessageMailboxRefs(accountId)) {
+    if (ref.mailbox !== mailbox) continue;
+    if (!best || ref.uid < best.uid) {
+      best = { uid: ref.uid, uidValidity: ref.uidValidity };
+    }
+  }
+  return best;
 }
 
 /**

@@ -18,6 +18,7 @@ import type {
   MailFolderCounts,
   MailListQuery,
   MailListResult,
+  MailOlderResult,
   MailMutateAction,
   MailMutateOptions,
   McpStatus,
@@ -147,6 +148,8 @@ const api = {
   mail: {
     list: (query: MailListQuery) =>
       ipcRenderer.invoke("mail:list", query) as Promise<MailListResult>,
+    loadOlder: (query: { accountId?: string | "all"; folder?: string }) =>
+      ipcRenderer.invoke("mail:loadOlder", query) as Promise<MailOlderResult>,
     folderCounts: (accountId?: string | "all") =>
       ipcRenderer.invoke(
         "mail:folderCounts",

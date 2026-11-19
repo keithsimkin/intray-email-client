@@ -6,6 +6,9 @@ import { parseAllDay } from "../shared/calendarWeek";
 import { pluginErrorFrom } from "../shared/pluginError";
 import { bridgeCalendarCreate, bridgeCalendarUpdate } from "./mailApi";
 import { GoogleCalendarBrand } from "./BrandIcon";
+import { useCreatorBlur } from "./creatorBlur";
+import { eventMailKind, textHidesAddress } from "./calendarMask";
+import { looksLikeEmail } from "./creatorMode";
 
 function pad(value: number): string {
   return String(value).padStart(2, "0");
@@ -94,6 +97,20 @@ export function CalendarEventDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorHref, setErrorHref] = useState<string | null>(null);
+  const blur = useCreatorBlur();
+  const kind = editing
+    ? eventMailKind(blur, editing)
+    : blur.kindForMessage({
+        email: guest,
+        subject: title,
+        preview: description,
+      });
+  const titleBlur = blur.blurSubject(kind) || textHidesAddress(blur, title);
+  const notesBlur =
+    blur.blurPreview(kind) || textHidesAddress(blur, description);
+  const placeBlur = textHidesAddress(blur, location);
+  const guestBlur =
+    looksLikeEmail(guest) && blur.blurAddress(blur.kindForEmail(guest));
 
   useEffect(() => {
     const onKey = (keyEvent: KeyboardEvent) => {
@@ -252,6 +269,7 @@ export function CalendarEventDialog({
           <label>
             <span>Title</span>
             <input
+              className={titleBlur ? "creator-blur" : undefined}
               value={title}
               onChange={(input) => setTitle(input.target.value)}
               maxLength={500}
@@ -290,6 +308,7 @@ export function CalendarEventDialog({
           <label>
             <span>Place</span>
             <input
+              className={placeBlur ? "creator-blur" : undefined}
               value={location}
               onChange={(input) => setLocation(input.target.value)}
               maxLength={500}
@@ -299,6 +318,7 @@ export function CalendarEventDialog({
           <label>
             <span>Notes</span>
             <textarea
+              className={notesBlur ? "creator-blur" : undefined}
               value={description}
               onChange={(input) => setDescription(input.target.value)}
               maxLength={4000}
@@ -309,6 +329,7 @@ export function CalendarEventDialog({
             <label>
               <span>Guest email</span>
               <input
+                className={guestBlur ? "creator-blur" : undefined}
                 type="email"
                 value={guest}
                 onChange={(input) => setGuest(input.target.value)}

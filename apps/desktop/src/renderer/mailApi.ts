@@ -19,6 +19,7 @@ import type {
   MailFolderCounts,
   MailListQuery,
   MailListResult,
+  MailOlderResult,
   MailMutateAction,
   MailMutateOptions,
   MessageDto,
@@ -186,8 +187,18 @@ export async function bridgeRemoveAccountIdentity(
 export async function bridgeListMail(
   query: MailListQuery,
 ): Promise<MailListResult> {
-  if (!hasIntrayBridge()) return { messages: [], nextCursor: null, total: 0 };
+  if (!hasIntrayBridge()) {
+    return { messages: [], nextCursor: null, endCursor: null, total: 0 };
+  }
   return window.intray.mail.list(query);
+}
+
+export async function bridgeLoadOlder(query: {
+  accountId?: string | "all";
+  folder?: string;
+}): Promise<MailOlderResult> {
+  if (!hasIntrayBridge()) return { added: 0, exhausted: true };
+  return window.intray.mail.loadOlder(query);
 }
 
 export async function bridgeFolderCounts(

@@ -23,7 +23,7 @@ async function startCheckout(plan: SupportPlan) {
   window.location.assign(data.checkout_url);
 }
 
-export function SupportCheckoutCards() {
+export function SupportCheckoutCards({ className = "mt-7" }: { className?: string }) {
   const [loading, setLoading] = useState<SupportPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,7 +39,7 @@ export function SupportCheckoutCards() {
   };
 
   return (
-    <div className="mt-7">
+    <div className={className}>
       <div className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"

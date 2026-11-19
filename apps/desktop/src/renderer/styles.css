@@ -1112,6 +1112,11 @@ button {
   white-space: nowrap;
 }
 
+.plugin-workspace-title p:has(.creator-blur) {
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .plugin-workspace-nav {
   margin-left: auto;
 }
@@ -1251,6 +1256,13 @@ button {
 
 .cal-allday-chip.open {
   outline: 1px solid var(--blue);
+}
+
+.cal-allday-chip:has(.creator-blur),
+.cal-block strong:has(.creator-blur),
+.cal-block span:has(.creator-blur) {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .cal-week-scroll {
@@ -2242,11 +2254,28 @@ button {
 
 .message-scroll {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 0 4px 8px;
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+.list-more {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 8px 8px 10px;
+}
+
+.list-more-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .message-row {
@@ -3868,30 +3897,50 @@ button.attachment.on {
   color: #7eeadf;
 }
 
-.attachment-preview {
-  margin-top: 8px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #00000033;
+.attachment-pop-root {
+  z-index: 55;
+  padding: 28px;
+}
+
+.attachment-pop {
+  width: min(1120px, calc(100vw - 56px));
+  height: min(860px, calc(100vh - 56px));
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid var(--line-strong);
+  background: var(--menu-bg);
+  box-shadow: 0 24px 64px #00000073;
+  outline: none;
+}
+
+.attachment-pop .icon-btn:disabled {
+  opacity: 0.35;
 }
 
 .attachment-preview-bar {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 4px;
-  min-height: 40px;
-  padding: 6px 8px 6px 12px;
+  flex-shrink: 0;
+  min-height: 48px;
+  padding: 8px 10px 8px 16px;
   border-bottom: 1px solid var(--line);
+  background: var(--menu-bg);
 }
 
 .attachment-preview-name {
+  margin: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .attachment-preview-gap {
@@ -3906,38 +3955,38 @@ button.attachment.on {
   font-variant-numeric: tabular-nums;
 }
 
-.attachment-tool {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  color: var(--muted);
-}
-
-.attachment-tool:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-
-.attachment-tool:disabled {
-  opacity: 0.35;
-  cursor: default;
+.attachment-preview-pdf {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .attachment-preview-stage {
-  max-height: min(70vh, 720px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   display: flex;
   justify-content: center;
-  padding: 12px;
+  align-items: flex-start;
+  padding: 16px;
+  background: #00000033;
+}
+
+.attachment-preview-stage:has(img),
+.attachment-preview-stage:has(video),
+.attachment-preview-stage:has(audio),
+.attachment-preview-stage:has(.attachment-preview-note) {
+  align-items: center;
 }
 
 .attachment-preview-stage img,
 .attachment-preview-stage video {
   max-width: 100%;
+  max-height: 100%;
+  width: auto;
   height: auto;
+  object-fit: contain;
   border-radius: 8px;
 }
 
@@ -3947,6 +3996,16 @@ button.attachment.on {
 
 .attachment-preview-stage audio {
   width: min(100%, 480px);
+}
+
+.attachment-action-note {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 16px;
+  background: var(--signal-soft);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.4;
 }
 
 .attachment-preview-note {
@@ -5254,6 +5313,11 @@ button.attachment.on {
   white-space: nowrap;
 }
 
+.plugin-nav-btn > span > span:has(.creator-blur) {
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .plugin-nav-btn.active,
 .plugin-nav-btn:hover {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
@@ -5748,6 +5812,13 @@ a.plugin-secondary-btn {
   white-space: nowrap;
 }
 
+.cal-event-title:has(.creator-blur),
+.cal-event-meta:has(.creator-blur),
+.plugin-pin-copy strong.creator-blur {
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .cal-detail {
   margin-top: 6px;
   padding: 10px 12px;
@@ -5795,6 +5866,11 @@ a.plugin-secondary-btn {
   max-height: 140px;
   overflow: auto;
   color: var(--fg);
+}
+
+.cal-notes.creator-blur {
+  overflow: visible;
+  max-height: none;
 }
 
 .cal-links {
@@ -7537,6 +7613,14 @@ button.keycap,
   color: #fff;
 }
 
+
+[data-theme="light"] .attachment-pop {
+  box-shadow: 0 24px 64px #00000024;
+}
+
+[data-theme="light"] .attachment-preview-stage {
+  background: #eef0f3;
+}
 
 [data-theme="light"] .modal,
 [data-theme="light"] .modal-settings,

@@ -117,8 +117,20 @@ export type MailListQuery = {
 
 export type MailListResult = {
   messages: MessageDto[];
+  /** Set when another local page exists. Null means the store has nothing older. */
   nextCursor: string | null;
+  /**
+   * Cursor of the last row in this page (or the request cursor when the page
+   * is empty). Pass it again after a provider backfill.
+   */
+  endCursor: string | null;
   total: number;
+};
+
+/** How many older messages a scroll-triggered provider fetch stored. */
+export type MailOlderResult = {
+  added: number;
+  exhausted: boolean;
 };
 
 export type FolderCountEntry = {

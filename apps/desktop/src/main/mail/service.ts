@@ -22,8 +22,9 @@ import {
   listContacts,
   listIdentityRows,
   listLabels,
-  listMessageRows,
+  listThreadHeadPage,
   listThreadMessages,
+  oldestMessageMs,
   recountUnread,
   expandPersonQuery,
   searchMessageRows,
@@ -110,10 +111,12 @@ import {
   isGmailImapTarget,
   normalizeGmailAppPassword,
 } from "../../shared/gmailImap";
+import { decodeMailCursor, encodeMailCursor } from "../../shared/mailCursor";
 import { parseSearchClauses, stripMatchMarkers } from "../../shared/searchQuery";
 import { assertAddressList, buildMessageId, buildRawMessage } from "./mime";
 import { sanitizeEmailHtml } from "./sanitize";
 import {
+  backfillOlderMail,
   startAccountPolling,
   stopAccountPolling,
   syncAccount,
@@ -131,6 +134,7 @@ import type {
   MailFolderCounts,
   MailListQuery,
   MailListResult,
+  MailOlderResult,
   MailMutateAction,
   MailMutateOptions,
   MessageDto,
@@ -1390,7 +1394,6 @@ async function enrichFromSearch(query: MailListQuery): Promise<boolean> {
 }
 
 export async function listMail(query: MailListQuery): Promise<MailListResult> {
-  const beforeDateMs = query.cursor ? Number(query.cursor) : undefined;
   if (query.q?.trim()) {
     const q = query.q.trim();
     scheduleSearchEnrich(query);
@@ -1426,42 +1429,152 @@ export async function listMail(query: MailListQuery): Promise<MailListResult> {
     return {
       messages,
       nextCursor: null,
+      endCursor: null,
       total: heads.length,
     };
   }
   const limit = Math.min(query.limit ?? 50, 100);
+  const before = decodeMailCursor(query.cursor);
 
-  const { rows, total } = listMessageRows({
+  const { rows, total, hasMore } = listThreadHeadPage({
     accountId: query.accountId,
     folder: query.folder ?? "inbox",
     filter: query.filter ?? "all",
-    limit: limit * 3, // over-fetch then collapse threads
-    beforeDateMs: Number.isFinite(beforeDateMs) ? beforeDateMs : undefined,
+    limit,
+    before,
   });
-
-  const seen = new Set<string>();
-  const heads: MessageRow[] = [];
-  for (const r of rows) {
-    const key = `${r.account_id}:${r.thread_id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    heads.push(r);
-    if (heads.length >= limit) break;
-  }
 
   const warmKey = `${query.accountId ?? "all"}:${query.folder ?? "inbox"}:${query.filter ?? "all"}`;
   let warm = false;
-  if (heads.length && !warmedListKeys.has(warmKey)) {
+  if (rows.length && !before && !warmedListKeys.has(warmKey)) {
     warmedListKeys.add(warmKey);
     warm = true;
   }
-  const nextCursor =
-    heads.length > 0
-      ? String(Math.min(...heads.map((head) => head.date_ms)))
-      : null;
-  const messages = listHeadDtos(sortHeadsByActivity(heads), warm);
+  const last = rows[rows.length - 1];
+  const endCursor = last
+    ? encodeMailCursor(last.date_ms, last.id)
+    : (query.cursor ?? null);
+  const nextCursor = hasMore && last ? endCursor : null;
+  const messages = listHeadDtos(sortHeadsByActivity(rows), warm);
 
-  return { messages, nextCursor, total };
+  return { messages, nextCursor, endCursor, total };
+}
+
+const gmailOlderTokens = new Map<
+  string,
+  { q: string; pageToken?: string; done: boolean }
+>();
+
+function gmailLabelForFolder(folder: string): string[] | null {
+  switch (folder) {
+    case "inbox":
+      return ["INBOX"];
+    case "sent":
+      return ["SENT"];
+    case "drafts":
+      return ["DRAFT"];
+    case "junk":
+      return ["SPAM"];
+    case "trash":
+      return ["TRASH"];
+    default:
+      return null;
+  }
+}
+
+function utcDay(ms: number): string {
+  const day = new Date(ms);
+  const month = String(day.getUTCMonth() + 1).padStart(2, "0");
+  const date = String(day.getUTCDate()).padStart(2, "0");
+  return `${day.getUTCFullYear()}/${month}/${date}`;
+}
+
+/** Gmail API accounts have no IMAP UID cursor. Page backward with `before:`. */
+async function backfillGmailApi(
+  accountId: string,
+  folder: string,
+): Promise<MailOlderResult> {
+  const labelIds = gmailLabelForFolder(folder);
+  if (!labelIds) return { added: 0, exhausted: true };
+  const key = `${accountId}:${folder}`;
+  const existing = gmailOlderTokens.get(key);
+  let state = existing;
+  if (!state) {
+    const oldest = oldestMessageMs({ accountId, folder });
+    if (oldest == null) return { added: 0, exhausted: true };
+    state = { q: `before:${utcDay(oldest)}`, done: false };
+    gmailOlderTokens.set(key, state);
+  }
+  if (state.done) return { added: 0, exhausted: true };
+
+  const page = await listMessageIds(accountId, {
+    labelIds,
+    q: state.q,
+    pageToken: state.pageToken,
+    maxResults: 40,
+  });
+  let added = 0;
+  for (const message of page.messages ?? []) {
+    try {
+      const meta = await getMessageMeta(accountId, message.id);
+      const row = gmailMessageToRow(accountId, meta);
+      const headers = rfcFromGmail(meta);
+      const wrote = indexIncomingMessage(
+        row,
+        {
+          messageId: headers.rfcMessageId,
+          inReplyTo: headers.inReplyTo,
+          references: headers.references,
+        },
+        { providerThread: true },
+      );
+      if (!wrote) continue;
+      added += 1;
+      noteSender(row.from_email, row.from_name);
+    } catch {
+      /* skip one bad id */
+    }
+  }
+  state.pageToken = page.nextPageToken;
+  state.done = !page.nextPageToken;
+  if (added) recountUnread(accountId);
+  return { added, exhausted: state.done };
+}
+
+/**
+ * Store the next older batch for the accounts in view. The list then pages
+ * through those rows. Forward sync is unchanged.
+ */
+export async function loadOlderMail(query: {
+  accountId?: string | "all";
+  folder?: string;
+}): Promise<MailOlderResult> {
+  const folder = query.folder ?? "inbox";
+  if (folder === "snoozed") return { added: 0, exhausted: true };
+  const accounts = listAccountRows().filter((account) => {
+    if (query.accountId && query.accountId !== "all") {
+      return account.id === query.accountId;
+    }
+    return true;
+  });
+  if (!accounts.length) return { added: 0, exhausted: true };
+
+  const results = await Promise.all(
+    accounts.map(async (account) => {
+      try {
+        if (accountUsesImap(account.id, account.provider)) {
+          return await backfillOlderMail(account.id, folder);
+        }
+        return await backfillGmailApi(account.id, folder);
+      } catch {
+        return { added: 0, exhausted: false };
+      }
+    }),
+  );
+  return {
+    added: results.reduce((sum, result) => sum + result.added, 0),
+    exhausted: results.every((result) => result.exhausted),
+  };
 }
 
 /** Sidebar counters — not derived from the paged list (which is capped). */

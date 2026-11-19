@@ -113,7 +113,6 @@ import {
   customFolders as seedCustomFolders,
   folders,
   labels as seedLabels,
-  meeting,
   messages as seedMessages,
   type Account,
   type Label,
@@ -181,6 +180,7 @@ import {
   bridgeListContacts,
   bridgeListLabels,
   bridgeListMail,
+  bridgeLoadOlder,
   bridgeMutateMail,
   bridgeOnAvatarUpdated,
   bridgeOnNotifyOpen,
@@ -200,8 +200,6 @@ import {
 } from "./mailApi";
 import { mergeSentIntoList, unionThreads } from "./threadMerge";
 import {
-  notifyMailOpened,
-  notifyMeeting,
   badgeCountForMode,
   notifySnoozeReturn,
   syncTaskbarBadge,
@@ -690,7 +688,7 @@ function saveCustomFolders(names: string[]) {
 
 type AppNotification = {
   id: string;
-  kind: "mail" | "snooze" | "opened" | "meeting" | "ai" | "sync";
+  kind: "snooze" | "opened" | "meeting" | "ai" | "sync";
   title: string;
   body: string;
   time: string;
@@ -699,6 +697,8 @@ type AppNotification = {
   folderId?: string;
 };
 
+const NOTIFICATIONS_KEY = "intray.notifications.v1";
+
 function notifTimeLabel(d = new Date()): string {
   return d.toLocaleTimeString(undefined, {
     hour: "numeric",
@@ -706,10 +706,68 @@ function notifTimeLabel(d = new Date()): string {
   });
 }
 
-function recipientLabel(message: Message): string | undefined {
-  const to = message.thread[0]?.to?.[0];
-  if (!to) return undefined;
-  return to.name || to.email;
+function snoozeWhenLabel(time: string): string {
+  const trimmed = time.trim().replace(/^Until\s+/i, "");
+  return trimmed || "Snoozed";
+}
+
+function loadNotifications(): AppNotification[] {
+  try {
+    const raw = localStorage.getItem(NOTIFICATIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as AppNotification[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (item): item is AppNotification =>
+          Boolean(item) &&
+          typeof item.id === "string" &&
+          item.id !== "meeting-1" &&
+          (item.kind === "snooze" ||
+            item.kind === "opened" ||
+            item.kind === "meeting" ||
+            item.kind === "ai" ||
+            item.kind === "sync"),
+      )
+      .slice(0, 40);
+  } catch {
+    return [];
+  }
+}
+
+/** Keep scheduled follow-ups aligned with messages that are still snoozed. */
+function mergeFollowUps(
+  prev: AppNotification[],
+  snoozed: Message[],
+): AppNotification[] {
+  const byId = new Map(snoozed.map((message) => [message.id, message]));
+  let changed = false;
+  const kept = prev.filter((item) => {
+    if (item.kind !== "snooze" || item.folderId !== "snoozed" || !item.messageId) {
+      return true;
+    }
+    if (item.unread || byId.has(item.messageId)) return true;
+    changed = true;
+    return false;
+  });
+  const known = new Set(kept.map((item) => item.messageId).filter(Boolean));
+  const added: AppNotification[] = [];
+  for (const message of snoozed) {
+    if (known.has(message.id)) continue;
+    changed = true;
+    added.push({
+      id: `followup-${message.id}`,
+      kind: "snooze",
+      title: "Follow up",
+      body: message.subject || "Snoozed message",
+      time: snoozeWhenLabel(message.time),
+      unread: false,
+      messageId: message.id,
+      folderId: "snoozed",
+    });
+  }
+  if (!changed) return prev;
+  return [...added, ...kept].slice(0, 40);
 }
 
 function NotificationsMenu({
@@ -747,7 +805,11 @@ function NotificationsMenu({
         <div>
           <strong>Notifications</strong>
           <span>
-            {unread > 0 ? `${unread} new` : "You're caught up"}
+            {unread > 0
+              ? `${unread} new`
+              : items.length > 0
+                ? "Snoozes and follow-ups"
+                : "You're caught up"}
           </span>
         </div>
         {unread > 0 && (
@@ -759,7 +821,7 @@ function NotificationsMenu({
       <div className="notif-menu-list">
         {items.length === 0 ? (
           <div className="notif-empty">
-            No reminders yet — snooze wakes and read receipts show up here
+            No follow-ups yet. Snooze a message and it will show up here.
           </div>
         ) : (
           items.map((n) => (
@@ -774,8 +836,6 @@ function NotificationsMenu({
                   <Clock size={14} strokeWidth={1.75} />
                 ) : n.kind === "opened" ? (
                   <MailOpen size={14} strokeWidth={1.75} />
-                ) : n.kind === "mail" ? (
-                  <Mail size={14} strokeWidth={1.75} />
                 ) : n.kind === "meeting" ? (
                   <Calendar size={14} strokeWidth={1.75} />
                 ) : n.kind === "ai" ? (
@@ -2065,6 +2125,23 @@ function FilterChips({
   );
 }
 
+/** The box that actually scrolls the rows. Prefer the list itself. */
+function listScroller(preferred: HTMLElement): HTMLElement {
+  if (preferred.scrollHeight > preferred.clientHeight + 1) return preferred;
+  let current = preferred.parentElement;
+  while (current) {
+    const overflow = getComputedStyle(current).overflowY;
+    if (
+      (overflow === "auto" || overflow === "scroll") &&
+      current.scrollHeight > current.clientHeight + 1
+    ) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return preferred;
+}
+
 function MessageList({
   items,
   accounts,
@@ -2099,6 +2176,10 @@ function MessageList({
   onCreateLabel,
   onCreateFolder,
   onRefine,
+  hasMore,
+  loadingMore,
+  onNearEnd,
+  scrollEpoch,
 }: {
   items: Message[];
   accounts: Account[];
@@ -2139,6 +2220,10 @@ function MessageList({
   onAction: (messageId: string, action: MailAction, snoozeLabel?: string) => void;
   onCreateLabel: (messageId: string, name: string, color: string) => void;
   onCreateFolder: (name: string) => boolean;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onNearEnd?: () => void;
+  scrollEpoch?: number;
 }) {
   const otherCount = items.filter((m) => !m.important && m.unread).length;
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -2150,6 +2235,68 @@ function MessageList({
   const anyUnstarred = checkedMessages.some((m) => !m.starred);
   const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
   const blur = useCreatorBlur();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const onNearEndRef = useRef(onNearEnd);
+  onNearEndRef.current = onNearEnd;
+  const pauseAutoRef = useRef(false);
+  const armedRef = useRef(false);
+  const loadSnapRef = useRef({ count: items.length, loading: false });
+
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (node) node.scrollTop = 0;
+  }, [scrollEpoch]);
+
+  useEffect(() => {
+    const snap = loadSnapRef.current;
+    if (snap.loading && !loadingMore && items.length === snap.count) {
+      // A finished pass added nothing. Wait until the end leaves the screen.
+      pauseAutoRef.current = true;
+    }
+    if (items.length > snap.count) pauseAutoRef.current = false;
+    snap.count = items.length;
+    snap.loading = Boolean(loadingMore);
+  }, [items.length, loadingMore]);
+
+  useEffect(() => {
+    if (!loadingMore) armedRef.current = false;
+  }, [loadingMore]);
+
+  useEffect(() => {
+    const preferred = scrollRef.current;
+    if (!preferred || !hasMore) return;
+    let scroller = listScroller(preferred);
+    const nearEnd = () =>
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <=
+      160;
+    const kick = () => {
+      if (!nearEnd()) {
+        pauseAutoRef.current = false;
+        armedRef.current = false;
+        return;
+      }
+      if (pauseAutoRef.current || armedRef.current) return;
+      armedRef.current = true;
+      onNearEndRef.current?.();
+    };
+    const onScroll = () => kick();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    const resize = new ResizeObserver(() => {
+      const next = listScroller(preferred);
+      if (next !== scroller) {
+        scroller.removeEventListener("scroll", onScroll);
+        scroller = next;
+        scroller.addEventListener("scroll", onScroll, { passive: true });
+      }
+      kick();
+    });
+    resize.observe(preferred);
+    kick();
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      resize.disconnect();
+    };
+  }, [hasMore, loadingMore, items.length]);
 
   // Replay the fade-up only for rows that just arrived. Re-rendering the list
   // on every sync tick used to restart the staggered animation for all rows.
@@ -2348,7 +2495,7 @@ function MessageList({
         </div>
       )}
 
-      <div className="message-scroll">
+      <div className="message-scroll" ref={scrollRef}>
         {items.length === 0 ? (
           <div className="empty-list">
             <Inbox size={22} strokeWidth={1.5} />
@@ -2598,6 +2745,14 @@ function MessageList({
           })
         )}
       </div>
+      {loadingMore && (
+        <div className="list-more">
+          <span className="list-more-status" role="status">
+            <Loader2 size={14} className="spin" />
+            Loading older mail…
+          </span>
+        </div>
+      )}
 
       {menu && menuMessage && (
         <MessageActionMenu
@@ -5272,6 +5427,9 @@ function loadRecentOpens(): RecentOpen[] {
   }
 }
 
+const LIST_PAGE_SIZE = 80;
+const LIST_KEEP_CAP = 400;
+
 export default function App() {
   const [prefs, setPrefs] = useState<Preferences>(() => loadPreferences());
   const [theme, setTheme] = useState<"dark" | "light">(() =>
@@ -5327,47 +5485,9 @@ export default function App() {
   );
   const [catchUpRequest, setCatchUpRequest] =
     useState<AgentCatchUpRequest | null>(null);
-  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
-    const snoozed = seedMessages.find((m) => m.folder === "snoozed");
-    const opened = seedMessages.find(
-      (m) => m.folder === "sent" && (m.openTracking?.opens.length ?? 0) > 0,
-    );
-    const items: AppNotification[] = [];
-    if (snoozed) {
-      items.push({
-        id: `snooze-${snoozed.id}`,
-        kind: "snooze",
-        title: "Snooze reminder",
-        body: snoozed.subject,
-        time: "now",
-        unread: true,
-        messageId: snoozed.id,
-        folderId: "snoozed",
-      });
-    }
-    if (opened) {
-      const who = recipientLabel(opened);
-      items.push({
-        id: `opened-${opened.id}`,
-        kind: "opened",
-        title: who ? `${who} opened your email` : "Your email was opened",
-        body: opened.subject,
-        time: opened.openTracking?.openedAt ?? opened.time,
-        unread: true,
-        messageId: opened.id,
-        folderId: "sent",
-      });
-    }
-    items.push({
-      id: "meeting-1",
-      kind: "meeting",
-      title: meeting.title,
-      body: "Starting now — join from the tray or calendar",
-      time: "now",
-      unread: true,
-    });
-    return items;
-  });
+  const [notifications, setNotifications] = useState<AppNotification[]>(
+    loadNotifications,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[]>([]);
@@ -5390,6 +5510,20 @@ export default function App() {
   const [recentSearches, setRecentSearches] = useState(loadRecentSearches);
   const [recentOpens, setRecentOpens] = useState(loadRecentOpens);
   const listGen = useRef(0);
+  const olderNoticeRef = useRef(false);
+  const listPagingRef = useRef({
+    viewKey: "",
+    cursor: null as string | null,
+    localMore: false,
+    serverMore: false,
+    loading: false,
+    holdAppend: false,
+    wantMore: false,
+    wantRefresh: false,
+  });
+  const [listHasMore, setListHasMore] = useState(false);
+  const [listLoadingOlder, setListLoadingOlder] = useState(false);
+  const [listScrollEpoch, setListScrollEpoch] = useState(0);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
 
@@ -5428,7 +5562,6 @@ export default function App() {
     { id: string; snapshot: Message }[] | null
   >(null);
   const searchTimer = useRef<number | null>(null);
-  const notifiedMeetingRef = useRef(false);
   const prefsRef = useRef(prefs);
   const mailRef = useRef(mail);
   const workspaceRef = useRef(workspace);
@@ -5457,6 +5590,35 @@ export default function App() {
       [next, ...prev.filter((n) => n.id !== next.id)].slice(0, 40),
     );
   };
+
+  const noteSnoozed = (
+    items: { id: string; subject: string }[],
+    when: string,
+  ) => {
+    const label = when.trim() || "later";
+    for (const item of items) {
+      pushAppNotification({
+        id: `followup-${item.id}`,
+        kind: "snooze",
+        title: "Snoozed",
+        body: item.subject || "Snoozed message",
+        time: label,
+        messageId: item.id,
+        folderId: "snoozed",
+      });
+    }
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        NOTIFICATIONS_KEY,
+        JSON.stringify(notifications.slice(0, 40)),
+      );
+    } catch {
+      /* storage full or unavailable */
+    }
+  }, [notifications]);
 
   const clearChecks = () => {
     setCheckedIds(new Set());
@@ -5518,14 +5680,42 @@ export default function App() {
     }
   };
 
+  const publishPaging = (next: {
+    cursor: string | null;
+    localMore: boolean;
+    serverMore: boolean;
+  }) => {
+    listPagingRef.current.cursor = next.cursor;
+    listPagingRef.current.localMore = next.localMore;
+    listPagingRef.current.serverMore = next.serverMore;
+    setListHasMore(next.localMore || next.serverMore);
+  };
+
+  const hydrateListed = (incoming: Message[], prev: Message[]): Message[] => {
+    const prevById = new Map(prev.map((m) => [m.id, m]));
+    return incoming.map((m) => {
+      const old = prevById.get(m.id);
+      if (!old) return m;
+      return {
+        ...m,
+        tag: m.tag ?? old.tag,
+        thread: unionThreads(old.thread, m.thread),
+        linkCount: m.linkCount || old.linkCount,
+        attachmentCount: m.attachmentCount || old.attachmentCount,
+        openTracking: old.openTracking ?? m.openTracking,
+      };
+    });
+  };
+
   const refreshLiveMail = async (opts?: {
     accountId?: string;
     folder?: string;
     filter?: Filter;
     q?: string;
     quiet?: boolean;
+    append?: boolean;
   }): Promise<Message[]> => {
-    const gen = ++listGen.current;
+    const append = Boolean(opts?.append);
     // Explicit account/folder wins. A bare refresh while Snooze is open stays
     // on every account's snoozed mail, including search and visibility refreshes.
     const pinned = opts?.accountId == null && opts?.folder == null;
@@ -5536,50 +5726,226 @@ export default function App() {
     const folder = requested.startsWith("label:") ? "inbox" : requested;
     const f = opts?.filter ?? filter;
     const q = opts?.q ?? searchText;
-    const countsPromise = opts?.quiet
-      ? Promise.resolve()
-      : refreshFolderCounts(inSnooze ? UNIFIED_ID : aid);
     const searching = Boolean(q.trim());
-    let result: Awaited<ReturnType<typeof bridgeListMail>>;
-    try {
-      result = await bridgeListMail({
+    const viewKey = `${scope}|${searching ? "search:" + q.trim() : folder}|${searching ? "all" : f}`;
+    const paging = listPagingRef.current;
+    const sameView = paging.viewKey === viewKey;
+
+    if (append) {
+      if (!sameView) return mailRef.current;
+      // A list refresh is in flight. Keep the loading row up and run after it.
+      if (paging.loading || paging.holdAppend) {
+        paging.wantMore = true;
+        setListLoadingOlder(true);
+        return mailRef.current;
+      }
+      if (!paging.localMore && !paging.serverMore) {
+        setListLoadingOlder(false);
+        return mailRef.current;
+      }
+    } else if (sameView && paging.loading) {
+      // Don't drop the older-mail fetch the user is waiting on.
+      paging.wantRefresh = true;
+      return mailRef.current;
+    }
+
+    const gen = ++listGen.current;
+    if (append) {
+      paging.loading = true;
+      setListLoadingOlder(true);
+    } else {
+      paging.holdAppend = true;
+      paging.loading = false;
+      if (!paging.wantMore) setListLoadingOlder(false);
+      if (!sameView) {
+        paging.viewKey = viewKey;
+        paging.cursor = null;
+        paging.localMore = false;
+        paging.serverMore = false;
+        paging.wantMore = false;
+        paging.wantRefresh = false;
+        setListHasMore(false);
+        setListScrollEpoch((epoch) => epoch + 1);
+      } else {
+        paging.viewKey = viewKey;
+      }
+    }
+
+    const countsPromise =
+      append || opts?.quiet
+        ? Promise.resolve()
+        : refreshFolderCounts(inSnooze ? UNIFIED_ID : aid);
+    const canBackfill = !searching && folder !== "snoozed";
+
+    const pullPage = (cursor: string | null) =>
+      bridgeListMail({
         accountId: scope,
         folder: searching ? undefined : folder,
         filter: searching ? "all" : f,
-        limit: searching ? 250 : 80,
+        limit: searching ? 250 : LIST_PAGE_SIZE,
+        cursor,
         q: q.trim() || undefined,
       });
+
+    try {
+      if (searching) {
+        const result = await pullPage(null);
+        if (gen !== listGen.current) return [];
+        setAppliedQuery(q.trim());
+        const messages = hydrateListed(
+          result.messages.map(messageDtoToUi),
+          mailRef.current,
+        );
+        publishPaging({ cursor: null, localMore: false, serverMore: false });
+        setMail(messages);
+        setSelectedId((prev) =>
+          prev && messages.some((m) => m.id === prev) ? prev : "",
+        );
+        await countsPromise;
+        return messages;
+      }
+
+      if (append) {
+        let cursor = paging.cursor;
+        let localMore = paging.localMore;
+        let serverMore = paging.serverMore;
+        let fresh: Message[] = [];
+        let serverTries = 0;
+        for (let round = 0; round < 6 && fresh.length === 0; round += 1) {
+          if (gen !== listGen.current) return [];
+          if (localMore && cursor) {
+            const result = await pullPage(cursor);
+            if (gen !== listGen.current) return [];
+            const batch = hydrateListed(
+              result.messages.map(messageDtoToUi),
+              mailRef.current,
+            );
+            const seen = new Set(mailRef.current.map((m) => m.id));
+            fresh = batch.filter((m) => !seen.has(m.id));
+            const nextCursor = result.endCursor ?? result.nextCursor ?? cursor;
+            const advanced = nextCursor !== cursor;
+            cursor = nextCursor;
+            localMore = Boolean(result.nextCursor);
+            if (fresh.length) break;
+            // The same page came back. Stop spinning on it and ask the server.
+            if (!advanced) localMore = false;
+            if (localMore) continue;
+          }
+          if (!serverMore || !canBackfill) {
+            serverMore = false;
+            break;
+          }
+          serverTries += 1;
+          if (serverTries > 2) break;
+          if (typeof window.intray?.mail?.loadOlder !== "function") {
+            if (!olderNoticeRef.current) {
+              olderNoticeRef.current = true;
+              showToast("Restart Intray to load older mail");
+            }
+            break;
+          }
+          let older: { added: number; exhausted: boolean };
+          try {
+            older = await bridgeLoadOlder({ accountId: scope, folder });
+          } catch (err) {
+            const missing =
+              err instanceof Error &&
+              /No handler registered/i.test(err.message);
+            if (missing && !olderNoticeRef.current) {
+              olderNoticeRef.current = true;
+              showToast("Restart Intray to load older mail");
+            }
+            break;
+          }
+          if (gen !== listGen.current) return [];
+          serverMore = !older.exhausted || localMore;
+          if (older.added > 0) void refreshFolderCounts(aid);
+          const result = await pullPage(cursor);
+          if (gen !== listGen.current) return [];
+          const batch = hydrateListed(
+            result.messages.map(messageDtoToUi),
+            mailRef.current,
+          );
+          const seen = new Set(mailRef.current.map((m) => m.id));
+          fresh = batch.filter((m) => !seen.has(m.id));
+          cursor = result.endCursor ?? cursor;
+          localMore = Boolean(result.nextCursor);
+          if (!localMore && older.exhausted && fresh.length === 0) {
+            serverMore = false;
+          }
+        }
+        if (gen !== listGen.current) return [];
+        publishPaging({ cursor, localMore, serverMore: canBackfill && serverMore });
+        if (fresh.length) {
+          setMail((prev) => {
+            const seen = new Set(prev.map((m) => m.id));
+            return [...prev, ...fresh.filter((m) => !seen.has(m.id))];
+          });
+        }
+        return mailRef.current;
+      }
+
+      const keep = Math.min(
+        LIST_KEEP_CAP,
+        Math.max(LIST_PAGE_SIZE, sameView ? mailRef.current.length : LIST_PAGE_SIZE),
+      );
+      const acc: Message[] = [];
+      let cursor: string | null = null;
+      let localMore = false;
+      let total = 0;
+      for (let round = 0; round < 12 && acc.length < keep; round += 1) {
+        const result = await pullPage(cursor);
+        if (gen !== listGen.current) return [];
+        if (round === 0) total = result.total;
+        const batch = result.messages.map(messageDtoToUi);
+        const seen = new Set(acc.map((m) => m.id));
+        let added = 0;
+        for (const message of batch) {
+          if (seen.has(message.id)) continue;
+          seen.add(message.id);
+          acc.push(message);
+          added += 1;
+        }
+        cursor = result.endCursor;
+        localMore = Boolean(result.nextCursor);
+        if (!added || !result.nextCursor) break;
+      }
+      if (gen !== listGen.current) return [];
+      setAppliedQuery(q.trim());
+      const messages = hydrateListed(acc, mailRef.current);
+      publishPaging({
+        cursor,
+        localMore,
+        serverMore: canBackfill,
+      });
+      setMail(messages);
+      setSelectedId((prev) =>
+        prev && messages.some((m) => m.id === prev) ? prev : "",
+      );
+      if (inSnooze && !q.trim()) setGlobalSnoozeTotal(total);
+      await countsPromise;
+      return messages;
     } catch {
       if (gen === listGen.current) setAppliedQuery(q.trim());
       return [];
+    } finally {
+      if (listGen.current === gen) {
+        const pagingNow = listPagingRef.current;
+        const moreWanted =
+          pagingNow.wantMore && (pagingNow.localMore || pagingNow.serverMore);
+        const refreshWanted = pagingNow.wantRefresh;
+        if (append) pagingNow.loading = false;
+        else pagingNow.holdAppend = false;
+        pagingNow.wantMore = false;
+        if (moreWanted) {
+          void refreshLiveMail({ append: true });
+        } else {
+          pagingNow.wantRefresh = false;
+          if (refreshWanted) void refreshLiveMail();
+          else setListLoadingOlder(false);
+        }
+      }
     }
-    if (gen !== listGen.current) return [];
-    setAppliedQuery(q.trim());
-    const messages = result.messages.map(messageDtoToUi);
-    // listMail returns metadata only — keep hydrated bodies and renderer tags.
-    setMail((prev) => {
-      const prevById = new Map(prev.map((m) => [m.id, m]));
-      return messages.map((m) => {
-        const old = prevById.get(m.id);
-        if (!old) return m;
-        return {
-          ...m,
-          tag: m.tag ?? old.tag,
-          thread: unionThreads(old.thread, m.thread),
-          linkCount: m.linkCount || old.linkCount,
-          attachmentCount: m.attachmentCount || old.attachmentCount,
-          openTracking: old.openTracking ?? m.openTracking,
-        };
-      });
-    });
-    // A folder or account refresh must not open a message on its own.
-    // Keep the open one only when it is still in this list.
-    setSelectedId((prev) =>
-      prev && messages.some((m) => m.id === prev) ? prev : "",
-    );
-    if (inSnooze && !q.trim()) setGlobalSnoozeTotal(result.total);
-    await countsPromise;
-    return messages;
   };
 
   const loadLiveWorkspace = async (selectAccountId?: string) => {
@@ -5700,6 +6066,34 @@ export default function App() {
     const off = bridgeOnSyncProgress((status) => {
       setSyncStatus(status);
       setSyncing(status.state === "syncing");
+      if (status.state === "error" || status.state === "offline") {
+        const id = `sync-${status.accountId || "mail"}`;
+        const title = status.state === "offline" ? "Offline" : "Sync problem";
+        const body =
+          status.error || "Intray will retry when the connection is back.";
+        setNotifications((prev) => {
+          const existing = prev.find((item) => item.id === id);
+          if (existing && existing.title === title && existing.body === body) {
+            return prev;
+          }
+          const next: AppNotification = {
+            id,
+            kind: "sync",
+            title,
+            body,
+            time: notifTimeLabel(),
+            unread: true,
+          };
+          return [next, ...prev.filter((item) => item.id !== id)].slice(0, 40);
+        });
+      } else if (status.state === "idle") {
+        const id = `sync-${status.accountId || "mail"}`;
+        setNotifications((prev) =>
+          prev.some((item) => item.id === id)
+            ? prev.filter((item) => item.id !== id)
+            : prev,
+        );
+      }
       if (
         status.state === "error" &&
         isAuthFailureMessage(status.error) &&
@@ -5799,10 +6193,11 @@ export default function App() {
       const subject = local?.subject ?? "Snoozed mail";
       const from = local?.from ?? "Reminder";
       pushAppNotification({
-        id: `snooze-${messageId}-${Date.now()}`,
+        id: `followup-${messageId}`,
         kind: "snooze",
-        title: "Snooze reminder",
+        title: "Follow up",
         body: subject,
+        time: "now",
         messageId,
         folderId: "inbox",
       });
@@ -5886,6 +6281,26 @@ export default function App() {
       offAvatar();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+    void bridgeListMail({
+      accountId: "all",
+      folder: "snoozed",
+      filter: "all",
+      limit: 40,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        const snoozed = result.messages.map(messageDtoToUi);
+        setNotifications((prev) => mergeFollowUps(prev, snoozed));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [live]);
 
   // Hydrate bodies when selection changes (click or keyboard). getMail returns
@@ -6311,6 +6726,10 @@ export default function App() {
             ? `Unstarred “${target.subject}”`
             : `Starred “${target.subject}”`;
         case "snooze":
+          noteSnoozed(
+            [{ id: target.id, subject: target.subject }],
+            detail ?? "later",
+          );
           return `Snoozed until ${detail ?? "later"}`;
         case "archive":
           return "Archived";
@@ -6457,6 +6876,13 @@ export default function App() {
         case "star":
           return forceStar ? `Starred ${n}` : `Unstarred ${n}`;
         case "snooze":
+          noteSnoozed(
+            targets.map((message) => ({
+              id: message.id,
+              subject: message.subject,
+            })),
+            detail ?? "later",
+          );
           return `Snoozed ${n} until ${detail ?? "later"}`;
         case "archive":
           return `Archived ${n} message${plural}`;
@@ -6792,6 +7218,16 @@ export default function App() {
     setMail((prev) =>
       prev.map((m) => byId.get(m.id) ?? m),
     );
+    setNotifications((prev) =>
+      prev.filter((item) => {
+        if (item.kind !== "snooze" || item.folderId !== "snoozed" || !item.messageId) {
+          return true;
+        }
+        const snapshot = byId.get(item.messageId);
+        if (!snapshot) return true;
+        return snapshot.folder === "snoozed";
+      }),
+    );
     lastActionRef.current = null;
     showToast(last.length > 1 ? `Undone ${last.length} changes` : "Undone");
   };
@@ -6886,31 +7322,10 @@ export default function App() {
     });
   }, []);
 
-  const pushOpenedNotification = (message: Message) => {
-    const who = recipientLabel(message);
-    pushAppNotification({
-      id: `opened-${message.id}-${Date.now()}`,
-      kind: "opened",
-      title: who ? `${who} opened your email` : "Your email was opened",
-      body: message.subject,
-      messageId: message.id,
-      folderId: "sent",
-    });
-    void notifyMailOpened(prefsRef.current, {
-      id: message.id,
-      subject: message.subject,
-      recipient: who,
-    });
-  };
-
   const applyOpenTracking = (messageId: string, tracking: OpenTracking) => {
     setMail((prev) =>
       prev.map((m) => (m.id === messageId ? { ...m, openTracking: tracking } : m)),
     );
-    const message = mailRef.current.find((m) => m.id === messageId);
-    if (message) {
-      pushOpenedNotification({ ...message, openTracking: tracking });
-    }
   };
 
   // Demo / local open-tracking: simulate a first open for unopened tracked sends.
@@ -6943,20 +7358,6 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live]);
-
-  useEffect(() => {
-    if (notifiedMeetingRef.current) return;
-    if (!prefs.notifyDesktop || !prefs.notifyMeetings) return;
-    notifiedMeetingRef.current = true;
-    const timer = window.setTimeout(() => {
-      void notifyMeeting(
-        prefs,
-        meeting.title,
-        "Starting now — join from the tray or calendar",
-      );
-    }, 1800);
-    return () => window.clearTimeout(timer);
-  }, [prefs]);
 
   const { filtered, statusCounts } = useMemo(() => {
     let list = scoped;
@@ -7245,6 +7646,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (document.body.hasAttribute("data-attachment-preview")) return;
       if (e.key === "Escape") {
         if (alert) {
           closeAlert(false);
@@ -7632,6 +8034,13 @@ export default function App() {
           }}
           onCreateLabel={createLabelForMessage}
           onCreateFolder={createFolder}
+          hasMore={live && listHasMore}
+          loadingMore={listLoadingOlder}
+          scrollEpoch={listScrollEpoch}
+          onNearEnd={() => {
+            if (!live) return;
+            void refreshLiveMail({ append: true });
+          }}
         />
         {prefs.layout !== "stack" && (
           <button

@@ -10,6 +10,8 @@ import {
 } from "./mailApi";
 import { GoogleCalendarBrand, pluginBrandIcons, SimpleBrandIcon } from "./BrandIcon";
 import { findMailMeeting, type MailMeetingHit } from "./mailMeeting";
+import { BlurredEmails, useCreatorBlur } from "./creatorBlur";
+import { MaskedAddress, textHidesAddress } from "./calendarMask";
 
 function pad(value: number): string {
   return String(value).padStart(2, "0");
@@ -105,6 +107,15 @@ function AddToCalendarDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorHref, setErrorHref] = useState<string | undefined>(undefined);
+  const blur = useCreatorBlur();
+  const mailKind = blur.kindForMessage({
+    email: message.email,
+    name: message.from,
+    subject: title,
+    preview: message.preview,
+    tag: message.tag?.label,
+  });
+  const titleBlur = blur.blurSubject(mailKind) || textHidesAddress(blur, title);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -201,6 +212,7 @@ function AddToCalendarDialog({
           <label>
             <span>Title</span>
             <input
+              className={titleBlur ? "creator-blur" : undefined}
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               maxLength={500}
@@ -234,7 +246,9 @@ function AddToCalendarDialog({
                 checked={invite}
                 onChange={(event) => setInvite(event.target.checked)}
               />
-              <span>Invite {message.email}</span>
+              <span>
+                Invite <MaskedAddress email={message.email} />
+              </span>
             </label>
           ) : null}
           {hit?.url ? (
@@ -419,7 +433,17 @@ export function PluginInfoPin({
   );
   const [saving, setSaving] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const blur = useCreatorBlur();
   const when = hit ? hitWhen(hit) : "";
+  const titleBlur = blur.blurSubject(
+    blur.kindForMessage({
+      email: message.email,
+      name: message.from,
+      subject: hit?.title || message.subject,
+      preview: message.preview,
+      tag: message.tag?.label,
+    }),
+  );
 
   useEffect(() => {
     setCalendarOpen(false);
@@ -459,7 +483,9 @@ export function PluginInfoPin({
         <section className="plugin-pin-card plugin-pin-meeting" aria-label="Meeting in this email">
           <GoogleCalendarBrand size={16} />
           <div className="plugin-pin-copy">
-            <strong>{hit.title}</strong>
+            <strong className={titleBlur ? "creator-blur" : undefined}>
+              {titleBlur ? hit.title : <BlurredEmails text={hit.title} />}
+            </strong>
             <span>{[hit.providerLabel, when].filter(Boolean).join(" · ")}</span>
           </div>
           <button

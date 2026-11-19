@@ -26,6 +26,7 @@ import {
 import { CalendarBoard } from "./CalendarBoard";
 import { GoogleCalendarBrand, pluginBrandIcons, SimpleBrandIcon } from "./BrandIcon";
 import { pluginErrorFrom } from "../shared/pluginError";
+import { MaskedAddress } from "./calendarMask";
 
 const SUPPORT_EMAIL = "hello@intray.app";
 const BUILD_DOCS =
@@ -54,13 +55,22 @@ function catalogEntry(id: PluginId): PluginCatalogEntry {
 }
 
 function navStatus(status: PluginStatus): string {
-  const detail =
-    status.id === "google-calendar"
-      ? status.config.email
-      : status.config.targetTitle || status.config.workspace;
+  const detail = status.config.targetTitle || status.config.workspace;
   if (!status.connected) return "Not connected";
   if (!status.enabled) return detail ? `Off · ${detail}` : "Off";
   return detail ? `On · ${detail}` : "On";
+}
+
+function CalendarNavStatus({ status }: { status: PluginStatus }) {
+  if (!status.connected) return "Not connected";
+  const email = status.config.email?.trim();
+  const prefix = status.enabled ? "On" : "Off";
+  if (!email) return prefix;
+  return (
+    <>
+      {prefix} · <MaskedAddress email={email} />
+    </>
+  );
 }
 
 function PluginSwitch({
@@ -383,7 +393,9 @@ export function PluginModal({
               <PluginGlyph id="google-calendar" />
               <span>
                 <strong>{calendarEntry.name}</strong>
-                <span>{navStatus(calendar)}</span>
+                <span>
+                  <CalendarNavStatus status={calendar} />
+                </span>
               </span>
             </button>
             <button
@@ -465,12 +477,23 @@ export function PluginModal({
                     <div>
                       <h3>Google account</h3>
                       <p>
-                        {calendar.connected
-                          ? `${calendar.config.email || "Signed in"}. This sign-in is only for Calendar. Logging out removes it from this device and does not log you out of Gmail.`
-                          : calendar.setup.ready
-                            ? "Uses the same Google sign-in window as Gmail, with permission to read and create events on your primary calendar. You can revoke that in your Google Account at any time."
-                            : (calendar.setup.hint ??
-                              "Google Calendar needs a Google OAuth client before it can connect.")}
+                        {calendar.connected ? (
+                          <>
+                            {calendar.config.email ? (
+                              <MaskedAddress email={calendar.config.email} />
+                            ) : (
+                              "Signed in"
+                            )}
+                            {
+                              ". This sign-in is only for Calendar. Logging out removes it from this device and does not log you out of Gmail."
+                            }
+                          </>
+                        ) : calendar.setup.ready ? (
+                          "Uses the same Google sign-in window as Gmail, with permission to read and create events on your primary calendar. You can revoke that in your Google Account at any time."
+                        ) : (
+                          calendar.setup.hint ??
+                          "Google Calendar needs a Google OAuth client before it can connect."
+                        )}
                       </p>
                     </div>
                     {calendar.connected ? (
