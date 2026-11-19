@@ -11,8 +11,12 @@ export const GMAIL_APP_PASSWORD_URL =
 export const GMAIL_IMAP_HOST = "imap.gmail.com";
 export const GMAIL_IMAP_PORT = 993;
 export const GMAIL_SMTP_HOST = "smtp.gmail.com";
-/** Implicit TLS. 587 STARTTLS is also accepted by Gmail and by the SMTP client. */
-export const GMAIL_SMTP_PORT = 465;
+/**
+ * STARTTLS. Gmail also accepts implicit TLS on 465, but that port is often
+ * dropped by firewalls while 587 still connects. Accounts saved with 465 are
+ * remapped in `smtpSocketFor`.
+ */
+export const GMAIL_SMTP_PORT = 587;
 
 export const GMAIL_APP_PASSWORD_FORMAT_MESSAGE =
   "That doesn’t look like a Gmail app password. Google app passwords are 16 letters, shown as four groups (abcd efgh ijkl mnop). Your normal Google password will not work. Turn on 2-Step Verification, then create one at " +
@@ -71,6 +75,24 @@ export const GMAIL_FALLBACK_SYNC_MAILBOXES: SyncMailbox[] = [
   { path: "[Gmail]/Spam", role: "junk" },
   { path: "[Gmail]/Trash", role: "trash" },
 ];
+
+export type SmtpSocket = {
+  port: number;
+  /** Implicit TLS. Otherwise the client must require a STARTTLS upgrade. */
+  secure: boolean;
+};
+
+/**
+ * Outbound 465 to smtp.gmail.com often times out while 587 answers in
+ * milliseconds. Saved Gmail accounts may still store 465 — send those on 587.
+ */
+export function smtpSocketFor(host: string, port: number): SmtpSocket {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === GMAIL_SMTP_HOST && port === 465) {
+    return { port: GMAIL_SMTP_PORT, secure: false };
+  }
+  return { port, secure: port === 465 };
+}
 
 export function isGmailImapTarget(input: {
   brand?: string;

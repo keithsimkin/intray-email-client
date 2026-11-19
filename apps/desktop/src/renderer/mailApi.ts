@@ -1,3 +1,4 @@
+import type { MailtoHandlerState } from "../shared/mailto";
 import type {
   AccountDto,
   AccountReconnectInfo,
@@ -407,6 +408,33 @@ export async function bridgeSetChromeTheme(
   await window.intray.setChromeTheme(theme);
 }
 
+export async function bridgeGetMailtoHandler(): Promise<MailtoHandlerState | null> {
+  if (!hasIntrayBridge()) return null;
+  return window.intray.getMailtoHandler();
+}
+
+export async function bridgeSetMailtoHandler(
+  enabled: boolean,
+): Promise<MailtoHandlerState | null> {
+  if (!hasIntrayBridge()) return null;
+  return window.intray.setMailtoHandler(enabled);
+}
+
+export async function bridgeClaimMailto(): Promise<string | null> {
+  if (!hasIntrayBridge()) return null;
+  return window.intray.claimMailto();
+}
+
+export function bridgeOnMailtoOpen(cb: (url: string) => void): () => void {
+  if (!hasIntrayBridge()) return () => undefined;
+  return window.intray.onMailtoOpen(cb);
+}
+
+export async function bridgeOpenDefaultApps(): Promise<boolean> {
+  if (!hasIntrayBridge()) return false;
+  return window.intray.openDefaultApps();
+}
+
 export async function bridgeAppInfo(): Promise<{
   name: string;
   version: string;
@@ -426,6 +454,11 @@ export async function bridgeUpdateStatus(): Promise<AppUpdateStatus> {
 export async function bridgeCheckForUpdates(): Promise<AppUpdateStatus> {
   if (!hasIntrayBridge()) return DISABLED_UPDATE;
   return window.intray.updates.check();
+}
+
+export async function bridgeDownloadUpdate(): Promise<AppUpdateStatus> {
+  if (!hasIntrayBridge()) return DISABLED_UPDATE;
+  return window.intray.updates.download();
 }
 
 export async function bridgeInstallUpdate(): Promise<boolean> {

@@ -68,6 +68,13 @@ import {
   setAppBadge,
   showDesktopNotification,
 } from "../notifications";
+import {
+  claimMailto,
+  getMailtoHandlerState,
+  openDefaultAppsSettings,
+  queueMailto,
+  setMailtoHandler,
+} from "../mailtoProtocol";
 import { getLaunchAtLogin, setLaunchAtLogin } from "../startup";
 import { openExternalSafely } from "../security";
 import {
@@ -103,6 +110,7 @@ import type {
 import { refreshTray } from "../tray";
 import {
   checkForAppUpdates,
+  downloadAppUpdate,
   getUpdateStatus,
   openReleasesPage,
   quitAndInstallUpdate,
@@ -249,9 +257,17 @@ export function registerIpc(): void {
 
   ipcMain.handle("app:getLaunchAtLogin", () => getLaunchAtLogin());
   ipcMain.handle("app:openExternal", (_e, url: unknown) => {
-    if (typeof url !== "string" || url.length > 4096) return false;
+    if (typeof url !== "string") return false;
+    if (queueMailto(url)) return true;
+    if (url.length > 4096) return false;
     return openExternalSafely(url);
   });
+  ipcMain.handle("app:mailtoState", () => getMailtoHandlerState());
+  ipcMain.handle("app:setMailtoHandler", (_e, enabled: unknown) =>
+    setMailtoHandler(enabled === true),
+  );
+  ipcMain.handle("app:claimMailto", () => claimMailto());
+  ipcMain.handle("app:openDefaultApps", () => openDefaultAppsSettings());
   ipcMain.handle(
     "app:setLaunchAtLogin",
     (_e, openAtLogin: boolean, openAsHidden?: boolean) =>
@@ -268,6 +284,7 @@ export function registerIpc(): void {
 
   ipcMain.handle("app:updateStatus", () => getUpdateStatus());
   ipcMain.handle("app:checkForUpdates", () => checkForAppUpdates());
+  ipcMain.handle("app:downloadUpdate", () => downloadAppUpdate());
   ipcMain.handle("app:installUpdate", () => quitAndInstallUpdate());
   ipcMain.handle("app:openReleases", () => openReleasesPage());
 

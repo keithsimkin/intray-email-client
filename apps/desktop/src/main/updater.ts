@@ -1,4 +1,4 @@
-import { BrowserWindow, app } from "electron";
+import { BrowserWindow, app, dialog } from "electron";
 import { autoUpdater } from "electron-updater";
 import type { UpdateInfo } from "electron-updater";
 import type { AppUpdateStatus } from "../shared/types";
@@ -46,7 +46,7 @@ function notifyUpdateAvailable(version: string): void {
   notifiedAvailableVersion = version;
   showDesktopNotification(() => BrowserWindow.getFocusedWindow(), {
     title: "Update available",
-    body: `Intray ${version} is downloading in the background.`,
+    body: `Intray ${version} is ready to download.`,
     silent: true,
   });
 }
@@ -65,8 +65,10 @@ function wireUpdaterEvents(): void {
   if (eventsWired) return;
   eventsWired = true;
 
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // Downloads are user-triggered from the rail icon or Settings → About, and
+  // installs only happen through the confirmed restart action below.
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
   // Public GitHub Releases — no token required for checking/downloading.
   autoUpdater.allowPrerelease = false;
   autoUpdater.allowDowngrade = false;
@@ -183,10 +185,45 @@ export async function checkForAppUpdates(
   }
 }
 
-export function quitAndInstallUpdate(): boolean {
+export async function downloadAppUpdate(): Promise<AppUpdateStatus> {
+  if (!app.isPackaged || status.state !== "available") return getUpdateStatus();
+
+  try {
+    setStatus({ state: "downloading", downloadPercent: 0, error: undefined });
+    await autoUpdater.downloadUpdate();
+    return getUpdateStatus();
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Could not download update";
+    return setStatus({
+      state: "error",
+      error: message,
+      downloadPercent: undefined,
+    });
+  }
+}
+
+export async function quitAndInstallUpdate(): Promise<boolean> {
   if (!app.isPackaged || status.state !== "ready") return false;
-  // isSilent=false, isForceRunAfter=true — relaunch after NSIS finishes.
-  autoUpdater.quitAndInstall(false, true);
+
+  const version = status.availableVersion || app.getVersion();
+  const parent =
+    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const { response } = await dialog.showMessageBox(parent, {
+    type: "question",
+    buttons: ["Restart and install", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "Restart to install update",
+    message: `Restart Intray to install ${version}?`,
+    detail:
+      "The installer runs without any setup prompts and Intray reopens automatically. Any unsaved work will be closed.",
+    noLink: true,
+  });
+  if (response !== 0) return false;
+
+  // isSilent=true passes /S to NSIS (no wizard). isForceRunAfter=true relaunches.
+  autoUpdater.quitAndInstall(true, true);
   return true;
 }
 

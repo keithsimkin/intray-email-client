@@ -13,6 +13,12 @@ import {
 } from "./db";
 import { loadDesktopEnv } from "./env";
 import { registerIpc } from "./ipc/register";
+import {
+  bindMailtoWindow,
+  ensureMailtoHandler,
+  queueMailto,
+  queueMailtoFromArgs,
+} from "./mailtoProtocol";
 import { openExternalSafely } from "./security";
 import {
   ensureDefaultLaunchAtLogin,
@@ -47,6 +53,31 @@ if (!gotSingleInstanceLock) {
 let mainWindow: BrowserWindow | null = null;
 let linkBackfillTimer: NodeJS.Timeout | null = null;
 let maintenanceTimer: NodeJS.Timeout | null = null;
+
+function ensureMainWindow(): BrowserWindow {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow();
+  }
+  return mainWindow;
+}
+
+if (gotSingleInstanceLock) {
+  // macOS delivers mailto clicks here. Register before ready so a cold start
+  // still receives the URL that launched the app.
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    queueMailto(url);
+  });
+  app.on("second-instance", (_event, commandLine) => {
+    if (!queueMailtoFromArgs(commandLine)) {
+      const win = mainWindow;
+      if (!win || win.isDestroyed()) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+  });
+}
 
 /** IDLE watchers make the 30s poll a safety net; see sync/watch.ts. */
 function startWatches(accountIds: string[]): void {
@@ -101,7 +132,7 @@ function createWindow(opts?: { show?: boolean }): BrowserWindow {
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    openExternalSafely(url);
+    if (!queueMailto(url)) openExternalSafely(url);
     return { action: "deny" };
   });
 
@@ -118,7 +149,7 @@ function createWindow(opts?: { show?: boolean }): BrowserWindow {
     }
     if (url === current) return;
     event.preventDefault();
-    openExternalSafely(url);
+    if (!queueMailto(url)) openExternalSafely(url);
   });
 
   // Camera, mic, and location stay off. Clipboard must stay allowed:
@@ -185,10 +216,17 @@ app.whenReady().then(async () => {
   // Resolve Gravatar / Google photos for linked accounts + frequent senders.
   refreshMissingAvatars();
   ensureDefaultLaunchAtLogin();
+  try {
+    await ensureMailtoHandler();
+  } catch (error) {
+    console.warn("mailto handler skipped", error);
+  }
   ensureQueueLoop();
 
   const hide = launchedHidden();
   mainWindow = createWindow({ show: !hide });
+  bindMailtoWindow(ensureMainWindow);
+  queueMailtoFromArgs(process.argv);
   createTray(() => mainWindow);
 
   const accountIds = listAccountRows().map((a) => a.id);
@@ -233,13 +271,6 @@ app.whenReady().then(async () => {
       mainWindow?.show();
     }
   });
-});
-
-app.on("second-instance", () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
 });
 
 app.on("window-all-closed", () => {

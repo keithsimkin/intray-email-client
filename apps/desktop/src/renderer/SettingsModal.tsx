@@ -19,6 +19,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Search,
   Shield,
   Trash2,
@@ -31,6 +32,7 @@ import type {
   AppUpdateStatus,
   McpStatus,
 } from "../shared/types";
+import type { MailtoHandlerState } from "../shared/mailto";
 import { AppSelect } from "./AppSelect";
 import { PackLogo } from "./BrandIcon";
 import { BridgeLogo, bridgePickerOrder } from "./bridgeLogos";
@@ -46,9 +48,12 @@ import {
   bridgeCheckForUpdates,
   bridgeChooseAccountAvatar,
   bridgeClearAccountAvatar,
+  bridgeDownloadUpdate,
   bridgeInstallUpdate,
+  bridgeGetMailtoHandler,
   bridgeLaunchAtLogin,
   bridgeMcpStart,
+  bridgeOpenDefaultApps,
   bridgeMcpStatus,
   bridgeMcpStop,
   bridgeMcpRotateToken,
@@ -58,6 +63,7 @@ import {
   bridgeRemoveAccount,
   bridgeRemoveAccountIdentity,
   bridgeSetLaunchAtLogin,
+  bridgeSetMailtoHandler,
   bridgeSync,
   bridgeUpdateAccount,
   bridgeUpdateStatus,
@@ -269,8 +275,8 @@ function updateStatusCopy(status: AppUpdateStatus): string {
       return "Checking GitHub Releases…";
     case "available":
       return status.availableVersion
-        ? `Version ${status.availableVersion} is available — downloading…`
-        : "An update is available — downloading…";
+        ? `Version ${status.availableVersion} is available. Download it when you’re ready.`
+        : "An update is available. Download it when you’re ready.";
     case "downloading":
       return typeof status.downloadPercent === "number"
         ? `Downloading update… ${status.downloadPercent}%`
@@ -513,6 +519,9 @@ export function SettingsModal({
   );
   const [chordPending, setChordPending] = useState<string | null>(null);
   const [launchAtLogin, setLaunchAtLogin] = useState(prefs.launchAtLogin);
+  const [mailtoState, setMailtoState] = useState<MailtoHandlerState | null>(
+    null,
+  );
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     null,
   );
@@ -565,6 +574,9 @@ export function SettingsModal({
   useEffect(() => {
     void bridgeLaunchAtLogin().then((s) => {
       setLaunchAtLogin(s.openAtLogin);
+    });
+    void bridgeGetMailtoHandler().then((state) => {
+      if (state) setMailtoState(state);
     });
   }, []);
 
@@ -926,6 +938,9 @@ export function SettingsModal({
       defaultPreferences.launchAtLogin,
       defaultPreferences.launchToTray,
     );
+    void bridgeSetMailtoHandler(defaultPreferences.handleMailto).then((state) => {
+      if (state) setMailtoState(state);
+    });
   };
 
   const patch = (partial: Partial<Preferences>) =>
@@ -1498,6 +1513,42 @@ export function SettingsModal({
             {tab === "compose" && (
               <>
                 <Block title="Sending">
+                  <Row
+                    title="Open mailto links"
+                    hint={
+                      !prefs.handleMailto
+                        ? "Links in Intray still open a new message. Other apps keep the system mail client."
+                        : mailtoState?.canRegister === false
+                          ? "Links in Intray open a new message. An installed copy also handles links from other apps."
+                          : mailtoState?.platform === "win32"
+                            ? "Links in Intray open a new message. If a browser still opens another app, choose Intray as the default Email app."
+                            : "Links in Intray, browsers, and other apps open a new message here."
+                    }
+                  >
+                    <Toggle
+                      on={prefs.handleMailto}
+                      onChange={(handleMailto) => {
+                        patch({ handleMailto });
+                        void bridgeSetMailtoHandler(handleMailto).then((state) => {
+                          if (state) setMailtoState(state);
+                        });
+                      }}
+                    />
+                  </Row>
+                  {mailtoState?.canRegister &&
+                    mailtoState.platform === "win32" &&
+                    prefs.handleMailto && (
+                      <div className="quiet-row">
+                        <button
+                          type="button"
+                          className="settings-section-btn"
+                          onClick={() => void bridgeOpenDefaultApps()}
+                        >
+                          <ExternalLink size={13} strokeWidth={1.75} />
+                          Choose Intray in Windows default apps
+                        </button>
+                      </div>
+                    )}
                   <Row
                     title="Undo Send"
                     hint="Hold messages in Outbox before they leave"
@@ -2933,7 +2984,7 @@ export function SettingsModal({
 
                 <Block
                   title="Updates"
-                  hint="Installed builds check GitHub for a newer release, download it in the background, then restart to install."
+                  hint="Installed builds check GitHub for a newer release. Download it when you’re ready, then restart to install without setup prompts."
                   action={
                     updateStatus.state === "ready" ? (
                       <button
@@ -2947,8 +2998,23 @@ export function SettingsModal({
                           );
                         }}
                       >
-                        <Download size={14} strokeWidth={1.75} />
+                        <RotateCw size={14} strokeWidth={1.75} />
                         Restart and install
+                      </button>
+                    ) : updateStatus.state === "available" ? (
+                      <button
+                        type="button"
+                        className="settings-section-btn"
+                        disabled={updateBusy}
+                        onClick={() => {
+                          setUpdateBusy(true);
+                          void bridgeDownloadUpdate()
+                            .then(setUpdateStatus)
+                            .finally(() => setUpdateBusy(false));
+                        }}
+                      >
+                        <Download size={14} strokeWidth={1.75} />
+                        Download update
                       </button>
                     ) : (
                       <button
@@ -2958,7 +3024,6 @@ export function SettingsModal({
                           updateBusy ||
                           updateStatus.state === "checking" ||
                           updateStatus.state === "downloading" ||
-                          updateStatus.state === "available" ||
                           updateStatus.state === "disabled"
                         }
                         onClick={() => {

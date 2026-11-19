@@ -32,6 +32,7 @@ import type {
   SyncStatus,
   UpdateAccountInput,
 } from "../shared/types";
+import type { MailtoHandlerState } from "../shared/mailto";
 import type {
   CalendarEventDto,
   CalendarEventInput,
@@ -57,6 +58,21 @@ const api = {
     ipcRenderer.invoke("app:getLaunchAtLogin") as Promise<LaunchAtLoginState>,
   openExternal: (url: string) =>
     ipcRenderer.invoke("app:openExternal", url) as Promise<boolean>,
+  getMailtoHandler: () =>
+    ipcRenderer.invoke("app:mailtoState") as Promise<MailtoHandlerState>,
+  setMailtoHandler: (enabled: boolean) =>
+    ipcRenderer.invoke("app:setMailtoHandler", enabled) as Promise<MailtoHandlerState>,
+  claimMailto: () =>
+    ipcRenderer.invoke("app:claimMailto") as Promise<string | null>,
+  openDefaultApps: () =>
+    ipcRenderer.invoke("app:openDefaultApps") as Promise<boolean>,
+  onMailtoOpen: (cb: (url: string) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, url: string) => {
+      if (typeof url === "string") cb(url);
+    };
+    ipcRenderer.on("mailto:open", listener);
+    return () => ipcRenderer.removeListener("mailto:open", listener);
+  },
   setLaunchAtLogin: (openAtLogin: boolean, openAsHidden = true) =>
     ipcRenderer.invoke(
       "app:setLaunchAtLogin",
@@ -71,6 +87,8 @@ const api = {
       ipcRenderer.invoke("app:updateStatus") as Promise<AppUpdateStatus>,
     check: () =>
       ipcRenderer.invoke("app:checkForUpdates") as Promise<AppUpdateStatus>,
+    download: () =>
+      ipcRenderer.invoke("app:downloadUpdate") as Promise<AppUpdateStatus>,
     install: () =>
       ipcRenderer.invoke("app:installUpdate") as Promise<boolean>,
     openReleases: () =>
