@@ -27,6 +27,22 @@ import type {
   SyncStatus,
   UpdateAccountInput,
 } from "../shared/types";
+import { usageLimitMessage } from "../shared/aiError";
+import { readablePreview } from "../shared/mailSnippet";
+import { pluginErrorNotice } from "../shared/pluginError";
+import {
+  PLUGIN_CATALOG,
+  type CalendarEventDto,
+  type CalendarEventInput,
+  type CalendarEventUpdate,
+  type CalendarRsvp,
+  type CalendarRange,
+  type NotionSaveInput,
+  type NotionSaveResult,
+  type NotionTarget,
+  type PluginId,
+  type PluginStatus,
+} from "../shared/plugins";
 import type { Account, Message } from "./data/mock";
 
 const DISABLED_UPDATE: AppUpdateStatus = {
@@ -274,13 +290,40 @@ export async function bridgeAiModels(
   return window.intray.ai.models(provider, bridgePath);
 }
 
+/** Ask the host to keep the signed-in Cursor process running. */
+export function warmCursorAgent(prefs: {
+  aiBridge: string;
+  aiBridgePath?: string;
+  aiModelHint?: string;
+}): void {
+  if (prefs.aiBridge !== "cursor" || !hasIntrayBridge()) return;
+  void window.intray.ai
+    .warm({
+      bridgePath: prefs.aiBridgePath || undefined,
+      model: prefs.aiModelHint || undefined,
+    })
+    .catch(() => undefined);
+}
+
 export async function bridgeAiComplete(
   req: AiCompleteRequest,
 ): Promise<AiCompleteResponse> {
-  if (!hasIntrayBridge()) {
-    return aiHost<AiCompleteResponse>("complete", { method: "POST", body: req });
+  try {
+    if (!hasIntrayBridge()) {
+      return await aiHost<AiCompleteResponse>("complete", {
+        method: "POST",
+        body: req,
+      });
+    }
+    return await window.intray.ai.complete(req);
+  } catch (error) {
+    // Electron wraps IPC failures as "Error invoking remote method 'ai:complete': …".
+    // A usage limit should read as that fact, not the provider dump.
+    const raw = error instanceof Error ? error.message : String(error);
+    const limit = usageLimitMessage(raw);
+    if (limit) throw new Error(limit);
+    throw error;
   }
-  return window.intray.ai.complete(req);
 }
 
 export async function bridgeAiSecretsStatus(): Promise<
@@ -440,11 +483,180 @@ export function bridgeOnMailUpdated(
   return window.intray.mail.onUpdated(cb);
 }
 
+export function bridgeOnSearchReady(
+  cb: (payload: { q: string }) => void,
+): () => void {
+  if (!hasIntrayBridge()) return () => undefined;
+  return window.intray.mail.onSearchReady(cb);
+}
+
 export function bridgeOnAvatarUpdated(
   cb: (payload: { email: string; avatarUrl: string }) => void,
 ): () => void {
   if (!hasIntrayBridge()) return () => undefined;
   return window.intray.avatars.onUpdated(cb);
+}
+
+function previewPluginStatuses(): PluginStatus[] {
+  return PLUGIN_CATALOG.map((entry) => ({
+    id: entry.id,
+    installed: false,
+    connected: false,
+    enabled: false,
+    config: {},
+    setup: {
+      ready: false,
+      hint: "Plugins connect inside the Intray desktop app.",
+    },
+  }));
+}
+
+function rethrowPlugin(error: unknown): never {
+  const raw = error instanceof Error ? error.message : String(error);
+  const notice = pluginErrorNotice(raw);
+  const wrapped = new Error(notice.text) as Error & { href?: string };
+  if (notice.href) wrapped.href = notice.href;
+  throw wrapped;
+}
+
+async function pluginCall<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    rethrowPlugin(error);
+  }
+}
+
+export async function bridgePluginStatuses(): Promise<PluginStatus[]> {
+  if (!hasIntrayBridge()) return previewPluginStatuses();
+  return window.intray.plugins.list();
+}
+
+export async function bridgeConnectCalendar(): Promise<PluginStatus[]> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Plugins connect inside the Intray desktop app.");
+  }
+  return pluginCall(() => window.intray.plugins.connectCalendar());
+}
+
+export async function bridgeConnectNotion(
+  token: string,
+): Promise<PluginStatus[]> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Plugins connect inside the Intray desktop app.");
+  }
+  return pluginCall(() => window.intray.plugins.connectNotion(token));
+}
+
+export async function bridgeDisconnectPlugin(
+  id: PluginId,
+): Promise<PluginStatus[]> {
+  if (!hasIntrayBridge()) return previewPluginStatuses();
+  return pluginCall(() => window.intray.plugins.disconnect(id));
+}
+
+export async function bridgeSetPluginEnabled(
+  id: PluginId,
+  enabled: boolean,
+): Promise<PluginStatus[]> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Plugins connect inside the Intray desktop app.");
+  }
+  return pluginCall(() => window.intray.plugins.setEnabled(id, enabled));
+}
+
+export const CALENDAR_CHANGED = "intray-calendar-changed";
+
+const calendarCache = new Map<string, { at: number; events: CalendarEventDto[] }>();
+const CALENDAR_CACHE_MS = 60_000;
+
+export function notifyCalendarChanged(): void {
+  calendarCache.clear();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(CALENDAR_CHANGED));
+  }
+}
+
+export async function bridgeCalendarEvents(
+  range: CalendarRange,
+): Promise<CalendarEventDto[]> {
+  if (!hasIntrayBridge()) return [];
+  const key = `${range.startIso}|${range.endIso}`;
+  const hit = calendarCache.get(key);
+  if (hit && Date.now() - hit.at < CALENDAR_CACHE_MS) return hit.events;
+  const events = await pluginCall(() => window.intray.plugins.calendarEvents(range));
+  calendarCache.set(key, { at: Date.now(), events });
+  return events;
+}
+
+export async function bridgeCalendarCreate(
+  input: CalendarEventInput,
+): Promise<CalendarEventDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Google Calendar connects inside the Intray desktop app.");
+  }
+  const event = await pluginCall(() => window.intray.plugins.calendarCreate(input));
+  notifyCalendarChanged();
+  return event;
+}
+
+export async function bridgeCalendarUpdate(
+  input: CalendarEventUpdate,
+): Promise<CalendarEventDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Google Calendar connects inside the Intray desktop app.");
+  }
+  const event = await pluginCall(() => window.intray.plugins.calendarUpdate(input));
+  notifyCalendarChanged();
+  return event;
+}
+
+export async function bridgeCalendarDelete(
+  id: string,
+  notifyGuests: boolean,
+): Promise<void> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Google Calendar connects inside the Intray desktop app.");
+  }
+  await pluginCall(() => window.intray.plugins.calendarDelete(id, notifyGuests));
+  notifyCalendarChanged();
+}
+
+export async function bridgeCalendarRespond(
+  id: string,
+  response: CalendarRsvp,
+): Promise<CalendarEventDto> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Google Calendar connects inside the Intray desktop app.");
+  }
+  const event = await pluginCall(() =>
+    window.intray.plugins.calendarRespond(id, response),
+  );
+  notifyCalendarChanged();
+  return event;
+}
+
+export async function bridgeNotionTargets(): Promise<NotionTarget[]> {
+  if (!hasIntrayBridge()) return [];
+  return pluginCall(() => window.intray.plugins.notionTargets());
+}
+
+export async function bridgeNotionSetTarget(
+  target: NotionTarget,
+): Promise<PluginStatus[]> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Notion connects inside the Intray desktop app.");
+  }
+  return pluginCall(() => window.intray.plugins.notionSetTarget(target));
+}
+
+export async function bridgeNotionSave(
+  input: NotionSaveInput,
+): Promise<NotionSaveResult> {
+  if (!hasIntrayBridge()) {
+    throw new Error("Notion connects inside the Intray desktop app.");
+  }
+  return pluginCall(() => window.intray.plugins.notionSave(input));
 }
 
 export function accountDtoToUi(a: AccountDto): Account {
@@ -475,6 +687,15 @@ export function isAuthFailureMessage(error?: string | null): boolean {
   );
 }
 
+function countAttachmentsInThread(thread: MessageDto["thread"]): number {
+  let n = 0;
+  for (const turn of thread) {
+    if (turn.attachments?.length) n += turn.attachments.length;
+    else if (turn.attachment) n += 1;
+  }
+  return n;
+}
+
 function countLinksInThread(thread: MessageDto["thread"]): number {
   let n = 0;
   for (const t of thread) {
@@ -486,7 +707,7 @@ function countLinksInThread(thread: MessageDto["thread"]): number {
 }
 
 export function messageDtoToUi(m: MessageDto): Message {
-  const attachmentCount = m.thread.filter((t) => t.attachment).length;
+  const attachmentCount = countAttachmentsInThread(m.thread);
   // List payloads omit HTML. Scan only when a body is actually present.
   const hasBodyHtml = m.thread.some((t) => t.bodyHtml);
   const linkCount = hasBodyHtml ? countLinksInThread(m.thread) : (m.linkCount ?? 0);
@@ -499,7 +720,8 @@ export function messageDtoToUi(m: MessageDto): Message {
     avatarUrl: m.avatarUrl,
     email: m.email,
     subject: m.subject,
-    preview: m.preview,
+    preview: readablePreview(m.preview),
+    matchPreview: m.matchPreview,
     time: m.time,
     unread: m.unread,
     important: m.important,

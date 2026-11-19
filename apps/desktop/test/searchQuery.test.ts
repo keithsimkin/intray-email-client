@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildFtsMatch,
+  markQuery,
   parseSearchClauses,
   parseSlashDraft,
   serializeSearchClauses,
   slashFieldChoices,
+  splitMatchMarkers,
+  stripMatchMarkers,
 } from "../src/shared/searchQuery";
 import {
   makeToken,
@@ -55,6 +59,36 @@ describe("parseSearchClauses", () => {
   test("round-trips through serialize", () => {
     const clauses = parseSearchClauses("from:ada is:unread");
     expect(serializeSearchClauses(clauses)).toBe("from:ada is:unread");
+  });
+});
+
+describe("buildFtsMatch", () => {
+  test("prefixes only the last word", () => {
+    expect(buildFtsMatch("invoice acme")).toBe('"invoice" AND "acme"*');
+    expect(buildFtsMatch("inv")).toBe('"inv"*');
+  });
+
+  test("keeps quoted phrases and applies exclusions", () => {
+    expect(buildFtsMatch('"q4 plan" budget')).toBe('"q4 plan" AND "budget"*');
+    expect(buildFtsMatch("invoice -draft")).toBe('"invoice"* NOT "draft"');
+    expect(buildFtsMatch("-only")).toBeNull();
+    expect(buildFtsMatch("   ")).toBeNull();
+  });
+});
+
+describe("match markers", () => {
+  test("splits, strips, and marks plain text", () => {
+    const marked = "see \u0001invoice\u0002 today";
+    expect(splitMatchMarkers(marked)).toEqual([
+      { text: "see ", hit: false },
+      { text: "invoice", hit: true },
+      { text: " today", hit: false },
+    ]);
+    expect(stripMatchMarkers(marked)).toBe("see invoice today");
+    expect(markQuery("Invoice for Ada", "invoice")).toBe(
+      "\u0001Invoice\u0002 for Ada",
+    );
+    expect(markQuery(marked, "invoice")).toBe(marked);
   });
 });
 

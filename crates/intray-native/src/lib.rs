@@ -106,6 +106,8 @@ impl MailDb {
     from_name: String,
     from_email: String,
     body: Option<String>,
+    recipients: Option<String>,
+    attachments: Option<String>,
   ) -> Result<()> {
     let conn = self.conn.lock().map_err(|_| Error::from_reason("db lock poisoned"))?;
     conn
@@ -115,8 +117,9 @@ impl MailDb {
       .map_err(sql_err)?;
     conn
       .prepare_cached(
-        "INSERT INTO messages_fts (message_id, subject, snippet, from_name, from_email, body)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO messages_fts (
+           message_id, subject, snippet, from_name, from_email, body, recipients, attachments
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
       )
       .map_err(sql_err)?
       .execute((
@@ -126,6 +129,8 @@ impl MailDb {
         from_name,
         from_email,
         body.unwrap_or_default(),
+        recipients.unwrap_or_default(),
+        attachments.unwrap_or_default(),
       ))
       .map_err(sql_err)?;
     Ok(())
@@ -189,6 +194,18 @@ impl MailDb {
     }
     for sql in schema::POST_MIGRATION_INDEXES_SQL {
       conn.execute_batch(sql).map_err(sql_err)?;
+    }
+    let recipients: i64 = conn
+      .query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('messages_fts') WHERE name = 'recipients'",
+        [],
+        |row| row.get(0),
+      )
+      .unwrap_or(0);
+    if recipients == 0 {
+      conn
+        .execute_batch(schema::FTS_REBUILD_SQL)
+        .map_err(sql_err)?;
     }
     Ok(())
   }

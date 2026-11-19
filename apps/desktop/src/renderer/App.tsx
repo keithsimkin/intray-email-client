@@ -25,11 +25,13 @@ import {
   Forward,
   Inbox,
   Calendar,
+  Clapperboard,
   Image as ImageIcon,
   ImageOff,
   Languages,
   Layers,
   Link2,
+  ListFilter as ListFilterIcon,
   Loader2,
   LogOut,
   Mail,
@@ -55,22 +57,29 @@ import {
   UserMinus,
   X,
 } from "lucide-react";
+import { AttachmentBar } from "./AttachmentBar";
 import { AddAccountModal } from "./AddAccountModal";
 import {
   AlertDialog,
   nextAlertId,
   type AlertRequest,
 } from "./AlertDialog";
-import { PluginInviteModal } from "./PluginInviteModal";
+import { PluginModal } from "./PluginModal";
+import { PluginSurface } from "./PluginSurface";
+import { GoogleCalendarBrand, pluginBrandIcons, SimpleBrandIcon } from "./BrandIcon";
+import { PluginInfoPin, PluginReaderActions } from "./PluginMailActions";
 import { ReauthModal } from "./ReauthModal";
-import { FloatingAsk } from "./FloatingAsk";
+import {
+  FloatingAsk,
+  type AgentCatchUpRequest,
+  type AgentThreadRequest,
+} from "./FloatingAsk";
 import { IntrayBrandLockup } from "./IntrayBrand";
 import { Onboarding } from "./Onboarding";
 import {
   completeOnboarding,
   isOnboardingComplete,
 } from "./onboardingStorage";
-import { SearchBar } from "./SearchBar";
 import {
   buildContacts,
   setContactDirectory,
@@ -82,8 +91,20 @@ import {
   openUnsubscribeTarget,
 } from "./newsletter";
 import {
+  EMPTY_LIST_FILTER,
+  listFilterActive,
+  listFilterCount,
+  messageMatchesListFilter,
+  type ListFilter,
+  type StatusCounts,
+} from "./listFilter";
+import { SearchBar, type RecentOpen, type SearchHit } from "./SearchBar";
+import { MatchText } from "./SearchHighlight";
+import {
+  makeToken,
+  markQuery,
   messageMatchesSearch,
-  serializeSearch,
+  parseSearchInput,
   type SearchToken,
 } from "./searchQuery";
 import {
@@ -106,6 +127,8 @@ import {
   RecipientChips,
 } from "./MentionTextarea";
 import { AppSelect } from "./AppSelect";
+import { BlurredEmails, blurClass, CreatorBlurProvider, useCreatorBlur } from "./creatorBlur";
+import { blurEmailsInHtml, looksLikeEmail } from "./creatorMode";
 import { useUndoStack } from "./useUndoStack";
 import {
   buildSignedBodies,
@@ -113,13 +136,18 @@ import {
   sanitizeSignatureHtml,
 } from "./signatures";
 import {
-  aiCatchMeUp,
   aiLabelMessages,
   aiSuggestReplies,
   aiSummarizeMessage,
   aiTranslateMessage,
   aiWriteReply,
 } from "./aiClient";
+import {
+  formatMailSummary,
+  latestReplyBodyKey,
+  threadHasReadableText,
+  turnPlainText,
+} from "./mailText";
 import {
   getTrackingForMessage,
   registerTrackedSend,
@@ -159,14 +187,18 @@ import {
   bridgeOnSendFlushed,
   bridgeOnSyncProgress,
   bridgeOnMailUpdated,
+  bridgeOnSearchReady,
   bridgeOnUnsnoozed,
+  bridgePluginStatuses,
   bridgeSendLater,
   bridgeSendMail,
   bridgeSetChromeTheme,
   bridgeSync,
   isAuthFailureMessage,
   messageDtoToUi,
+  warmCursorAgent,
 } from "./mailApi";
+import { mergeSentIntoList, unionThreads } from "./threadMerge";
 import {
   notifyMailOpened,
   notifyMeeting,
@@ -174,6 +206,11 @@ import {
   notifySnoozeReturn,
   syncTaskbarBadge,
 } from "./notify";
+import {
+  PLUGIN_CATALOG,
+  type PluginId,
+  type PluginStatus,
+} from "../shared/plugins";
 import type { MailFolderCounts, SyncStatus } from "../shared/types";
 
 type MailAction =
@@ -217,15 +254,7 @@ function forwardDraft(message: Message): { subject: string; body: string } {
     ? message.subject
     : `Fwd: ${message.subject}`;
   const latest = message.thread[message.thread.length - 1];
-  const plain = latest?.body?.join("\n\n")?.trim() ?? "";
-  const fromHtml = latest?.bodyHtml
-    ? latest.bodyHtml
-        .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-    : "";
-  const content = plain || fromHtml || message.preview || "";
+  const content = (latest ? turnPlainText(latest) : "") || message.preview || "";
   const body = [
     "",
     "",
@@ -528,13 +557,22 @@ function isCcOnly(message: Message, own: Set<string> = seedOwnEmails) {
 function RecipientName({
   recipient,
   onCompose,
+  nameBlur,
+  addressBlur,
 }: {
   recipient: Recipient;
   onCompose: (r: Recipient) => void;
+  /** Set when the caller already classified this person (thread sender). */
+  nameBlur?: boolean;
+  addressBlur?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
+  const blur = useCreatorBlur();
+  const kind = blur.kindForEmail(recipient.email);
   const you = isOwnRecipient(recipient);
+  const hideName = (nameBlur ?? blur.blurName(kind)) && !you;
+  const hideAddress = addressBlur ?? blur.blurAddress(kind);
 
   useEffect(() => {
     if (!open) return;
@@ -556,7 +594,7 @@ function RecipientName({
     <span className="recipient-wrap" ref={ref}>
       <button
         type="button"
-        className={`recipient${you ? " you" : ""}${open ? " open" : ""}`}
+        className={`recipient${you ? " you" : ""}${open ? " open" : ""}${hideName ? " creator-blur" : ""}`}
         aria-expanded={open}
         onClick={(e) => {
           e.stopPropagation();
@@ -568,11 +606,15 @@ function RecipientName({
       {open && (
         <div className="recipient-pop" role="dialog">
           {you ? (
-            <span className="recipient-email static">{recipient.email}</span>
+            <span
+              className={blurClass("recipient-email static", hideAddress)}
+            >
+              {recipient.email}
+            </span>
           ) : (
             <button
               type="button"
-              className="recipient-email"
+              className={blurClass("recipient-email", hideAddress)}
               onClick={(e) => {
                 e.stopPropagation();
                 onCompose(recipient);
@@ -743,8 +785,12 @@ function NotificationsMenu({
                 )}
               </span>
               <span className="notif-copy">
-                <strong>{n.title}</strong>
-                <span>{n.body}</span>
+                <strong>
+                  <BlurredEmails text={n.title} />
+                </strong>
+                <span>
+                  <BlurredEmails text={n.body} />
+                </span>
               </span>
               <span className="notif-meta">
                 <span className="notif-time">{n.time}</span>
@@ -759,29 +805,40 @@ function NotificationsMenu({
 }
 
 function TitleBar({
-  onAsk,
-  askOpen,
   searchRef,
-  showAi,
   searchTokens,
   onSearchTokens,
   labels,
   notifications,
   onOpenNotification,
   onMarkNotificationsRead,
+  onToggleCreator,
+  searchHits,
+  searchBusy,
+  recentSearches,
+  recentOpens,
+  onOpenHit,
+  onQueryChange,
+  onPickRecent,
 }: {
-  onAsk: () => void;
-  askOpen: boolean;
   searchRef?: RefObject<HTMLInputElement | null>;
-  showAi: boolean;
   searchTokens: SearchToken[];
   onSearchTokens: (tokens: SearchToken[]) => void;
   labels: Label[];
   notifications: AppNotification[];
   onOpenNotification: (n: AppNotification) => void;
   onMarkNotificationsRead: () => void;
+  onToggleCreator: () => void;
+  searchHits: SearchHit[];
+  searchBusy: boolean;
+  recentSearches: string[];
+  recentOpens: RecentOpen[];
+  onOpenHit: (id: string) => void;
+  onQueryChange: (query: string) => void;
+  onPickRecent: (query: string) => void;
 }) {
   const [notifOpen, setNotifOpen] = useState(false);
+  const blur = useCreatorBlur();
   const unread = notifications.filter((n) => n.unread).length;
 
   return (
@@ -794,30 +851,34 @@ function TitleBar({
         tokens={searchTokens}
         onTokensChange={onSearchTokens}
         labels={labels}
+        hits={searchHits}
+        hitsLoading={searchBusy}
+        recentSearches={recentSearches}
+        recentOpens={recentOpens}
+        onOpenHit={onOpenHit}
+        onQueryChange={onQueryChange}
+        onPickRecent={onPickRecent}
       />
       <div className="titlebar-right">
-        {showAi && (
-          <button
-            type="button"
-            className={`icon-btn${askOpen ? " active" : ""}`}
-            data-ask-trigger="true"
-            aria-label="Ask AI across inbox"
-            title="Ask AI · all mail"
-            onClick={() => {
-              setNotifOpen(false);
-              onAsk();
-            }}
-          >
-            <Bot size={15} strokeWidth={1.75} />
-          </button>
-        )}
+        <button
+          type="button"
+          className={`icon-btn creator-toggle${blur.enabled ? " active" : ""}`}
+          aria-pressed={blur.enabled}
+          aria-label={
+            blur.enabled
+              ? "Creator mode is on. Click to show addresses."
+              : "Creator mode. Blur addresses while you record."
+          }
+          onClick={onToggleCreator}
+        >
+          <Clapperboard size={15} strokeWidth={1.75} />
+        </button>
         <div className="notif-anchor">
           <button
             type="button"
             className={`icon-btn${notifOpen ? " active" : ""}`}
             aria-label="Notifications"
             aria-expanded={notifOpen}
-            title="Notifications"
             onClick={() => setNotifOpen((v) => !v)}
           >
             <Bell size={15} strokeWidth={1.75} />
@@ -847,35 +908,98 @@ function TitleBar({
 function AccountRail({
   accounts,
   activeId,
+  showAgent,
+  agentOpen,
+  snoozeOpen,
+  snoozeCount,
+  highlightAccounts,
+  onAgent,
+  onSnooze,
   onSelect,
   onAdd,
   onSettings,
   onPlugins,
+  plugins,
+  activePluginId,
+  onOpenPlugin,
 }: {
   accounts: Account[];
   activeId: string;
+  showAgent: boolean;
+  agentOpen: boolean;
+  snoozeOpen: boolean;
+  snoozeCount: number;
+  /** Mailbox highlight stays off while Agent or Snooze is the open section. */
+  highlightAccounts: boolean;
+  onAgent: () => void;
+  onSnooze: () => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
   onSettings: () => void;
   onPlugins: () => void;
+  plugins: Array<{ id: PluginId; name: string }>;
+  activePluginId: PluginId | null;
+  onOpenPlugin: (id: PluginId) => void;
 }) {
+  const blur = useCreatorBlur();
+  const snoozeLabel =
+    snoozeCount > 0 ? `Snoozed, ${snoozeCount}` : "Snoozed";
   return (
     <aside className="rail">
+      <div className="rail-section rail-tools">
+        {showAgent && (
+          <button
+            type="button"
+            className={`account rail-agent${agentOpen ? " active" : ""}`}
+            data-ask-trigger="true"
+            aria-label="Agent"
+            title="Agent"
+            aria-pressed={agentOpen}
+            onClick={onAgent}
+          >
+            <span className="account-face rail-agent-face">
+              <Bot size={15} strokeWidth={1.75} />
+            </span>
+          </button>
+        )}
+        <button
+          type="button"
+          className={`account rail-agent rail-snooze${snoozeOpen ? " active" : ""}`}
+          aria-label={snoozeLabel}
+          title="Snoozed — every account"
+          aria-pressed={snoozeOpen}
+          onClick={onSnooze}
+        >
+          <span className="account-face rail-agent-face">
+            <Clock size={15} strokeWidth={1.75} />
+          </span>
+          {snoozeCount > 0 && (
+            <span className="badge">{snoozeCount}</span>
+          )}
+        </button>
+      </div>
       <div className="rail-section">
         <span className="rail-label">Mail</span>
         {accounts.map((a) => {
           const loggedOut = Boolean(a.loggedOut);
+          const hideAddress =
+            looksLikeEmail(a.email) &&
+            blur.blurAddress(blur.kindForEmail(a.email));
           const title =
             a.id === UNIFIED_ID
               ? "Unified Inbox"
-              : loggedOut
-                ? `${a.email} — logged out`
-                : a.email;
+              : hideAddress
+                ? loggedOut
+                  ? "Logged out mailbox"
+                  : "Mailbox"
+                : loggedOut
+                  ? `${a.email} — logged out`
+                  : a.email;
           return (
             <button
               key={a.id}
               type="button"
-              className={`account${activeId === a.id ? " active" : ""}${loggedOut ? " logged-out" : ""}`}
+              className={`account${highlightAccounts && activeId === a.id ? " active" : ""}${loggedOut ? " logged-out" : ""}`}
               onClick={() => onSelect(a.id)}
               title={title}
               aria-label={title}
@@ -926,17 +1050,42 @@ function AccountRail({
       </div>
       <div className="rail-spacer" />
       <div className="rail-section">
+        <span className="rail-label">Apps</span>
+        {plugins.map((plugin) => {
+          const open = activePluginId === plugin.id;
+          return (
+            <button
+              key={plugin.id}
+              type="button"
+              className={`rail-btn rail-plugin${open ? " active" : ""}`}
+              aria-label={plugin.name}
+              title={plugin.name}
+              aria-pressed={open}
+              onClick={() => onOpenPlugin(plugin.id)}
+            >
+              {plugin.id === "google-calendar" ? (
+                <GoogleCalendarBrand size={22} />
+              ) : plugin.id === "notion" ? (
+                <SimpleBrandIcon
+                  icon={pluginBrandIcons.notion}
+                  size={18}
+                  color="currentColor"
+                />
+              ) : (
+                <Plug size={16} strokeWidth={1.75} />
+              )}
+            </button>
+          );
+        })}
         <button
           type="button"
-          className="rail-btn rail-soon"
-          aria-label="Plugins — tester invite"
-          title="Plugins"
+          className="rail-btn"
+          aria-label="Add plugin"
+          title="Add plugin"
           onClick={onPlugins}
         >
           <Plug size={16} strokeWidth={1.75} />
-          <span className="rail-soon-badge">Soon</span>
         </button>
-        <span className="rail-label">Apps</span>
         <button
           type="button"
           className="rail-btn"
@@ -972,6 +1121,8 @@ function Sidebar({
   customFolders,
   labels,
   syncLabel,
+  snoozeCount = 0,
+  inboxAsInbox = false,
   compact = false,
   onFolder,
   onCompose,
@@ -989,6 +1140,10 @@ function Sidebar({
   customFolders: string[];
   labels: Label[];
   syncLabel: string;
+  /** Global snoozed total. The row opens every account, so the badge is not per mailbox. */
+  snoozeCount?: number;
+  /** Inbox returns to the selected mailbox, so don't label it Unified Inbox. */
+  inboxAsInbox?: boolean;
   compact?: boolean;
   onFolder: (id: string) => void;
   onCompose: () => void;
@@ -997,6 +1152,12 @@ function Sidebar({
   onCreateLabel: (name: string, color: string) => void;
 }) {
   const unified = account.id === UNIFIED_ID;
+  const blur = useCreatorBlur();
+  const accountKind = blur.kindForEmail(account.email);
+  const hideAccountAddress =
+    looksLikeEmail(account.email) && blur.blurAddress(accountKind);
+  const hideAccountName =
+    looksLikeEmail(account.email) && blur.blurName(accountKind);
   const [creating, setCreating] = useState<"folder" | "label" | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -1066,8 +1227,12 @@ function Sidebar({
           />
         )}
         <div className="profile-copy">
-          <div className="profile-name">{account.name}</div>
-          <div className="profile-email">{account.email}</div>
+          <div className={blurClass("profile-name", hideAccountName)}>
+            {account.name}
+          </div>
+          <div className={blurClass("profile-email", hideAccountAddress)}>
+            {account.email}
+          </div>
         </div>
       </div>
 
@@ -1086,11 +1251,16 @@ function Sidebar({
       <div className="nav-section">
         {folders.map((f) => {
           const Icon = folderIcons[f.icon];
-          const label = f.id === "inbox" && unified ? "Unified Inbox" : f.name;
+          const label =
+            f.id === "inbox" && unified && !inboxAsInbox
+              ? "Unified Inbox"
+              : f.name;
           const count =
-            f.id === "inbox"
-              ? inboxCount
-              : (folderCounts[f.id] ?? f.count ?? 0);
+            f.id === "snoozed"
+              ? snoozeCount
+              : f.id === "inbox"
+                ? inboxCount
+                : (folderCounts[f.id] ?? f.count ?? 0);
           return (
             <button
               key={f.id}
@@ -1750,12 +1920,159 @@ function MessageActionMenu({
   );
 }
 
+function ListFilterControl({
+  value,
+  counts,
+  onChange,
+}: {
+  value: ListFilter;
+  counts: StatusCounts;
+  onChange: (next: ListFilter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const active = listFilterActive(value);
+  const count = listFilterCount(value);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const statuses = [
+    ["all", "All", counts.all],
+    ["unread", "Unread", counts.unread],
+    ["read", "Read", counts.read],
+  ] as const;
+
+  return (
+    <div className="list-filter" ref={rootRef}>
+      <button
+        type="button"
+        className={`icon-btn${open || active ? " active" : ""}`}
+        aria-label="Filter by unread, star, or file"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((next) => !next)}
+      >
+        <ListFilterIcon size={14} strokeWidth={1.75} />
+        {count > 0 && <span className="list-filter-badge">{count}</span>}
+      </button>
+      {open && (
+        <div
+          className="list-filter-panel"
+          role="dialog"
+          aria-label="Filter messages"
+        >
+          <div className="search-panel-label">Status</div>
+          <div className="list-filter-seg" role="radiogroup" aria-label="Read status">
+            {statuses.map(([id, label, total]) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={value.read === id}
+                className={value.read === id ? "active" : undefined}
+                onClick={() => onChange({ ...value, read: id })}
+              >
+                <span>{label}</span>
+                <small>{total}</small>
+              </button>
+            ))}
+          </div>
+          <div className="search-panel-label">Narrow further</div>
+          <button
+            type="button"
+            className={`list-filter-toggle${value.starred ? " on" : ""}`}
+            role="switch"
+            aria-checked={value.starred}
+            onClick={() => onChange({ ...value, starred: !value.starred })}
+          >
+            <span className="list-filter-check" aria-hidden>
+              <Check size={11} strokeWidth={2.5} />
+            </span>
+            Starred
+          </button>
+          <button
+            type="button"
+            className={`list-filter-toggle${value.attachment ? " on" : ""}`}
+            role="switch"
+            aria-checked={value.attachment}
+            onClick={() =>
+              onChange({ ...value, attachment: !value.attachment })
+            }
+          >
+            <span className="list-filter-check" aria-hidden>
+              <Check size={11} strokeWidth={2.5} />
+            </span>
+            Has attachment
+          </button>
+          {active && (
+            <button
+              type="button"
+              className="list-filter-clear"
+              onClick={() => onChange(EMPTY_LIST_FILTER)}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilterChips({
+  value,
+  onChange,
+}: {
+  value: ListFilter;
+  onChange: (next: ListFilter) => void;
+}) {
+  if (!listFilterActive(value)) return null;
+  const chip = (label: string, next: ListFilter) => (
+    <button
+      key={label}
+      type="button"
+      className="filter-chip"
+      aria-label={`Remove ${label} filter`}
+      onClick={() => onChange(next)}
+    >
+      {label}
+      <X size={11} strokeWidth={2.25} />
+    </button>
+  );
+  return (
+    <div className="list-filter-chips">
+      {value.read === "unread" &&
+        chip("Unread", { ...value, read: "all" })}
+      {value.read === "read" && chip("Read", { ...value, read: "all" })}
+      {value.starred && chip("Starred", { ...value, starred: false })}
+      {value.attachment &&
+        chip("Has attachment", { ...value, attachment: false })}
+    </div>
+  );
+}
+
 function MessageList({
   items,
   accounts,
   selectedId,
   checkedIds,
   filter,
+  refine,
+  statusCounts,
   unified,
   title,
   showSplit,
@@ -1781,12 +2098,15 @@ function MessageList({
   onAction,
   onCreateLabel,
   onCreateFolder,
+  onRefine,
 }: {
   items: Message[];
   accounts: Account[];
   selectedId: string;
   checkedIds: Set<string>;
   filter: Filter;
+  refine: ListFilter;
+  statusCounts: StatusCounts;
   unified: boolean;
   title: string;
   showSplit: boolean;
@@ -1800,14 +2120,12 @@ function MessageList({
   showAi: boolean;
   catchMeUp?: {
     enabled: boolean;
-    busy: boolean;
-    text: string | null;
-    error: string | null;
     onRun: () => void;
   };
   syncing?: boolean;
   fullScreen?: boolean;
   onFilter: (f: Filter) => void;
+  onRefine: (next: ListFilter) => void;
   onSelect: (id: string) => void;
   onToggleCheck: (
     id: string,
@@ -1831,6 +2149,7 @@ function MessageList({
   const anyUnread = checkedMessages.some((m) => m.unread);
   const anyUnstarred = checkedMessages.some((m) => !m.starred);
   const ownEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
+  const blur = useCreatorBlur();
 
   // Replay the fade-up only for rows that just arrived. Re-rendering the list
   // on every sync tick used to restart the staggered animation for all rows.
@@ -1859,6 +2178,7 @@ function MessageList({
     <section
       className={`list${fullScreen ? " list-fullscreen" : ""}${checkedCount > 0 ? " list-selecting" : ""}`}
     >
+      <div className="list-mail">
       <div className="list-header">
         {checkedCount > 0 ? (
           <div className="bulk-bar" role="toolbar" aria-label="Bulk selection">
@@ -1885,7 +2205,6 @@ function MessageList({
               type="button"
               className="icon-btn"
               aria-label="Archive selected"
-              title="Archive"
               onClick={() => onBulkAction("archive")}
             >
               <Archive size={14} strokeWidth={1.75} />
@@ -1894,7 +2213,6 @@ function MessageList({
               type="button"
               className="icon-btn"
               aria-label={anyUnread ? "Mark as read" : "Mark as unread"}
-              title={anyUnread ? "Mark as read" : "Mark as unread"}
               onClick={() => onBulkAction("toggle-read")}
             >
               {anyUnread ? (
@@ -1906,8 +2224,7 @@ function MessageList({
             <button
               type="button"
               className="icon-btn"
-              aria-label={anyUnstarred ? "Star" : "Unstar"}
-              title={anyUnstarred ? "Star" : "Unstar"}
+              aria-label={anyUnstarred ? "Star selected" : "Unstar selected"}
               onClick={() => onBulkAction("star")}
             >
               <Star
@@ -1919,8 +2236,7 @@ function MessageList({
             <button
               type="button"
               className="icon-btn"
-              aria-label="Snooze selected"
-              title="Snooze"
+              aria-label="Snooze selected until tomorrow"
               onClick={() => onBulkAction("snooze", "Tomorrow")}
             >
               <Clock size={14} strokeWidth={1.75} />
@@ -1929,7 +2245,6 @@ function MessageList({
               type="button"
               className="icon-btn"
               aria-label="Mark selected as spam"
-              title="Mark as spam"
               onClick={() => onBulkAction("spam")}
             >
               <ShieldAlert size={14} strokeWidth={1.75} />
@@ -1938,7 +2253,6 @@ function MessageList({
               type="button"
               className="icon-btn danger"
               aria-label="Delete selected"
-              title="Delete"
               onClick={() => onBulkAction("trash")}
             >
               <Trash2 size={14} strokeWidth={1.75} />
@@ -1947,7 +2261,6 @@ function MessageList({
               type="button"
               className="icon-btn danger"
               aria-label="Delete selected forever"
-              title="Delete forever"
               onClick={() => onBulkAction("delete-forever")}
             >
               <Eraser size={14} strokeWidth={1.75} />
@@ -1976,31 +2289,34 @@ function MessageList({
                 <button
                   type="button"
                   className="icon-btn"
-                  aria-label="Catch me up"
-                  title="Catch me up"
+                  aria-label="Catch me up on this list"
                   onClick={catchMeUp.onRun}
-                  disabled={catchMeUp.busy}
                 >
-                  <Sparkles
-                    size={14}
-                    strokeWidth={1.75}
-                    className={catchMeUp.busy ? "spin" : undefined}
-                  />
+                  <Sparkles size={14} strokeWidth={1.75} />
                 </button>
               )}
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Refresh"
-                onClick={onRefresh}
-                disabled={syncing}
-              >
-                <RefreshCw
-                  size={14}
-                  strokeWidth={1.75}
-                  className={syncing ? "spin" : undefined}
-                />
-              </button>
+              <ListFilterControl
+                value={refine}
+                counts={statusCounts}
+                onChange={onRefine}
+              />
+              <span className="icon-tip-wrap">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={
+                    syncing ? "Checking for new mail" : "Check for new mail"
+                  }
+                  onClick={onRefresh}
+                  disabled={syncing}
+                >
+                  <RefreshCw
+                    size={14}
+                    strokeWidth={1.75}
+                    className={syncing ? "spin" : undefined}
+                  />
+                </button>
+              </span>
               <button type="button" className="icon-btn" aria-label="Sweep">
                 <Eraser size={14} strokeWidth={1.75} />
               </button>
@@ -2008,6 +2324,8 @@ function MessageList({
           </>
         )}
       </div>
+
+      <FilterChips value={refine} onChange={onRefine} />
 
       {showSplit && (
         <div className="list-tabs">
@@ -2030,22 +2348,27 @@ function MessageList({
         </div>
       )}
 
-      {catchMeUp?.enabled && (catchMeUp.busy || catchMeUp.text || catchMeUp.error) && (
-        <div className="catchup" role="status">
-          <p className={catchMeUp.error ? "catchup-error" : undefined}>
-            {catchMeUp.busy
-              ? "Catching you up from this inbox…"
-              : catchMeUp.error || catchMeUp.text}
-          </p>
-        </div>
-      )}
-
       <div className="message-scroll">
         {items.length === 0 ? (
           <div className="empty-list">
             <Inbox size={22} strokeWidth={1.5} />
-            <p>Nothing here</p>
-            <span>Try another filter or account.</span>
+            <p>{listFilterActive(refine) ? "No messages match" : "Nothing here"}</p>
+            <span>
+              {listFilterActive(refine)
+                ? "Clear a filter to see more of this folder."
+                : title === "Snoozed"
+                  ? "Snoozed mail from every account shows up here."
+                  : "Try another filter or account."}
+            </span>
+            {listFilterActive(refine) && (
+              <button
+                type="button"
+                className="empty-list-clear"
+                onClick={() => onRefine(EMPTY_LIST_FILTER)}
+              >
+                Clear filters
+              </button>
+            )}
           </div>
         ) : (
           items.map((m, i) => {
@@ -2055,6 +2378,16 @@ function MessageList({
             const badges = listBadgeCounts(m);
             const links = extractMessageLinks(m);
             const starred = Boolean(m.starred);
+            const kind = blur.kindForMessage({
+              email: m.email,
+              name: m.from,
+              subject: m.subject,
+              preview: m.preview,
+              tag: m.tag?.label,
+            });
+            const nameBlur = blur.blurName(kind);
+            const subjectBlur = blur.blurSubject(kind);
+            const previewBlur = blur.blurPreview(kind);
             return (
               <div
                 key={m.id}
@@ -2112,7 +2445,7 @@ function MessageList({
                 </div>
                 <div className="message-main">
                   <div className="from-row">
-                    <span className="from">{m.from}</span>
+                    <span className={blurClass("from", nameBlur)}>{m.from}</span>
                     <span className="message-time-inline">· {m.time}</span>
                     {m.openTracking && (
                       <DeliveryTicks tracking={m.openTracking} size={13} />
@@ -2181,10 +2514,24 @@ function MessageList({
                     {showUnreadBadge && m.unread && (
                       <span className="unread-dot" aria-label="Unread" />
                     )}
-                    <div className="subject">{m.subject}</div>
+                    <div className={blurClass("subject", subjectBlur)}>
+                      {subjectBlur ? (
+                        m.subject
+                      ) : (
+                        <BlurredEmails text={m.subject} />
+                      )}
+                    </div>
                   </div>
                   {showPreviewLines && (
-                    <div className="preview">{m.preview}</div>
+                    <div className={blurClass("preview", previewBlur)}>
+                      {previewBlur ? (
+                        m.preview
+                      ) : m.matchPreview ? (
+                        <MatchText text={m.matchPreview} />
+                      ) : (
+                        <BlurredEmails text={m.preview} />
+                      )}
+                    </div>
                   )}
                   {(fullScreen ||
                     badges.attachmentCount > 0 ||
@@ -2272,6 +2619,7 @@ function MessageList({
           }}
         />
       )}
+      </div>
     </section>
   );
 }
@@ -2303,6 +2651,28 @@ const EMAIL_FRAME_RESET = `
   }
   body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
   img { max-width: 100%; height: auto; }
+  /* Newsletter shells are authored around 600px. Let them use the pane. */
+  table[width="480"], table[width="500"], table[width="520"], table[width="540"],
+  table[width="560"], table[width="580"], table[width="600"], table[width="620"],
+  table[width="640"], table[width="650"], table[width="660"], table[width="680"],
+  table[width="700"], table[width="720"], table[width="760"], table[width="800"],
+  table[style*="width:600px"], table[style*="width: 600px"],
+  table[style*="width:640px"], table[style*="width: 640px"],
+  table[style*="max-width:600px"], table[style*="max-width: 600px"],
+  table[style*="max-width:640px"], table[style*="max-width: 640px"],
+  div[style*="width:600px"], div[style*="width: 600px"],
+  div[style*="max-width:600px"], div[style*="max-width: 600px"],
+  div[style*="width:640px"], div[style*="width: 640px"],
+  div[style*="max-width:640px"], div[style*="max-width: 640px"] {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  td[width="480"], td[width="500"], td[width="520"], td[width="540"],
+  td[width="560"], td[width="580"], td[width="600"], td[width="620"],
+  td[width="640"], td[width="650"], td[width="660"], td[width="680"],
+  td[width="700"], td[width="720"], td[width="760"], td[width="800"] {
+    width: auto !important;
+  }
   /* Full-viewport wrappers (100vh / height=100%) leave a gap above centered mail. */
   body > table[height="100%"],
   body > table[style*="height:100%"],
@@ -2313,6 +2683,13 @@ const EMAIL_FRAME_RESET = `
   body > div[style*="height: 100vh"] {
     height: auto !important;
     min-height: 0 !important;
+  }
+  .intray-creator-blur {
+    filter: blur(5px);
+    -webkit-filter: blur(5px);
+    display: inline-block;
+    user-select: none;
+    color: inherit;
   }
 `;
 
@@ -2332,6 +2709,7 @@ function HtmlBody({
   const ref = useRef<HTMLIFrameElement>(null);
   const onLayoutRef = useRef(onLayout);
   onLayoutRef.current = onLayout;
+  const blur = useCreatorBlur();
 
   useEffect(() => {
     const frame = ref.current;
@@ -2351,7 +2729,12 @@ function HtmlBody({
     const csp = allowRemote
       ? "default-src 'none'; img-src https: http: data: blob:; style-src 'unsafe-inline'; font-src data:; media-src https: http: data: blob:; base-uri 'none'; form-action 'none';"
       : "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none';";
-    const bodyHtml = allowRemote ? promoteProtocolRelativeUrls(html) : html;
+    const source = allowRemote ? promoteProtocolRelativeUrls(html) : html;
+    const bodyHtml = blur.enabled
+      ? blurEmailsInHtml(source, (email) =>
+          blur.blurAddress(blur.kindForEmail(email)),
+        )
+      : source;
     doc.open();
     doc.write(`<!doctype html><html><head><meta charset="utf-8" />
       <meta http-equiv="Content-Security-Policy" content="${csp}" />
@@ -2423,7 +2806,7 @@ function HtmlBody({
         img.removeEventListener("load", resize);
       }
     };
-  }, [html, forceDark, allowRemote]);
+  }, [html, forceDark, allowRemote, blur]);
 
   return (
     <div className="html-frame-wrap">
@@ -2475,6 +2858,18 @@ function ThreadMessageView({
   onHtmlLayout?: () => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  useEffect(() => {
+    if (defaultExpanded) setExpanded(true);
+  }, [defaultExpanded, message.id]);
+  const blur = useCreatorBlur();
+  const kind = blur.kindForMessage({
+    email: message.email,
+    name: message.from,
+    preview: message.body?.[0],
+  });
+  const nameBlur = blur.blurName(kind);
+  const addressBlur = blur.blurAddress(kind);
+  const previewBlur = blur.blurPreview(kind);
   const hasRemoteImages = useMemo(
     () => htmlHasRemoteImages(message.bodyHtml ?? ""),
     [message.bodyHtml],
@@ -2494,7 +2889,10 @@ function ThreadMessageView({
   const toggleExpanded = () => setExpanded((v) => !v);
 
   return (
-    <article className={`thread-msg${expanded ? " expanded" : ""}`}>
+    <article
+      className={`thread-msg${expanded ? " expanded" : ""}`}
+      data-thread-msg={message.id}
+    >
       <div className="thread-msg-top">
         <div className="thread-msg-head">
           <div className="msg-from">
@@ -2514,13 +2912,20 @@ function ThreadMessageView({
             </button>
             <div className="msg-from-text">
               <strong>
-                <RecipientName recipient={sender} onCompose={onComposeTo} />
+                <RecipientName
+                  recipient={sender}
+                  onCompose={onComposeTo}
+                  nameBlur={nameBlur}
+                  addressBlur={addressBlur}
+                />
               </strong>
               <span className="msg-from-meta">
                 <button
                   type="button"
-                  className="msg-sender-email"
-                  title={`Compose to ${message.email}`}
+                  className={blurClass("msg-sender-email", addressBlur)}
+                  title={
+                    addressBlur ? "Compose" : `Compose to ${message.email}`
+                  }
                   onClick={() => onComposeTo(sender)}
                 >
                   {message.email}
@@ -2541,10 +2946,14 @@ function ThreadMessageView({
           {!expanded && message.body?.[0] && (
             <button
               type="button"
-              className="thread-collapse-preview"
+              className={blurClass("thread-collapse-preview", previewBlur)}
               onClick={toggleExpanded}
             >
-              {message.body[0]}
+              {previewBlur ? (
+                message.body[0]
+              ) : (
+                <BlurredEmails text={message.body[0]} />
+              )}
             </button>
           )}
         </div>
@@ -2640,7 +3049,9 @@ function ThreadMessageView({
           ) : (
             <div className="body-copy">
               {(message.body ?? []).map((p) => (
-                <p key={p}>{p}</p>
+                <p key={p}>
+                  <BlurredEmails text={p} />
+                </p>
               ))}
             </div>
           )}
@@ -2672,26 +3083,31 @@ function ThreadMessageView({
           )}
 
           {threadAttachments(message).length > 0 && (
-            <div className="attachment-list">
-              {threadAttachments(message).map((file) => (
-                <div key={`${file.name}-${file.size}`} className="attachment">
-                  <div className="attachment-icon">
-                    <FileText size={15} strokeWidth={1.75} />
-                  </div>
-                  <div className="attachment-meta">
-                    <strong>{file.name}</strong>
-                    <span className="attachment-sep" aria-hidden>
-                      ·
-                    </span>
-                    <span>{file.size}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <AttachmentBar
+              messageId={message.id}
+              files={threadAttachments(message)}
+            />
           )}
         </div>
       )}
     </article>
+  );
+}
+
+function SummaryText({ text }: { text: string }) {
+  const summary = formatMailSummary(text);
+  if (!summary.lead && summary.bullets.length === 0) return null;
+  return (
+    <div className="thread-summary-body">
+      {summary.lead ? <p>{summary.lead}</p> : null}
+      {summary.bullets.length > 0 && (
+        <ul>
+          {summary.bullets.map((item, index) => (
+            <li key={`${index}-${item}`}>{item}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -2716,7 +3132,12 @@ function ReadingPane({
   onComposeTo,
   onToast,
   onReplySent,
+  pluginStatuses,
+  onOpenPlugins,
+  onPluginDialogChange,
   replyIntent = { key: 0, mode: "reply" as ReplyMode },
+  focusMessageId = null,
+  emptyTitle = "Mail",
 }: {
   message: Message | null;
   stickySubject: boolean;
@@ -2738,18 +3159,63 @@ function ReadingPane({
   onComposeTo: (r: Recipient) => void;
   onToast: (text: string) => void;
   onReplySent?: (message: Message) => void;
+  pluginStatuses: PluginStatus[];
+  onOpenPlugins: () => void;
+  onPluginDialogChange?: (open: boolean) => void;
   /** Bumped by parent to focus/seed the reply box (Reply vs Reply all). */
   replyIntent?: { key: number; mode: ReplyMode };
+  /** Scroll this thread message into view after a search hit. */
+  focusMessageId?: string | null;
+  /** Folder or account name shown when nothing is open. */
+  emptyTitle?: string;
 }) {
+  const blur = useCreatorBlur();
   const readerScrollRef = useRef<HTMLDivElement>(null);
   /** True while the user is still at the top — pin through lazy HTML sizing. */
   const pinReaderTopRef = useRef(true);
+  const openedKind = message
+    ? blur.kindForMessage({
+        email: message.email,
+        name: message.from,
+        subject: message.subject,
+        preview: message.preview,
+        tag: message.tag?.label,
+      })
+    : "personal";
+  const subjectBlur = Boolean(message) && blur.blurSubject(openedKind);
 
   useEffect(() => {
     pinReaderTopRef.current = true;
     const node = readerScrollRef.current;
-    if (node) node.scrollTop = 0;
-  }, [message?.id]);
+    if (!node) return;
+    if (focusMessageId) {
+      const target = node.querySelector(
+        `[data-thread-msg="${CSS.escape(focusMessageId)}"]`,
+      );
+      if (target) {
+        pinReaderTopRef.current = false;
+        target.scrollIntoView({ block: "center" });
+        return;
+      }
+    }
+    node.scrollTop = 0;
+  }, [message?.id, focusMessageId]);
+
+  const threadCount = message?.thread.length ?? 0;
+  const threadWatch = useRef({ id: message?.id, count: threadCount });
+  useEffect(() => {
+    if (!message) return;
+    const prev = threadWatch.current;
+    threadWatch.current = { id: message.id, count: threadCount };
+    if (prev.id !== message.id || threadCount <= prev.count) return;
+    pinReaderTopRef.current = false;
+    const node = readerScrollRef.current;
+    const last = node?.querySelector("article.thread-msg:last-of-type");
+    if (!node || !(last instanceof HTMLElement)) return;
+    const delta =
+      last.getBoundingClientRect().bottom - node.getBoundingClientRect().bottom;
+    if (delta > 0) node.scrollTop += delta + 16;
+  }, [message, threadCount]);
 
   useEffect(() => {
     const node = readerScrollRef.current;
@@ -2862,6 +3328,28 @@ function ReadingPane({
   const [unsubState, setUnsubState] = useState<
     "idle" | "scanning" | "done" | "missing"
   >("idle");
+  const [threadSummary, setThreadSummary] = useState<{
+    messageId: string;
+    status: "loading" | "ready" | "error";
+    text: string;
+  } | null>(null);
+  const summaryReq = useRef(0);
+  const summaryRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    summaryReq.current += 1;
+    setThreadSummary(null);
+  }, [message?.id]);
+
+  useEffect(() => {
+    const card = summaryRef.current;
+    const scroller = readerScrollRef.current;
+    if (!threadSummary || !card || !scroller) return;
+    const delta =
+      card.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (delta < 0) scroller.scrollTop += delta - 8;
+  }, [threadSummary]);
+
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -2948,10 +3436,11 @@ function ReadingPane({
     setDraftTracked(text);
   };
 
+  const replyBodyKey = message ? latestReplyBodyKey(message) : "";
+
   useEffect(() => {
     setAiReplies([]);
-    setReplyNote(null);
-    if (!message || !showAi || !prefs.aiWriteEnabled) return;
+    if (!message || !showAi || !prefs.aiWriteEnabled || !replyBodyKey) return;
     if (prefs.aiBridge === "none") {
       setReplyNote("Pick a provider in Settings to suggest replies.");
       return;
@@ -2973,13 +3462,36 @@ function ReadingPane({
     return () => {
       cancelled = true;
     };
+    // `message` is read from the render that produced replyBodyKey. Depending
+    // on the object would resend the prompt on every list refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     message?.id,
+    replyBodyKey,
     showAi,
     prefs.aiWriteEnabled,
     prefs.aiBridge,
     prefs.aiBridgePath,
     prefs.aiModelHint,
+  ]);
+
+  useEffect(() => {
+    if (!showAi || !prefs.aiWriteEnabled || !message) return;
+    if (prefs.aiBridge === "none") {
+      setReplyNote("Pick a provider in Settings to suggest replies.");
+      return;
+    }
+    if (!replyBodyKey) {
+      setReplyNote(bodyLoading ? "Reading the message…" : null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    message?.id,
+    replyBodyKey,
+    bodyLoading,
+    showAi,
+    prefs.aiWriteEnabled,
+    prefs.aiBridge,
   ]);
 
   const replyExcludeEmails = [
@@ -3095,12 +3607,41 @@ function ReadingPane({
             ? message.subject
             : `Re: ${message.subject}`,
           bodyText: draft,
-          replyToMessageId: message.id,
+          replyToMessageId:
+            message.thread[message.thread.length - 1]?.id ?? message.id,
         });
         onReplySent?.(messageDtoToUi(dto));
       } else {
         // Demo mode: brief delay so the Sending → Sent transition is visible.
         await new Promise((r) => setTimeout(r, 450));
+        const replyId = `demo-sent-${Date.now()}`;
+        const preview = draft.trim().replace(/\s+/g, " ").slice(0, 160);
+        onReplySent?.({
+          ...message,
+          preview: `You: ${preview}`,
+          time: "Just now",
+          unread: false,
+          thread: [
+            ...message.thread,
+            {
+              id: replyId,
+              from: replyFrom.name,
+              initials: replyFrom.label.slice(0, 2).toUpperCase(),
+              avatarColor: replyFrom.color,
+              email: replyFrom.email,
+              time: "Just now",
+              to: toMentions.map((person) => ({
+                name: person.name,
+                email: person.email,
+              })),
+              cc: ccMentions.map((person) => ({
+                name: person.name,
+                email: person.email,
+              })),
+              body: draft.split(/\n+/).filter(Boolean),
+            },
+          ],
+        });
       }
       setReplySendPhase("sent");
       setDraft("");
@@ -3123,19 +3664,53 @@ function ReadingPane({
       onToast("Pick an AI provider in Settings");
       return;
     }
-    onToast("Summarizing…");
-    try {
-      const text = await aiSummarizeMessage(prefs, message);
-      onToast(text.slice(0, 180) + (text.length > 180 ? "…" : ""));
-      if (!draft.trim()) setDraftTracked(text);
-    } catch (e) {
-      onToast(e instanceof Error ? e.message : "Summarize failed");
+    if (!threadHasReadableText(message)) {
+      onToast(bodyLoading ? "Still reading this message…" : "This message has no text to summarize");
+      return;
     }
+    if (
+      threadSummary?.messageId === message.id &&
+      threadSummary.status === "loading"
+    ) {
+      return;
+    }
+    const messageId = message.id;
+    const req = ++summaryReq.current;
+    setThreadSummary({ messageId, status: "loading", text: "" });
+    try {
+      const text = (await aiSummarizeMessage(prefs, message)).trim();
+      if (summaryReq.current !== req) return;
+      if (!text) {
+        setThreadSummary({
+          messageId,
+          status: "error",
+          text: "No summary came back.",
+        });
+        return;
+      }
+      setThreadSummary({ messageId, status: "ready", text });
+    } catch (e) {
+      if (summaryReq.current !== req) return;
+      setThreadSummary({
+        messageId,
+        status: "error",
+        text: e instanceof Error ? e.message : "Summarize failed",
+      });
+    }
+  };
+
+  const dismissSummary = () => {
+    summaryReq.current += 1;
+    setThreadSummary(null);
   };
 
   const runTranslate = async () => {
     if (!message || prefs.aiBridge === "none") {
       onToast("Pick an AI provider in Settings");
+      return;
+    }
+    if (!threadHasReadableText(message)) {
+      onToast(bodyLoading ? "Still reading this message…" : "This message has no text to translate");
       return;
     }
     onToast("Translating…");
@@ -3153,6 +3728,10 @@ function ReadingPane({
       onToast("Pick an AI provider in Settings");
       return;
     }
+    if (!threadHasReadableText(message)) {
+      onToast(bodyLoading ? "Still reading this message…" : "This message has no text to reply to");
+      return;
+    }
     onToast("Writing reply…");
     try {
       const text = await aiWriteReply(prefs, message);
@@ -3166,8 +3745,8 @@ function ReadingPane({
     return (
       <section className="reader empty-reader">
         <Layers size={28} strokeWidth={1.5} />
-        <h2>Unified Inbox</h2>
-        <p>Select a message from any account — they all live here together.</p>
+        <h2>{emptyTitle}</h2>
+        <p>Nothing open. Select a message when you want to read it.</p>
       </section>
     );
   }
@@ -3283,7 +3862,11 @@ function ReadingPane({
             type="button"
             className="icon-btn"
             aria-label={label}
-            title={label}
+            aria-expanded={
+              action === "snooze" || action === "label" || action === "move"
+                ? menu?.panel === action
+                : undefined
+            }
             onClick={(e) => {
               if (
                 action === "snooze" ||
@@ -3306,11 +3889,18 @@ function ReadingPane({
             <Icon size={16} strokeWidth={1.75} />
           </button>
         ))}
+        <PluginReaderActions
+          message={message}
+          statuses={pluginStatuses}
+          onToast={onToast}
+          onOpenPlugins={onOpenPlugins}
+          onDialogChange={onPluginDialogChange}
+        />
         <button
           type="button"
           className="icon-btn"
-          aria-label="More"
-          title="More"
+          aria-label="More actions"
+          aria-expanded={menu != null && menu.panel == null}
           onClick={(e) => {
             const rect = (
               e.currentTarget as HTMLButtonElement
@@ -3326,7 +3916,6 @@ function ReadingPane({
             <button
               type="button"
               className="pill-btn"
-              data-ask-trigger="true"
               onClick={onAsk}
               title="Ask AI about this mail"
             >
@@ -3362,7 +3951,13 @@ function ReadingPane({
       {/* Pin outside the scrollport so HTML iframes cannot paint through sticky. */}
       {stickySubject && (
         <div className="reader-subject-row pinned">
-          <h1 className="reader-subject">{message.subject}</h1>
+          <h1 className={blurClass("reader-subject", subjectBlur)}>
+            {subjectBlur ? (
+              message.subject
+            ) : (
+              <BlurredEmails text={message.subject} />
+            )}
+          </h1>
           {unsubscribeBtn}
         </div>
       )}
@@ -3380,10 +3975,24 @@ function ReadingPane({
         </div>
         {!stickySubject && (
           <div className="reader-subject-row">
-            <h1 className="reader-subject">{message.subject}</h1>
+            <h1 className={blurClass("reader-subject", subjectBlur)}>
+              {subjectBlur ? (
+                message.subject
+              ) : (
+                <BlurredEmails text={message.subject} />
+              )}
+            </h1>
             {unsubscribeBtn}
           </div>
         )}
+
+        <PluginInfoPin
+          message={message}
+          statuses={pluginStatuses}
+          onToast={onToast}
+          onOpenPlugins={onOpenPlugins}
+          onDialogChange={onPluginDialogChange}
+        />
 
         {openTrack && openSummary && (
           <div className="open-track-banner" role="status">
@@ -3397,15 +4006,56 @@ function ReadingPane({
           </div>
         )}
 
+        {threadSummary && threadSummary.messageId === message.id && (
+          <div
+            className="thread-summary"
+            role="status"
+            aria-live="polite"
+            ref={summaryRef}
+          >
+            <div className="thread-summary-head">
+              <Sparkles size={13} strokeWidth={1.75} />
+              <span>Summary</span>
+              <button
+                type="button"
+                className="thread-summary-dismiss"
+                aria-label="Dismiss summary"
+                onClick={dismissSummary}
+              >
+                <X size={14} strokeWidth={1.75} />
+              </button>
+            </div>
+            {threadSummary.status === "loading" ? (
+              <p className="thread-summary-loading">
+                <Loader2 size={13} strokeWidth={2} className="spin" />
+                Summarizing this thread…
+              </p>
+            ) : threadSummary.status === "error" ? (
+              <p className="thread-summary-body is-error">{threadSummary.text}</p>
+            ) : (
+              <SummaryText text={threadSummary.text} />
+            )}
+          </div>
+        )}
+
         <div className="thread">
-          {(conversationView
-            ? message.thread
-            : message.thread.slice(-1)
-          ).map((tm, idx, arr) => (
+          {(() => {
+            const focusInThread = Boolean(
+              focusMessageId &&
+                message.thread.some((turn) => turn.id === focusMessageId),
+            );
+            const visible =
+              conversationView || focusInThread
+                ? message.thread
+                : message.thread.slice(-1);
+            return visible;
+          })().map((tm, idx, arr) => (
             <ThreadMessageView
               key={tm.id}
               message={tm}
-              defaultExpanded={idx === arr.length - 1}
+              defaultExpanded={
+                idx === arr.length - 1 || tm.id === focusMessageId
+              }
               forceDarkHtml={forceDarkHtml}
               showAi={showAi}
               downloadRemoteImages={Boolean(prefs.downloadRemoteImages)}
@@ -3421,19 +4071,27 @@ function ReadingPane({
         {links.length > 0 && (
           <div className="reader-links" aria-label="Links in this thread">
             <span className="reader-links-label">Links</span>
-            {links.map((link) => (
-              <a
-                key={link.href}
-                className="reader-link-row"
-                href={link.href}
-                target="_blank"
-                rel="noreferrer"
-                title={link.href}
-              >
-                <Link2 size={14} strokeWidth={1.75} />
-                <span>{link.label}</span>
-              </a>
-            ))}
+            {links.map((link) => {
+              const mailHref = link.href.replace(/^mailto:/i, "").split("?")[0];
+              const hideHref =
+                looksLikeEmail(mailHref) &&
+                blur.blurAddress(blur.kindForEmail(mailHref));
+              return (
+                <a
+                  key={link.href}
+                  className="reader-link-row"
+                  href={link.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={hideHref ? "Link" : link.href}
+                >
+                  <Link2 size={14} strokeWidth={1.75} />
+                  <span>
+                    <BlurredEmails text={link.label} />
+                  </span>
+                </a>
+              );
+            })}
           </div>
         )}
       </div>
@@ -3489,6 +4147,12 @@ function ReadingPane({
                   <AppSelect
                     compact
                     ariaLabel="Send reply from address"
+                    detailBlurred={blur.blurAddress(
+                      blur.kindForEmail(replyFrom.email),
+                    )}
+                    labelBlurred={blur.blurName(
+                      blur.kindForEmail(replyFrom.email),
+                    )}
                     value={replyFrom.key}
                     onChange={(key) => {
                       replyFromTouchedRef.current = true;
@@ -3699,14 +4363,14 @@ function ReadingPane({
           )}
           <div className="reply-actions">
             <div style={{ display: "flex", gap: 4 }}>
-              <button type="button" className="icon-btn" aria-label="Attach">
+              <button type="button" className="icon-btn" aria-label="Attach a file">
                 <Paperclip size={15} strokeWidth={1.75} />
               </button>
               {showAi && prefs.aiWriteEnabled && (
                 <button
                   type="button"
                   className="icon-btn"
-                  aria-label="AI write"
+                  aria-label="Write this reply with AI"
                   onClick={() => void runAiWrite()}
                 >
                   <Sparkles size={15} strokeWidth={1.75} />
@@ -3819,7 +4483,7 @@ function ShortcutsCheatSheet({
       >
         <div className="modal-head">
           <h2>Keyboard shortcuts · {packMeta[pack].name}</h2>
-          <button type="button" className="icon-btn" onClick={onClose}>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
             <X size={16} strokeWidth={1.75} />
           </button>
         </div>
@@ -3928,6 +4592,7 @@ function ComposeModal({
     color: account.color,
     loggedOut: account.loggedOut,
   };
+  const blur = useCreatorBlur();
   const [fromKey, setFromKey] = useState(fallbackFrom.key);
   const from = sendable.find((s) => s.key === fromKey) ?? fallbackFrom;
   const fromLoggedOut = Boolean(from.loggedOut);
@@ -4248,6 +4913,8 @@ function ComposeModal({
               <AppSelect
                 compact
                 ariaLabel="Send from address"
+                detailBlurred={blur.blurAddress(blur.kindForEmail(from.email))}
+                labelBlurred={blur.blurName(blur.kindForEmail(from.email))}
                 value={from.key}
                 onChange={(key) => {
                   setFromKey(key);
@@ -4382,20 +5049,47 @@ function ComposeModal({
               )}
               <div className="compose-signature-body">
                 <span className="compose-signature-kicker">
-                  Intray signature · {from.email}
+                  Intray signature
+                  {from.email ? (
+                    <>
+                      {" · "}
+                      <span
+                        className={
+                          blur.blurAddress(blur.kindForEmail(from.email))
+                            ? "creator-blur"
+                            : undefined
+                        }
+                      >
+                        {from.email}
+                      </span>
+                    </>
+                  ) : null}
                 </span>
                 {signatureHtml ? (
                   <div
                     className="signature-html"
                     dangerouslySetInnerHTML={{
-                      __html: sanitizeSignatureHtml(signature),
+                      __html: blurEmailsInHtml(
+                        sanitizeSignatureHtml(signature),
+                        (email) => blur.blurAddress(blur.kindForEmail(email)),
+                      ),
                     }}
                   />
                 ) : (
                   <>
-                    <strong>{sigTitle}</strong>
+                    <strong
+                      className={
+                        blur.blurName(blur.kindForEmail(from.email))
+                          ? "creator-blur"
+                          : undefined
+                      }
+                    >
+                      {sigTitle}
+                    </strong>
                     {sigDetail.map((line) => (
-                      <span key={line}>{line}</span>
+                      <span key={line}>
+                        <BlurredEmails text={line} />
+                      </span>
                     ))}
                   </>
                 )}
@@ -4460,13 +5154,12 @@ function ComposeModal({
               type="button"
               className="icon-btn"
               aria-label="Attach files"
-              title="Attach files"
               onClick={() => fileInputRef.current?.click()}
             >
               <Paperclip size={15} strokeWidth={1.75} />
             </button>
             {showAi && (
-              <button type="button" className="icon-btn" aria-label="AI write">
+              <button type="button" className="icon-btn" aria-label="Write with AI">
                 <Sparkles size={15} strokeWidth={1.75} />
               </button>
             )}
@@ -4548,6 +5241,37 @@ function loadPaneWidths(): { sidebar: number; list: number } {
   }
 }
 
+const RECENT_SEARCH_KEY = "intray.recentSearches";
+const RECENT_OPEN_KEY = "intray.recentOpens";
+
+function loadRecentSearches(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_SEARCH_KEY) || "[]");
+    return Array.isArray(raw)
+      ? raw.filter((item) => typeof item === "string").slice(0, 8)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadRecentOpens(): RecentOpen[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_OPEN_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter(
+        (item) =>
+          item &&
+          typeof item.id === "string" &&
+          typeof item.subject === "string",
+      )
+      .slice(0, 6);
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   const [prefs, setPrefs] = useState<Preferences>(() => loadPreferences());
   const [theme, setTheme] = useState<"dark" | "light">(() =>
@@ -4584,18 +5308,25 @@ export default function App() {
   const [accountId, setAccountId] = useState(UNIFIED_ID);
   const [folderId, setFolderId] = useState("inbox");
   const [filter, setFilter] = useState<Filter>("all");
+  const [listFilter, setListFilter] = useState<ListFilter>(EMPTY_LIST_FILTER);
   const [stackView, setStackView] = useState<"list" | "reader">("list");
-  const [selectedId, setSelectedId] = useState(seedMessages[0].id);
+  const [selectedId, setSelectedId] = useState("");
   const [bodyLoadingId, setBodyLoadingId] = useState<string | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
   const checkAnchorRef = useRef<number | null>(null);
-  const [askOpen, setAskOpen] = useState(false);
-  const [catchUp, setCatchUp] = useState<{
-    busy: boolean;
-    text: string | null;
-    error: string | null;
-  }>({ busy: false, text: null, error: null });
-  const [askFocusThread, setAskFocusThread] = useState(false);
+  const [workspace, setWorkspace] = useState<
+    "mail" | "agent" | "snooze" | "plugin"
+  >("mail");
+  const [openPluginId, setOpenPluginId] = useState<PluginId | null>(null);
+  /** Snoozed messages across every account. Null until the live count arrives. */
+  const [globalSnoozeTotal, setGlobalSnoozeTotal] = useState<number | null>(
+    null,
+  );
+  const [threadRequest, setThreadRequest] = useState<AgentThreadRequest | null>(
+    null,
+  );
+  const [catchUpRequest, setCatchUpRequest] =
+    useState<AgentCatchUpRequest | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     const snoozed = seedMessages.find((m) => m.folder === "snoozed");
     const opened = seedMessages.find(
@@ -4638,7 +5369,9 @@ export default function App() {
     return items;
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [pluginInviteOpen, setPluginInviteOpen] = useState(false);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[]>([]);
+  const [pluginDialogOpen, setPluginDialogOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeDraft, setComposeDraft] = useState<{
     to?: Recipient[];
@@ -4651,10 +5384,12 @@ export default function App() {
     mode: ReplyMode;
   }>({ key: 0, mode: "reply" });
   const [searchTokens, setSearchTokens] = useState<SearchToken[]>([]);
-  const searchQuery = useMemo(
-    () => serializeSearch(searchTokens),
-    [searchTokens],
-  );
+  const [searchText, setSearchText] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
+  const [recentSearches, setRecentSearches] = useState(loadRecentSearches);
+  const [recentOpens, setRecentOpens] = useState(loadRecentOpens);
+  const listGen = useRef(0);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
 
@@ -4696,8 +5431,10 @@ export default function App() {
   const notifiedMeetingRef = useRef(false);
   const prefsRef = useRef(prefs);
   const mailRef = useRef(mail);
+  const workspaceRef = useRef(workspace);
   prefsRef.current = prefs;
   mailRef.current = mail;
+  workspaceRef.current = workspace;
 
   const pushAppNotification = (
     item: Omit<AppNotification, "id" | "time" | "unread"> & {
@@ -4740,7 +5477,8 @@ export default function App() {
   };
 
   const refreshFolderCounts = async (aid?: string) => {
-    const scopeId = aid ?? accountId;
+    const scopeId =
+      aid ?? (workspaceRef.current === "snooze" ? UNIFIED_ID : accountId);
     const scope = scopeId === UNIFIED_ID ? "all" : scopeId;
     try {
       const [counts, real] = await Promise.all([
@@ -4771,27 +5509,52 @@ export default function App() {
     }
   };
 
+  const refreshSnoozeTotal = async () => {
+    try {
+      const counts = await bridgeFolderCounts("all");
+      setGlobalSnoozeTotal(counts.folders.snoozed?.total ?? 0);
+    } catch {
+      /* keep the last global count */
+    }
+  };
+
   const refreshLiveMail = async (opts?: {
     accountId?: string;
     folder?: string;
     filter?: Filter;
     q?: string;
+    quiet?: boolean;
   }): Promise<Message[]> => {
-    const aid = opts?.accountId ?? accountId;
+    const gen = ++listGen.current;
+    // Explicit account/folder wins. A bare refresh while Snooze is open stays
+    // on every account's snoozed mail, including search and visibility refreshes.
+    const pinned = opts?.accountId == null && opts?.folder == null;
+    const inSnooze = pinned && workspaceRef.current === "snooze";
+    const aid = opts?.accountId ?? (inSnooze ? UNIFIED_ID : accountId);
     const scope = aid === UNIFIED_ID ? "all" : aid;
-    const requested = opts?.folder ?? folderId;
+    const requested = opts?.folder ?? (inSnooze ? "snoozed" : folderId);
     const folder = requested.startsWith("label:") ? "inbox" : requested;
     const f = opts?.filter ?? filter;
-    const q = opts?.q ?? searchQuery;
-    const countsPromise = refreshFolderCounts(aid);
+    const q = opts?.q ?? searchText;
+    const countsPromise = opts?.quiet
+      ? Promise.resolve()
+      : refreshFolderCounts(inSnooze ? UNIFIED_ID : aid);
     const searching = Boolean(q.trim());
-    const result = await bridgeListMail({
-      accountId: scope,
-      folder: searching ? undefined : folder,
-      filter: searching ? "all" : f,
-      limit: searching ? 250 : 80,
-      q: q.trim() || undefined,
-    });
+    let result: Awaited<ReturnType<typeof bridgeListMail>>;
+    try {
+      result = await bridgeListMail({
+        accountId: scope,
+        folder: searching ? undefined : folder,
+        filter: searching ? "all" : f,
+        limit: searching ? 250 : 80,
+        q: q.trim() || undefined,
+      });
+    } catch {
+      if (gen === listGen.current) setAppliedQuery(q.trim());
+      return [];
+    }
+    if (gen !== listGen.current) return [];
+    setAppliedQuery(q.trim());
     const messages = result.messages.map(messageDtoToUi);
     // listMail returns metadata only — keep hydrated bodies and renderer tags.
     setMail((prev) => {
@@ -4799,30 +5562,22 @@ export default function App() {
       return messages.map((m) => {
         const old = prevById.get(m.id);
         if (!old) return m;
-        const withTag = { ...m, tag: m.tag ?? old.tag };
-        const listHasBody = withTag.thread.some(
-          (t) =>
-            Boolean(t.bodyHtml) ||
-            Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
-        );
-        if (listHasBody) return withTag;
-        const oldHasBody = old.thread.some(
-          (t) =>
-            Boolean(t.bodyHtml) ||
-            Boolean(t.body?.some((line) => line && line !== "(No body yet)")),
-        );
-        if (!oldHasBody) return withTag;
         return {
-          ...withTag,
-          thread: old.thread,
-          linkCount: old.linkCount,
-          attachmentCount: old.attachmentCount,
+          ...m,
+          tag: m.tag ?? old.tag,
+          thread: unionThreads(old.thread, m.thread),
+          linkCount: m.linkCount || old.linkCount,
+          attachmentCount: m.attachmentCount || old.attachmentCount,
+          openTracking: old.openTracking ?? m.openTracking,
         };
       });
     });
+    // A folder or account refresh must not open a message on its own.
+    // Keep the open one only when it is still in this list.
     setSelectedId((prev) =>
-      messages.some((m) => m.id === prev) ? prev : (messages[0]?.id ?? ""),
+      prev && messages.some((m) => m.id === prev) ? prev : "",
     );
+    if (inSnooze && !q.trim()) setGlobalSnoozeTotal(result.total);
     await countsPromise;
     return messages;
   };
@@ -4837,10 +5592,12 @@ export default function App() {
       setAccounts(seedAccounts.map((a) => ({ ...a })));
       setLabels(seedLabels.map((l) => ({ ...l })));
       setMail(seedMessages.map((m) => ({ ...m })));
-      setSelectedId(seedMessages[0].id);
+      setSelectedId("");
       setAccountId(UNIFIED_ID);
+      setWorkspace("mail");
       setFolderId("inbox");
       setFilter("all");
+      setListFilter(EMPTY_LIST_FILTER);
       setStackView("list");
       setContactDirectory(null);
       return;
@@ -4862,8 +5619,11 @@ export default function App() {
     setAccounts(uiAccounts);
     const nextId = selectAccountId ?? UNIFIED_ID;
     setAccountId(nextId);
+    setWorkspace("mail");
     setFolderId("inbox");
+    setSelectedId("");
     setFilter("all");
+    setListFilter(EMPTY_LIST_FILTER);
     setStackView("list");
     clearChecks();
     setSearchTokens([]);
@@ -4921,6 +5681,18 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void bridgePluginStatuses()
+      .then((rows) => {
+        if (!cancelled) setPluginStatuses(rows);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const idleRefreshTimer = useRef<number | null>(null);
@@ -4994,7 +5766,7 @@ export default function App() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live, accountId, folderId, filter, searchQuery]);
+  }, [live, accountId, folderId, filter, searchText, workspace]);
 
   useEffect(() => {
     if (!live) return;
@@ -5005,18 +5777,21 @@ export default function App() {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live, accountId, folderId, filter, searchQuery]);
+  }, [live, accountId, folderId, filter, searchText, workspace]);
+
+  useEffect(() => {
+    if (!live) return;
+    return bridgeOnSearchReady(({ q }) => {
+      if (q.trim() !== searchText.trim()) return;
+      void refreshLiveMail({ q, quiet: true });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, searchText]);
 
   useEffect(() => {
     const offFlush = bridgeOnSendFlushed(({ message }) => {
       const ui = messageDtoToUi(message);
-      setMail((prev) => {
-        const idx = prev.findIndex((m) => m.id === ui.id);
-        if (idx === -1) return [ui, ...prev];
-        const next = [...prev];
-        next[idx] = ui;
-        return next;
-      });
+      setMail((prev) => mergeSentIntoList(prev, ui));
       showToast("Sent");
     });
     const offSnooze = bridgeOnUnsnoozed(({ messageId }) => {
@@ -5036,7 +5811,10 @@ export default function App() {
         from,
         subject,
       });
-      if (live) void refreshLiveMail();
+      if (live) {
+        void refreshLiveMail();
+        void refreshSnoozeTotal();
+      }
       showToast("Snoozed mail returned to inbox");
     });
     const offUpdated = bridgeOnMailUpdated(({ message }) => {
@@ -5048,12 +5826,28 @@ export default function App() {
         (prev.folder !== ui.folder || prev.unread !== ui.unread)
       ) {
         void refreshFolderCounts();
+        void refreshSnoozeTotal();
       }
       setMail((cur) =>
         cur.map((m) => {
           if (m.id !== ui.id) return m;
+          const thread = unionThreads(m.thread, ui.thread);
           // Keep renderer-assigned tags when the DTO has none yet.
-          return { ...ui, tag: ui.tag ?? m.tag };
+          // Keep the list identity so a sent reply does not open a second row.
+          return {
+            ...m,
+            ...ui,
+            id: m.id,
+            folder: m.folder,
+            from: m.from,
+            email: m.email,
+            initials: m.initials,
+            avatarColor: m.avatarColor,
+            subject: m.subject,
+            tag: ui.tag ?? m.tag,
+            thread,
+            unread: m.unread === false && ui.unread ? false : ui.unread,
+          };
         }),
       );
     });
@@ -5136,24 +5930,97 @@ export default function App() {
   }, [live, selectedId]);
 
   useEffect(() => {
+    if (!live) {
+      setGlobalSnoozeTotal(null);
+      return;
+    }
+    void refreshSnoozeTotal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+
+  useEffect(() => {
     if (!live) return;
+    // Agent keeps the loaded mailbox. Entering or leaving Snooze refetches.
+    if (workspace === "agent" || workspace === "plugin") return;
     void refreshLiveMail();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live, accountId, folderId, filter]);
+  }, [live, accountId, folderId, filter, workspace]);
 
   const account = accountFor(accountId, accounts);
   const showAi = prefs.aiBridge !== "none";
+
+  useEffect(() => {
+    if (!showAi) return;
+    warmCursorAgent(prefs);
+  }, [showAi, prefs.aiBridge, prefs.aiBridgePath, prefs.aiModelHint]);
+
+  const openPlugin = (id: PluginId) => {
+    setOpenPluginId(id);
+    setWorkspace("plugin");
+    if (prefs.layout === "stack") setStackView("list");
+  };
+
+  const openAgent = (messageId?: string) => {
+    if (messageId) {
+      setThreadRequest((prev) => ({
+        nonce: (prev?.nonce ?? 0) + 1,
+        messageId,
+      }));
+    }
+    setWorkspace("agent");
+    if (prefs.layout === "stack") setStackView("list");
+  };
+
+  const openSnooze = () => {
+    clearChecks();
+    setFilter("all");
+    setListFilter(EMPTY_LIST_FILTER);
+    if (prefs.layout === "stack") setStackView("list");
+    if (workspaceRef.current === "snooze") {
+      if (live) void refreshLiveMail();
+      return;
+    }
+    setSelectedId("");
+    setFocusMessageId(null);
+    setWorkspace("snooze");
+  };
+
+  const selectFolder = (id: string) => {
+    if (id === "snoozed") {
+      openSnooze();
+      return;
+    }
+    clearChecks();
+    const changed = workspace !== "mail" || folderId !== id;
+    setWorkspace("mail");
+    setFolderId(id);
+    if (!changed) return;
+    setSelectedId("");
+    setFocusMessageId(null);
+    if (prefs.layout === "stack") setStackView("list");
+  };
 
   const updatePrefs = (next: Preferences) => {
     setPrefs(next);
     savePreferences(next);
     setTheme(resolvedTheme(next.theme));
-    if (next.aiBridge === "none") setAskOpen(false);
+    if (next.aiBridge === "none") {
+      setWorkspace((cur) => (cur === "agent" ? "mail" : cur));
+    }
   };
 
   useEffect(() => {
-    if (!showAi) setAskOpen(false);
+    if (!showAi) setWorkspace((cur) => (cur === "agent" ? "mail" : cur));
   }, [showAi]);
+
+  useEffect(() => {
+    if (workspace !== "plugin" || !openPluginId) return;
+    const status = pluginStatuses.find((item) => item.id === openPluginId);
+    if (!status?.connected || !status.enabled) {
+      setOpenPluginId(null);
+      setWorkspace("mail");
+    }
+  }, [pluginStatuses, workspace, openPluginId]);
 
   useEffect(() => {
     if (prefs.layout !== "stack") setStackView("list");
@@ -5204,10 +6071,12 @@ export default function App() {
     setAccounts(seedAccounts.map((a) => ({ ...a })));
     setLabels(seedLabels.map((l) => ({ ...l })));
     setMail(seedMessages.map((m) => ({ ...m })));
-    setSelectedId(seedMessages[0].id);
+    setSelectedId("");
     setAccountId(UNIFIED_ID);
+    setWorkspace("mail");
     setFolderId("inbox");
     setFilter("all");
+    setListFilter(EMPTY_LIST_FILTER);
     setStackView("list");
     clearChecks();
     setSearchTokens([]);
@@ -5305,8 +6174,7 @@ export default function App() {
 
     // Reply / forward are real compose flows — not toast-only stubs.
     if (action === "reply" || action === "reply-all") {
-      setAskOpen(false);
-      setAskFocusThread(false);
+      if (workspace === "agent") setWorkspace("mail");
       setSelectedId(messageId);
       if (prefs.layout === "stack") setStackView("reader");
       setReplyIntent((prev) => ({
@@ -5316,8 +6184,7 @@ export default function App() {
       return;
     }
     if (action === "forward") {
-      setAskOpen(false);
-      setAskFocusThread(false);
+      if (workspace === "agent") setWorkspace("mail");
       setSelectedId(messageId);
       if (prefs.layout === "stack") setStackView("reader");
       const draft = forwardDraft(target);
@@ -5405,6 +6272,7 @@ export default function App() {
               : undefined,
         }).then((dto) => {
           void refreshFolderCounts();
+          void refreshSnoozeTotal();
           if (action === "delete-forever") {
             setMail((prev) => prev.filter((m) => m.id !== messageId));
             return;
@@ -5542,6 +6410,7 @@ export default function App() {
               : undefined,
         }).then((dto) => {
           void refreshFolderCounts();
+          void refreshSnoozeTotal();
           if (action === "delete-forever") {
             setMail((prev) => prev.filter((m) => m.id !== target.id));
             return;
@@ -5928,11 +6797,19 @@ export default function App() {
   };
 
   const scoped = useMemo(() => {
-    const searching = searchTokens.length > 0;
+    const searching = searchText.trim().length > 0;
+    const globalSnooze = workspace === "snooze";
     return mail.filter((m) => {
-      if (accountId !== UNIFIED_ID && m.accountId !== accountId) return false;
-      // Active search is cross-folder (matches Gmail-style from:/subject:).
+      if (
+        !globalSnooze &&
+        accountId !== UNIFIED_ID &&
+        m.accountId !== accountId
+      ) {
+        return false;
+      }
+      // Active search is cross-folder. Snooze search stays across every account.
       if (searching) return true;
+      if (globalSnooze) return m.folder === "snoozed";
       if (folderId.startsWith("label:")) {
         const labelId = folderId.slice("label:".length);
         const label = labels.find((l) => l.id === labelId);
@@ -5942,17 +6819,18 @@ export default function App() {
       if (folderId === "inbox") return m.folder === "inbox";
       return m.folder === folderId;
     });
-  }, [mail, accountId, folderId, labels, searchTokens.length]);
+  }, [mail, accountId, folderId, labels, searchText, workspace]);
 
   /** Demo / offline fallback — total messages per folder (Empty Junk/Trash). */
   const localFolderTotals = useMemo(() => {
     const counts: Record<string, number> = {};
+    const allAccounts = workspace === "snooze" || accountId === UNIFIED_ID;
     for (const m of mail) {
-      if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
+      if (!allAccounts && m.accountId !== accountId) continue;
       counts[m.folder] = (counts[m.folder] ?? 0) + 1;
     }
     return counts;
-  }, [mail, accountId]);
+  }, [mail, accountId, workspace]);
 
   /** Sidebar badges: unread conversations only (never raw folder totals). */
   const folderCounts = useMemo(() => {
@@ -5964,13 +6842,14 @@ export default function App() {
       return out;
     }
     const out: Record<string, number> = {};
+    const allAccounts = workspace === "snooze" || accountId === UNIFIED_ID;
     for (const m of mail) {
-      if (accountId !== UNIFIED_ID && m.accountId !== accountId) continue;
+      if (!allAccounts && m.accountId !== accountId) continue;
       if (!m.unread) continue;
       out[m.folder] = (out[m.folder] ?? 0) + 1;
     }
     return out;
-  }, [live, liveFolderCounts, mail, accountId]);
+  }, [live, liveFolderCounts, mail, accountId, workspace]);
 
   const folderTotals = useMemo(() => {
     if (live && liveFolderCounts) {
@@ -5999,9 +6878,10 @@ export default function App() {
   }, [taskbarCount, prefs.taskbarBadge]);
 
   useEffect(() => {
-    return bridgeOnNotifyOpen(({ messageId, folderId }) => {
+    return bridgeOnNotifyOpen(({ messageId, folderId: nextFolder }) => {
+      setWorkspace("mail");
       setSelectedId(messageId);
-      setFolderId(folderId ?? "inbox");
+      setFolderId(nextFolder ?? "inbox");
       setStackView("reader");
     });
   }, []);
@@ -6078,43 +6958,118 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [prefs]);
 
-  const filtered = useMemo(() => {
+  const { filtered, statusCounts } = useMemo(() => {
     let list = scoped;
     if (prefs.importantSplit) {
       if (filter === "important") list = list.filter((m) => m.important);
       else if (filter === "other") list = list.filter((m) => !m.important);
     }
-    if (searchTokens.length) {
-      list = list.filter((m) => messageMatchesSearch(m, searchTokens));
+    if (searchText.trim() && !live) {
+      const parsed = parseSearchInput(searchText);
+      const tokens = [...parsed.tokens];
+      if (parsed.rest) tokens.push(makeToken("text", parsed.rest));
+      if (tokens.length) {
+        list = list.filter((m) => messageMatchesSearch(m, tokens));
+      }
     }
-    return list;
-  }, [scoped, filter, prefs.importantSplit, searchTokens]);
+    if (listFilter.starred || listFilter.attachment) {
+      const narrowed = { ...listFilter, read: "all" as const };
+      list = list.filter((message) =>
+        messageMatchesListFilter(message, narrowed),
+      );
+    }
+    let unread = 0;
+    for (const message of list) {
+      if (message.unread) unread += 1;
+    }
+    const counts: StatusCounts = {
+      all: list.length,
+      unread,
+      read: list.length - unread,
+    };
+    if (listFilter.read !== "all") {
+      list = list.filter((message) =>
+        messageMatchesListFilter(message, listFilter),
+      );
+    }
+    return { filtered: list, statusCounts: counts };
+  }, [scoped, filter, prefs.importantSplit, searchText, live, listFilter]);
+
+  const searchHits = useMemo((): SearchHit[] => {
+    const q = searchText.trim();
+    if (!q) return [];
+    if (live && appliedQuery !== q) return [];
+    return filtered.slice(0, 8).map((message) => ({
+      id: message.id,
+      from: message.from,
+      email: message.email,
+      subject: markQuery(message.subject, q),
+      snippet: message.matchPreview || markQuery(message.preview, q),
+      time: message.time,
+      folder: message.folder,
+    }));
+  }, [filtered, searchText, live, appliedQuery]);
+
+  const rememberSearch = (query: string) => {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) return;
+    setRecentSearches((prev) => {
+      const next = [trimmed, ...prev.filter((item) => item !== trimmed)].slice(0, 8);
+      localStorage.setItem(RECENT_SEARCH_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const rememberOpen = (message: { id: string; from: string; subject: string; time: string }) => {
+    const entry: RecentOpen = {
+      id: message.id,
+      from: message.from,
+      subject: message.subject,
+      time: message.time,
+    };
+    setRecentOpens((prev) => {
+      const next = [entry, ...prev.filter((item) => item.id !== entry.id)].slice(0, 6);
+      localStorage.setItem(RECENT_OPEN_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const openSearchHit = (id: string) => {
+    setFocusMessageId(id);
+    setSelectedId(id);
+    setStackView("reader");
+    rememberSearch(searchText);
+    const known = mailRef.current.find((message) => message.id === id);
+    if (known) {
+      rememberOpen(known);
+      return;
+    }
+    if (!live) return;
+    void bridgeGetMail(id).then((dto) => {
+      if (!dto) return;
+      const ui = messageDtoToUi(dto);
+      setMail((prev) => [ui, ...prev.filter((message) => message.id !== ui.id)]);
+      rememberOpen(ui);
+    });
+  };
 
   const runCatchMeUp = () => {
     if (prefs.aiBridge === "none") {
       showToast("Pick an AI provider in Settings");
       return;
     }
-    setCatchUp({ busy: true, text: null, error: null });
     const source = filtered.filter((message) => message.folder === "inbox");
-    void aiCatchMeUp(prefs, source.length ? source : filtered)
-      .then((text) => setCatchUp({ busy: false, text, error: null }))
-      .catch((error: unknown) => {
-        setCatchUp({
-          busy: false,
-          text: null,
-          error: error instanceof Error ? error.message : "Catch me up failed",
-        });
-      });
+    const rows = source.length ? source : filtered;
+    setCatchUpRequest({
+      nonce: Date.now(),
+      view: listTitle,
+      messageIds: rows.slice(0, 40).map((message) => message.id),
+    });
+    openAgent();
   };
 
-  const selected =
-    filtered.find((m) => m.id === selectedId) ?? filtered[0] ?? null;
-
-  useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
-    if (!selected && selectedId) setSelectedId("");
-  }, [filtered, selected, selectedId]);
+  // Only a message the user opened. Switching account or folder leaves this empty.
+  const selected = filtered.find((m) => m.id === selectedId) ?? null;
 
   useEffect(() => {
     setCheckedIds((prev) => {
@@ -6178,31 +7133,32 @@ export default function App() {
         break;
       case "askAi":
         if (!showAi) break;
-        if (askOpen && !askFocusThread) {
-          setAskOpen(false);
-          setAskFocusThread(false);
+        if (workspace === "agent") {
+          setWorkspace("mail");
           window.setTimeout(() => {
-            document
-              .querySelector<HTMLElement>("[data-ask-trigger]")
-              ?.focus();
+            document.querySelector<HTMLElement>(".rail .account.active")?.focus();
           }, 0);
         } else {
-          setAskFocusThread(false);
-          setAskOpen(true);
-          if (prefs.layout === "stack") setStackView("reader");
+          openAgent();
         }
         break;
       case "help":
         setCheatOpen(true);
         break;
       case "next":
-        if (idx >= 0 && idx < filtered.length - 1) {
+        if (idx < 0 && filtered.length > 0) {
+          setSelectedId(filtered[0].id);
+          if (prefs.layout === "stack") setStackView("reader");
+        } else if (idx >= 0 && idx < filtered.length - 1) {
           setSelectedId(filtered[idx + 1].id);
           if (prefs.layout === "stack") setStackView("reader");
         }
         break;
       case "prev":
-        if (idx > 0) {
+        if (idx < 0 && filtered.length > 0) {
+          setSelectedId(filtered[filtered.length - 1].id);
+          if (prefs.layout === "stack") setStackView("reader");
+        } else if (idx > 0) {
           setSelectedId(filtered[idx - 1].id);
           if (prefs.layout === "stack") setStackView("reader");
         }
@@ -6248,15 +7204,33 @@ export default function App() {
         undoLast();
         break;
       case "goInbox":
+        setWorkspace("mail");
+        if (workspace !== "mail" || folderId !== "inbox") {
+          setSelectedId("");
+          setFocusMessageId(null);
+          if (prefs.layout === "stack") setStackView("list");
+        }
         setFolderId("inbox");
         break;
       case "goSnoozed":
-        setFolderId("snoozed");
+        openSnooze();
         break;
       case "goSent":
+        setWorkspace("mail");
+        if (workspace !== "mail" || folderId !== "sent") {
+          setSelectedId("");
+          setFocusMessageId(null);
+          if (prefs.layout === "stack") setStackView("list");
+        }
         setFolderId("sent");
         break;
       case "goDrafts":
+        setWorkspace("mail");
+        if (workspace !== "mail" || folderId !== "drafts") {
+          setSelectedId("");
+          setFocusMessageId(null);
+          if (prefs.layout === "stack") setStackView("list");
+        }
         setFolderId("drafts");
         break;
       case "select":
@@ -6285,14 +7259,13 @@ export default function App() {
           clearChecks();
           return;
         }
+        if (pluginDialogOpen) return;
         if (prefs.layout === "stack" && stackView === "reader") {
           setStackView("list");
           return;
         }
-        // FloatingAsk owns Escape while open (picker dismiss → close + focus).
-        if (askOpen) return;
         setSettingsOpen(false);
-        setPluginInviteOpen(false);
+        setPluginsOpen(false);
         closeCompose();
         setAddAccountOpen(false);
         setCheatOpen(false);
@@ -6304,7 +7277,8 @@ export default function App() {
         alert ||
         onboardingOpen ||
         settingsOpen ||
-        pluginInviteOpen ||
+        pluginsOpen ||
+        pluginDialogOpen ||
         composeOpen ||
         addAccountOpen ||
         cheatOpen
@@ -6321,10 +7295,6 @@ export default function App() {
         if (chord) setChord(null);
         return;
       }
-      // While Ask is open, only allow toggling it closed (with focus restore).
-      if (askOpen && !(result.type === "action" && result.action === "askAi")) {
-        return;
-      }
       e.preventDefault();
       if (result.type === "chord") {
         setChord(result.chord);
@@ -6339,6 +7309,7 @@ export default function App() {
   });
 
   const listTitle = (() => {
+    if (workspace === "snooze") return "Snoozed";
     if (folderId === "inbox") {
       return accountId === UNIFIED_ID ? "Unified Inbox" : "Inbox";
     }
@@ -6352,19 +7323,42 @@ export default function App() {
     );
   })();
 
-  const showUnifiedChrome = accountId === UNIFIED_ID;
+  const showUnifiedChrome =
+    workspace === "snooze" || accountId === UNIFIED_ID;
+  const snoozeCount = live
+    ? (globalSnoozeTotal ?? 0)
+    : mail.filter((m) => m.folder === "snoozed").length;
+  const sidebarAccount =
+    workspace === "snooze"
+      ? (accounts.find((a) => a.id === UNIFIED_ID) ?? account)
+      : account;
+  const readingAccount =
+    workspace === "snooze" && selected
+      ? accountFor(selected.accountId, accounts)
+      : account;
+  const creatorOwnEmails = useMemo(() => ownEmailSet(accounts), [accounts]);
 
   const accent = accentColors[prefs.accent];
-  const readingMax =
-    prefs.readingWidth === "narrow"
-      ? "560px"
-      : prefs.readingWidth === "wide"
-        ? "920px"
-        : "720px";
+  // Narrow keeps a short measure. Medium and Wide fill the reading pane so
+  // a maximized or full-screen window does not leave a blank column beside the mail.
+  const readingMax = prefs.readingWidth === "narrow" ? "560px" : "100%";
+
+  const toggleCreatorMode = () => {
+    const turningOn = !prefs.creatorMode;
+    updatePrefs({
+      ...prefs,
+      creatorMode: turningOn,
+      creatorBlur:
+        turningOn && prefs.creatorBlur.length === 0
+          ? ["addresses"]
+          : prefs.creatorBlur,
+    });
+  };
 
   return (
+    <CreatorBlurProvider prefs={prefs} ownEmails={creatorOwnEmails}>
     <div
-      className={`app density-${prefs.density} layout-${prefs.layout}${prefs.layout === "stack" ? ` stack-${stackView}` : ""}${prefs.reduceMotion ? " reduce-motion" : ""}`}
+      className={`app density-${prefs.density} layout-${prefs.layout}${prefs.layout === "stack" ? ` stack-${stackView}` : ""}${showAi && workspace === "agent" ? " workspace-agent" : ""}${prefs.reduceMotion ? " reduce-motion" : ""}`}
       data-theme={theme}
       style={
         {
@@ -6377,29 +7371,29 @@ export default function App() {
       }
     >
       <TitleBar
-        showAi={showAi}
-        askOpen={showAi && askOpen && !askFocusThread}
-        onAsk={() => {
-          if (askOpen && !askFocusThread) {
-            setAskOpen(false);
-            return;
-          }
-          setAskFocusThread(false);
-          setAskOpen(true);
-          if (prefs.layout === "stack") setStackView("reader");
-        }}
         searchRef={searchRef}
         searchTokens={searchTokens}
         labels={labels}
-        onSearchTokens={(tokens) => {
-          setSearchTokens(tokens);
+        onSearchTokens={setSearchTokens}
+        searchHits={searchHits}
+        searchBusy={live && searchText.trim() !== appliedQuery && searchText.trim().length > 0}
+        recentSearches={recentSearches}
+        recentOpens={recentOpens}
+        onOpenHit={openSearchHit}
+        onQueryChange={(q) => {
+          setSearchText(q);
           if (!live) return;
           if (searchTimer.current) window.clearTimeout(searchTimer.current);
-          // Send full fielded query (from:/subject:/…) to the local store.
-          const q = serializeSearch(tokens);
           searchTimer.current = window.setTimeout(() => {
-            void refreshLiveMail({ q });
-          }, 280);
+            void refreshLiveMail({ q, quiet: true });
+          }, 90);
+        }}
+        onPickRecent={(q) => {
+          const parsed = parseSearchInput(q);
+          const tokens = [...parsed.tokens];
+          if (parsed.rest) tokens.push(makeToken("text", parsed.rest));
+          setSearchTokens(tokens);
+          rememberSearch(q);
         }}
         notifications={notifications}
         onMarkNotificationsRead={() =>
@@ -6407,8 +7401,10 @@ export default function App() {
             prev.map((n) => ({ ...n, unread: false })),
           )
         }
+        onToggleCreator={toggleCreatorMode}
         onOpenNotification={(n) => {
           if (n.messageId) {
+            setWorkspace("mail");
             setSelectedId(n.messageId);
             setFolderId(
               n.folderId ??
@@ -6420,8 +7416,7 @@ export default function App() {
             );
             setStackView("reader");
           } else if (n.kind === "ai") {
-            setAskFocusThread(false);
-            setAskOpen(true);
+            openAgent();
           }
           setNotifications((prev) =>
             prev.map((item) =>
@@ -6442,6 +7437,13 @@ export default function App() {
         <AccountRail
           accounts={accounts}
           activeId={accountId}
+          showAgent={showAi}
+          agentOpen={showAi && workspace === "agent"}
+          snoozeOpen={workspace === "snooze"}
+          snoozeCount={snoozeCount}
+          highlightAccounts={workspace === "mail"}
+          onAgent={() => openAgent()}
+          onSnooze={openSnooze}
           onSelect={(id) => {
             if (!prefs.unifiedInbox && id === UNIFIED_ID) {
               showToast("Enable Unified Inbox in Settings → Inbox");
@@ -6452,21 +7454,45 @@ export default function App() {
               setReauthAccount(target);
               return;
             }
+            const sameMailbox =
+              workspace === "mail" &&
+              accountId === id &&
+              folderId === "inbox" &&
+              filter === "all";
+            setWorkspace("mail");
             setAccountId(id);
             setFolderId("inbox");
             setFilter("all");
             setStackView("list");
             clearChecks();
+            if (!sameMailbox) {
+              setSelectedId("");
+              setFocusMessageId(null);
+            }
           }}
           onAdd={() => setAddAccountOpen(true)}
           onSettings={() => setSettingsOpen(true)}
-          onPlugins={() => setPluginInviteOpen(true)}
+          onPlugins={() => setPluginsOpen(true)}
+          plugins={PLUGIN_CATALOG.filter((entry) =>
+            pluginStatuses.some(
+              (status) =>
+                status.id === entry.id && status.connected && status.enabled,
+            ),
+          ).map((entry) => ({ id: entry.id, name: entry.name }))}
+          activePluginId={workspace === "plugin" ? openPluginId : null}
+          onOpenPlugin={openPlugin}
         />
+        <div
+          className="mail-workspace"
+          hidden={(showAi && workspace === "agent") || workspace === "plugin"}
+        >
         <Sidebar
-          account={account}
-          activeFolder={folderId}
+          account={sidebarAccount}
+          activeFolder={workspace === "snooze" ? "snoozed" : folderId}
           customFolders={customFolders}
           labels={labels}
+          snoozeCount={snoozeCount}
+          inboxAsInbox={workspace === "snooze"}
           compact={paneWidths.sidebar < SIDEBAR_EXPANDED_MIN}
           syncLabel={
             syncing
@@ -6482,7 +7508,7 @@ export default function App() {
           inboxCount={inboxBadgeCount}
           folderCounts={folderCounts}
           folderTotals={folderTotals}
-          onFolder={setFolderId}
+          onFolder={selectFolder}
           onCompose={() => openCompose()}
           onEmptyFolder={(folder) => {
             void emptyFolder(folder);
@@ -6541,6 +7567,8 @@ export default function App() {
           selectedId={selected?.id ?? ""}
           checkedIds={checkedIds}
           filter={filter}
+          refine={listFilter}
+          statusCounts={statusCounts}
           unified={showUnifiedChrome}
           title={listTitle}
           showSplit={prefs.importantSplit}
@@ -6554,15 +7582,13 @@ export default function App() {
           showAi={showAi}
           catchMeUp={{
             enabled: showAi && prefs.aiCatchMeUp,
-            busy: catchUp.busy,
-            text: catchUp.text,
-            error: catchUp.error,
             onRun: runCatchMeUp,
           }}
           syncing={syncing}
           fullScreen={prefs.layout === "stack"}
           onCompose={() => openCompose()}
           onFilter={(f) => setFilter(f)}
+          onRefine={setListFilter}
           onRefresh={() => {
             if (!live) {
               showToast("Connect Gmail to sync real mail");
@@ -6570,15 +7596,17 @@ export default function App() {
             }
             setSyncing(true);
             void bridgeSync(
-              accountId === UNIFIED_ID ? undefined : accountId,
+              workspace === "snooze" || accountId === UNIFIED_ID
+                ? undefined
+                : accountId,
             )
               .then(() => refreshLiveMail())
               .finally(() => setSyncing(false));
           }}
           onSelect={(id) => {
             clearChecks();
+            setFocusMessageId(null);
             setSelectedId(id);
-            setAskOpen(false);
             if (prefs.layout === "stack") setStackView("reader");
             if (prefs.markReadOnOpen) {
               setMail((prev) =>
@@ -6646,14 +7674,16 @@ export default function App() {
         )}
         <ReadingPane
           message={selected}
+          focusMessageId={focusMessageId}
           stickySubject={prefs.stickySubject}
           forceDarkHtml={prefs.forceDarkHtml && theme === "dark"}
           conversationView={prefs.conversationView}
           showAi={showAi}
           prefs={prefs}
           live={live}
-          account={account}
+          account={readingAccount}
           accounts={accounts}
+          emptyTitle={listTitle}
           bodyLoading={Boolean(
             selected && bodyLoadingId === selected.id,
           )}
@@ -6663,9 +7693,7 @@ export default function App() {
           labels={labels}
           customFolders={customFolders}
           onAsk={() => {
-            setAskFocusThread(true);
-            setAskOpen(true);
-            if (prefs.layout === "stack") setStackView("reader");
+            if (selected) openAgent(selected.id);
           }}
           onAction={(action, snoozeLabel) => {
             if (!selected) return;
@@ -6678,55 +7706,52 @@ export default function App() {
           onCreateFolder={createFolder}
           onComposeTo={(r) => openCompose({ to: [r] })}
           onToast={showToast}
+          pluginStatuses={pluginStatuses}
+          onOpenPlugins={() => setPluginsOpen(true)}
+          onPluginDialogChange={setPluginDialogOpen}
           replyIntent={replyIntent}
           onReplySent={(message) => {
-            setMail((prev) => {
-              const idx = prev.findIndex((m) => m.id === message.id);
-              if (idx === -1) return [message, ...prev];
-              const next = [...prev];
-              next[idx] = message;
-              return next;
-            });
+            setMail((prev) => mergeSentIntoList(prev, message));
           }}
         />
-      </div>
-
-      {showAi && (
-        <FloatingAsk
-          open={askOpen}
-          onOpenChange={(open, meta) => {
-            setAskOpen(open);
-            if (!open) {
-              setAskFocusThread(false);
-              if (meta?.restoreFocus) {
-                window.setTimeout(() => {
-                  const trigger = document.querySelector<HTMLElement>(
-                    "[data-ask-trigger]",
-                  );
-                  trigger?.focus();
-                }, 0);
+        </div>
+        {workspace === "plugin" && openPluginId ? (
+          <PluginSurface
+            id={openPluginId}
+            statuses={pluginStatuses}
+            onStatuses={setPluginStatuses}
+            onOpenSettings={() => setPluginsOpen(true)}
+            onToast={showToast}
+          />
+        ) : null}
+        {showAi ? (
+          <FloatingAsk
+            open={workspace === "agent"}
+            mail={mail}
+            labels={labels}
+            threadRequest={threadRequest}
+            catchUpRequest={catchUpRequest}
+            bridgeName={aiBridgeMeta[prefs.aiBridge]?.name ?? "Local"}
+            prefs={prefs}
+            onOpenMessage={(id) => {
+              const message = mail.find((item) => item.id === id);
+              setFilter("all");
+              setListFilter(EMPTY_LIST_FILTER);
+              setFocusMessageId(id);
+              if (message?.folder === "snoozed") {
+                openSnooze();
+              } else {
+                setWorkspace("mail");
+                setFolderId(message?.folder || "inbox");
               }
-            }
-          }}
-          mail={mail}
-          labels={labels}
-          focusMessage={askFocusThread ? selected : null}
-          bridgeName={aiBridgeMeta[prefs.aiBridge]?.name ?? "Local"}
-          userName={account.name}
-          prefs={prefs}
-          onOpenMessage={(id) => {
-            setSelectedId(id);
-            setFolderId("inbox");
-            setAskOpen(false);
-            setAskFocusThread(false);
-            if (prefs.layout === "stack") setStackView("reader");
-          }}
-          onOpenSettings={() => {
-            setAskOpen(false);
-            setSettingsOpen(true);
-          }}
-        />
-      )}
+              setSelectedId(id);
+              if (prefs.layout === "stack") setStackView("reader");
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onPickAi={(patch) => updatePrefs({ ...prefs, ...patch })}
+          />
+        ) : null}
+      </div>
 
       {settingsOpen && (
         <SettingsModal
@@ -6791,12 +7816,12 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
-      {pluginInviteOpen && (
-        <PluginInviteModal
-          onClose={() => setPluginInviteOpen(false)}
-          onAccepted={() =>
-            showToast("Invite noted — email hello@intray.app if you need access")
-          }
+      {pluginsOpen && (
+        <PluginModal
+          statuses={pluginStatuses}
+          onStatuses={setPluginStatuses}
+          onClose={() => setPluginsOpen(false)}
+          onToast={showToast}
         />
       )}
       {composeOpen && (
@@ -6884,6 +7909,8 @@ export default function App() {
             setAccountId(account.id);
             setFolderId("inbox");
             setFilter("all");
+            setSelectedId("");
+            setFocusMessageId(null);
             setStackView("list");
             showToast(`Added ${account.email}`);
           }}
@@ -6898,6 +7925,8 @@ export default function App() {
             setAccountId(id);
             setFolderId("inbox");
             setFilter("all");
+            setSelectedId("");
+            setFocusMessageId(null);
             setStackView("list");
             clearChecks();
           }}
@@ -6913,6 +7942,8 @@ export default function App() {
             setAccountId(account.id);
             setFolderId("inbox");
             setFilter("all");
+            setSelectedId("");
+            setFocusMessageId(null);
             setStackView("list");
             clearChecks();
             if (live) {
@@ -6939,7 +7970,12 @@ export default function App() {
         onConfirm={() => closeAlert(true)}
         onCancel={() => closeAlert(false)}
       />
-      {toast && <div className="toast fade-up">{toast}</div>}
+      {toast && (
+        <div className="toast fade-up">
+          <BlurredEmails text={toast} />
+        </div>
+      )}
     </div>
+    </CreatorBlurProvider>
   );
 }

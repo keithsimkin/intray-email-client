@@ -185,19 +185,20 @@ function hasFlag(flags: Iterable<string>, name: string): boolean {
 
 /**
  * IMAP unread bit for the local store.
- * When X-GM-LABELS is present, trust `\Unread` (same signal as Gmail's UNREAD
- * label). Otherwise fall back to the standard `\Seen` flag.
+ *
+ * `\Seen` is the only reliable read signal. Gmail also lists `\Unread` among
+ * X-GM-LABELS, but that label is only cleared by clients that remove it
+ * explicitly: a message read in Gmail on the web, or any other mail app, keeps
+ * a stale `\Unread` label while `\Seen` is set. Trusting the label made read
+ * mail look unread again on every sync (and after every app launch).
+ *
+ * `_gmLabels` is kept for callers that already have X-GM-LABELS handy; labels
+ * still decide placement and starred/important state, never the read bit.
  */
 export function unreadFromImapSignals(
   flags: Iterable<string>,
-  gmLabels?: Iterable<string> | null,
+  _gmLabels?: Iterable<string> | null,
 ): 0 | 1 {
-  if (gmLabels != null) {
-    for (const label of gmLabels) {
-      if (normToken(label) === "unread") return 1;
-    }
-    return 0;
-  }
   return hasFlag(flags, "\\seen") ? 0 : 1;
 }
 

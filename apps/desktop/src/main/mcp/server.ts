@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { getMail, listMail } from "../mail/service";
 import { listAccountRows } from "../db";
+import { emailHtmlToText, preferReadableText } from "../../shared/htmlText";
 import { getMcpToken, verifyMcpToken } from "./auth";
 
 type McpStatus = {
@@ -102,20 +103,27 @@ async function callTool(
         from: msg.from,
         email: msg.email,
         folder: msg.folder,
-        thread: msg.thread.map((t) => ({
-          id: t.id,
-          from: t.from,
-          email: t.email,
-          time: t.time,
-          body: t.body ?? undefined,
-          bodyHtml: t.bodyHtml
-            ? t.bodyHtml
-                .replace(/<[^>]+>/g, " ")
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 4000)
-            : undefined,
-        })),
+        thread: msg.thread.map((t) => {
+          const plain =
+            t.bodyText?.trim() ||
+            t.body?.filter((line) => line && line !== "(No body yet)").join("\n") ||
+            "";
+          const text = preferReadableText(
+            plain,
+            t.bodyHtml ? emailHtmlToText(t.bodyHtml) : "",
+          );
+          const readable = text.slice(0, 4000);
+          return {
+            id: t.id,
+            from: t.from,
+            email: t.email,
+            time: t.time,
+            body: readable
+              ? readable.split(/\n+/).filter(Boolean)
+              : undefined,
+            bodyHtml: readable || undefined,
+          };
+        }),
       };
     }
     case "list_accounts":

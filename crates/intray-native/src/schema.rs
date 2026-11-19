@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS bodies (
   message_id TEXT PRIMARY KEY NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   text_plain TEXT,
   text_html TEXT,
-  fetched_at TEXT NOT NULL
+  fetched_at TEXT NOT NULL,
+  attachments_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS labels (
@@ -136,6 +137,31 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   from_name,
   from_email,
   body,
+  recipients,
+  attachments,
+  tokenize = 'porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_ad_fts AFTER DELETE ON messages BEGIN
+  DELETE FROM messages_fts WHERE message_id = old.id;
+END;
+"#;
+
+/// Recreate `messages_fts` when an older database is missing the later columns.
+/// FTS5 virtual tables cannot gain columns in place.
+pub const FTS_REBUILD_SQL: &str = r#"
+DROP TRIGGER IF EXISTS messages_ad_fts;
+DROP TABLE IF EXISTS messages_fts;
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  message_id UNINDEXED,
+  subject,
+  snippet,
+  from_name,
+  from_email,
+  body,
+  recipients,
+  attachments,
   tokenize = 'porter unicode61'
 );
 
@@ -156,6 +182,7 @@ pub const MIGRATIONS_SQL: &[&str] = &[
   "ALTER TABLE accounts ADD COLUMN avatar_url TEXT",
   "ALTER TABLE contacts ADD COLUMN avatar_url TEXT",
   "ALTER TABLE messages ADD COLUMN link_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE bodies ADD COLUMN attachments_json TEXT",
 ];
 
 pub const POST_MIGRATION_INDEXES_SQL: &[&str] = &[

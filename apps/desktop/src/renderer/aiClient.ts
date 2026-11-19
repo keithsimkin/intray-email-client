@@ -1,6 +1,8 @@
 import type { AiProviderId } from "../shared/types";
 import { bridgeAiComplete } from "./mailApi";
+import { buildDayBrief } from "./agentBrief";
 import type { Message } from "./data/mock";
+import { threadTextForPrompt } from "./mailText";
 import type { Preferences } from "./preferences";
 
 export function providerFromPrefs(prefs: Preferences): AiProviderId {
@@ -8,18 +10,7 @@ export function providerFromPrefs(prefs: Preferences): AiProviderId {
 }
 
 function threadText(message: Message, maxChars = 6000): string {
-  const parts: string[] = [
-    `Subject: ${message.subject}`,
-    `From: ${message.from} <${message.email}>`,
-  ];
-  for (const t of message.thread) {
-    const body =
-      t.body?.join("\n") ||
-      t.bodyHtml?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() ||
-      "";
-    parts.push(`--- ${t.from} (${t.time}) ---\n${body.slice(0, 2000)}`);
-  }
-  return parts.join("\n\n").slice(0, maxChars);
+  return threadTextForPrompt(message, maxChars);
 }
 
 export async function aiAskAboutMail(opts: {
@@ -43,7 +34,7 @@ export async function aiAskAboutMail(opts: {
     model: opts.prefs.aiModelHint || undefined,
     bridgePath: opts.prefs.aiBridgePath || undefined,
     system:
-      "You are Intray's mail assistant. Answer only from the provided mail context. Cite subjects when helpful. Be concise.",
+      "You are Intray's mail assistant. Answer only from the provided mail context. When you name a message, include its bracketed id from the context, such as [id], so the app can open it. Do not label that id or explain it. Name the sender and subject. Be concise.",
     prompt: `Mail context:\n${context}\n\nUser question:\n${opts.question}`,
   });
   return result.text;
@@ -57,7 +48,14 @@ export async function aiSummarizeMessage(
     provider: providerFromPrefs(prefs),
     model: prefs.aiModelHint || undefined,
     bridgePath: prefs.aiBridgePath || undefined,
-    prompt: `Summarize this email thread in 3–5 short bullets:\n\n${threadText(message)}`,
+    system:
+      "You brief email in plain text, the way a person would tell a colleague. No markdown, no asterisks, no bold, no headings, and no labels such as Summary. Do not invent names, dates, or tasks.",
+    prompt: `Brief this email.
+First line: one sentence on what it says and whether the reader needs to do anything.
+Then at most 4 lines, each starting with "- ", with only the facts worth keeping.
+Nothing else.
+
+${threadText(message)}`,
   });
   return result.text;
 }
@@ -90,7 +88,7 @@ export async function aiSuggestReplies(
   return result.text
     .split(/\n+/)
     .map((l) => l.replace(/^\d+[\).:-]\s*/, "").trim())
-    .filter(Boolean)
+    .filter((line) => line && !/could not see (the )?body/i.test(line))
     .slice(0, 3);
 }
 
@@ -147,12 +145,19 @@ ${lines}`,
   return { assigned, decidedIds };
 }
 
+/** Unread and important mail first, then the rest of this view. */
+export function catchUpSource(messages: Message[]): Message[] {
+  const priority = messages.filter(
+    (message) => message.unread || message.important,
+  );
+  return (priority.length ? priority : messages).slice(0, 12);
+}
+
 export async function aiCatchMeUp(
   prefs: Preferences,
   messages: Message[],
 ): Promise<string> {
-  const priority = messages.filter((message) => message.unread || message.important);
-  const source = (priority.length ? priority : messages).slice(0, 12);
+  const source = catchUpSource(messages);
   if (!source.length) return "Nothing in this view to catch up on.";
   const context = source
     .map(
@@ -167,6 +172,55 @@ export async function aiCatchMeUp(
     system:
       "You are Intray's mail assistant. Summarize only the mail provided. Put anything that needs a reply first. Do not invent senders, dates, or tasks.",
     prompt: `Catch me up on this inbox in at most 6 short bullets:\n\n${context}`,
+  });
+  return result.text.trim();
+}
+
+export async function aiDayRundown(
+  prefs: Preferences,
+  messages: Message[],
+): Promise<string> {
+  const brief = buildDayBrief(messages, new Date());
+  const ids = new Set(
+    [...brief.meetings, ...brief.missed, ...brief.followups, ...brief.today].map(
+      (item) => item.messageId,
+    ),
+  );
+  const picked = messages.filter((message) => ids.has(message.id));
+  const source = (picked.length
+    ? picked
+    : messages.filter((message) => message.folder === "inbox")
+  ).slice(0, 16);
+  if (!source.length) return "Nothing in the inbox to brief.";
+  const context = source
+    .map((message, index) => {
+      const when = message.meeting?.when ? ` MEETING ${message.meeting.when}` : "";
+      return `${index + 1}. [${message.id}] ${message.unread ? "UNREAD" : "read"} ${message.time} ${message.from}: ${message.subject} — ${message.preview}${when}`;
+    })
+    .join("\n");
+  const result = await bridgeAiComplete({
+    provider: providerFromPrefs(prefs),
+    model: prefs.aiModelHint || undefined,
+    bridgePath: prefs.aiBridgePath || undefined,
+    maxTokens: 700,
+    system:
+      "You brief an inbox as JSON only. Do not invent meetings, senders, dates, or tasks.",
+    prompt: `Describe this mailbox as JSON only. No markdown.
+{"lede":"","meetings":[{"id":"","when":"","who":"","what":"","note":""}],"missed":[],"followups":[],"other":[],"quiet":[]}
+Rules:
+- Copy id from the bracketed id. Do not invent ids.
+- when is only the day and clock, such as "Mon 11:00–11:45".
+- who is the person's name.
+- what is at most 8 words.
+- note is at most 6 words, or "".
+- lede is one sentence under 12 words, or "".
+- quiet is newsletter or promo names only, at most 8, no sentences.
+- A meeting that already happened goes in missed.
+- Mail that needs a reply goes in followups.
+- Mail worth a glance that needs nothing goes in other.
+- Skip a list when nothing belongs there.
+
+${context}`,
   });
   return result.text.trim();
 }

@@ -7,6 +7,7 @@ import {
 
 export type { SearchField } from "../shared/searchQuery";
 export {
+  markQuery,
   parseSlashDraft,
   resolveSlashField,
   slashFieldChoices,

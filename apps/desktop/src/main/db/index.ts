@@ -2,7 +2,16 @@ import { app } from "electron";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { MailDb } from "@intray/native";
-import { parseSearchClauses } from "../../shared/searchQuery";
+import {
+  buildFtsMatch,
+  parseSearchClauses,
+  tokenizeFtsQuery,
+} from "../../shared/searchQuery";
+import {
+  desiredReadState,
+  labelJsonHasSeen,
+  type ServerUnreadMode,
+} from "../../shared/serverUnread";
 
 /**
  * Typed mail-store façade over the Rust SQLite backend (`@intray/native`).
@@ -17,6 +26,9 @@ export async function initDb(): Promise<MailDb> {
   const dbPath = join(app.getPath("userData"), "intray.sqlite");
   mkdirSync(dirname(dbPath), { recursive: true });
   db = MailDb.open(dbPath);
+  ensureRfcSchema();
+  ensurePluginSchema();
+  ensureAttachmentColumn();
   return db;
 }
 
@@ -128,6 +140,8 @@ export type BodyRow = {
   text_plain: string | null;
   text_html: string | null;
   fetched_at: string;
+  /** JSON attachment metadata. Null until the source has been indexed. */
+  attachments_json?: string | null;
 };
 
 export type SyncStateRow = {
@@ -387,11 +401,16 @@ export function upsertMessage(
   const incomingFolder = existing ? guarded.folder : row.folder;
 
   // Gmail recent-window passes only carry flags/labels: never overwrite the
-  // snippet or attachment state they did not fetch.
+  // snippet or attachment state they did not fetch, and never wake a snoozed
+  // message early.
   if (opts?.flagsOnly) {
     if (!existing) return false;
+    const flagsFolder =
+      existing.folder === "snoozed" && existing.snooze_until_ms != null
+        ? "snoozed"
+        : incomingFolder;
     if (
-      existing.folder === incomingFolder &&
+      existing.folder === flagsFolder &&
       existing.unread === unread &&
       existing.important === important &&
       existing.starred === starred &&
@@ -404,7 +423,7 @@ export function upsertMessage(
        SET folder = ?, unread = ?, important = ?, starred = ?, label_ids_json = ?
        WHERE id = ?`,
       [
-        incomingFolder,
+        flagsFolder,
         unread,
         important,
         starred,
@@ -463,7 +482,6 @@ export function upsertMessage(
        starred, has_attachment, label_ids_json, ui_label_id, snooze_until_ms, internal_date
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(account_id, provider_id) DO UPDATE SET
-       id=excluded.id,
        thread_id=excluded.thread_id,
        folder=excluded.folder,
        subject=excluded.subject,
@@ -512,37 +530,289 @@ export function upsertMessage(
     existing.subject !== row.subject ||
     existing.snippet !== row.snippet ||
     existing.from_name !== row.from_name ||
-    existing.from_email !== row.from_email;
+    existing.from_email !== row.from_email ||
+    existing.to_json !== row.to_json ||
+    existing.cc_json !== row.cc_json;
   if (headerChanged) {
-    const body = getBody(existing?.id ?? row.id)?.text_plain ?? "";
-    getDb().upsertFts(
-      row.id,
-      row.subject,
-      row.snippet,
-      row.from_name,
-      row.from_email,
-      body,
-    );
+    const stored = getBody(existing?.id ?? row.id);
+    writeSearchIndex(row, stored?.text_plain ?? "", stored?.attachments_json);
   }
   return true;
+}
+
+function recipientIndexText(toJson: string, ccJson: string): string {
+  const parts: string[] = [];
+  for (const json of [toJson, ccJson]) {
+    if (!json) continue;
+    try {
+      const rows = JSON.parse(json) as Array<{ name?: string; email?: string }>;
+      if (!Array.isArray(rows)) continue;
+      for (const person of rows) {
+        if (person?.name) parts.push(String(person.name));
+        if (person?.email) parts.push(String(person.email));
+      }
+    } catch {
+      /* malformed recipient json stays out of the index */
+    }
+  }
+  return parts.join(" ");
+}
+
+function attachmentIndexText(json: string | null | undefined): string {
+  if (!json) return "";
+  try {
+    const rows = JSON.parse(json) as Array<{ name?: string; filename?: string }>;
+    if (!Array.isArray(rows)) return "";
+    return rows
+      .map((item) => (item?.name || item?.filename || "").trim())
+      .filter(Boolean)
+      .join(" ");
+  } catch {
+    return "";
+  }
+}
+
+function writeSearchIndex(
+  msg: Pick<
+    MessageRow,
+    "id" | "subject" | "snippet" | "from_name" | "from_email" | "to_json" | "cc_json"
+  >,
+  bodyText: string,
+  attachmentsJson?: string | null,
+): void {
+  try {
+    getDb().upsertFts(
+      msg.id,
+      msg.subject,
+      msg.snippet,
+      msg.from_name,
+      msg.from_email,
+      bodyText,
+      recipientIndexText(msg.to_json, msg.cc_json),
+      attachmentIndexText(attachmentsJson),
+    );
+  } catch (error) {
+    console.warn("search index update failed", error);
+  }
 }
 
 /** Index body text into the Rust FTS5 table for search. */
 export function updateFtsBody(messageId: string, bodyText: string): void {
   const msg = getMessageRow(messageId);
   if (!msg) return;
-  getDb().upsertFts(
-    messageId,
-    msg.subject,
-    msg.snippet,
-    msg.from_name,
-    msg.from_email,
-    bodyText,
-  );
+  writeSearchIndex(msg, bodyText, getBody(messageId)?.attachments_json);
 }
 
 export function getMessageRow(id: string): MessageRow | undefined {
   return get<MessageRow>("SELECT * FROM messages WHERE id = ?", [id]);
+}
+
+export function getMessageByProviderId(
+  accountId: string,
+  providerId: string,
+): MessageRow | undefined {
+  return get<MessageRow>(
+    "SELECT * FROM messages WHERE account_id = ? AND provider_id = ?",
+    [accountId, providerId],
+  );
+}
+
+export type RfcHeaderRow = {
+  message_id: string;
+  account_id: string;
+  rfc_message_id: string | null;
+  in_reply_to: string | null;
+  references_json: string;
+};
+
+/** RFC 5322 ids live beside the message row so threading can heal partial chains. */
+/**
+ * Optional integrations live beside mail so uninstalling a plugin leaves mail
+ * untouched. Secrets themselves stay in the encrypted `secrets` table.
+ */
+export function ensurePluginSchema(): void {
+  run(
+    `CREATE TABLE IF NOT EXISTS plugins (
+       id TEXT PRIMARY KEY NOT NULL,
+       enabled INTEGER NOT NULL DEFAULT 0,
+       config_json TEXT NOT NULL DEFAULT '{}',
+       updated_at TEXT NOT NULL
+     )`,
+  );
+}
+
+/** File list for a fetched body. Added in TS so existing native builds pick it up. */
+export function ensureAttachmentColumn(): void {
+  const cols = all<{ name: string }>("PRAGMA table_info(bodies)");
+  if (cols.some((col) => col.name === "attachments_json")) return;
+  run("ALTER TABLE bodies ADD COLUMN attachments_json TEXT");
+}
+
+export function attachmentMetaKnown(messageId: string): boolean {
+  const body = getBody(messageId);
+  return Boolean(body && body.attachments_json != null);
+}
+
+export function readAttachmentMetaJson(messageId: string): string | null {
+  return getBody(messageId)?.attachments_json ?? null;
+}
+
+export function saveAttachmentMeta(messageId: string, json: string): void {
+  run("UPDATE bodies SET attachments_json = ? WHERE message_id = ?", [
+    json,
+    messageId,
+  ]);
+  const msg = getMessageRow(messageId);
+  if (!msg) return;
+  writeSearchIndex(msg, getBody(messageId)?.text_plain ?? "", json);
+}
+
+export function markHasAttachment(messageId: string): void {
+  run(
+    "UPDATE messages SET has_attachment = 1 WHERE id = ? AND has_attachment <> 1",
+    [messageId],
+  );
+}
+
+export function ensureRfcSchema(): void {
+  run(
+    `CREATE TABLE IF NOT EXISTS message_rfc (
+       message_id TEXT PRIMARY KEY NOT NULL,
+       account_id TEXT NOT NULL,
+       rfc_message_id TEXT,
+       in_reply_to TEXT,
+       references_json TEXT NOT NULL DEFAULT '[]'
+     )`,
+  );
+  run(
+    `CREATE INDEX IF NOT EXISTS idx_message_rfc_id
+     ON message_rfc(account_id, rfc_message_id)`,
+  );
+  run(
+    `CREATE INDEX IF NOT EXISTS idx_message_rfc_parent
+     ON message_rfc(account_id, in_reply_to)`,
+  );
+}
+
+export function upsertRfcHeaders(row: {
+  messageId: string;
+  accountId: string;
+  rfcMessageId: string | null;
+  inReplyTo: string | null;
+  references: string[];
+}): void {
+  ensureRfcSchema();
+  run(
+    `INSERT INTO message_rfc (
+       message_id, account_id, rfc_message_id, in_reply_to, references_json
+     ) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(message_id) DO UPDATE SET
+       account_id=excluded.account_id,
+       rfc_message_id=excluded.rfc_message_id,
+       in_reply_to=excluded.in_reply_to,
+       references_json=excluded.references_json`,
+    [
+      row.messageId,
+      row.accountId,
+      row.rfcMessageId,
+      row.inReplyTo,
+      JSON.stringify(row.references),
+    ],
+  );
+}
+
+export function getRfcHeaders(messageId: string): RfcHeaderRow | undefined {
+  ensureRfcSchema();
+  return get<RfcHeaderRow>("SELECT * FROM message_rfc WHERE message_id = ?", [
+    messageId,
+  ]);
+}
+
+export function deleteRfcHeaders(messageId: string): void {
+  try {
+    run("DELETE FROM message_rfc WHERE message_id = ?", [messageId]);
+  } catch {
+    /* table may not exist on a database that has not opened mail yet */
+  }
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/** Messages whose Message-ID, In-Reply-To, or References mention any of these ids. */
+export function findThreadHitsByRfcIds(
+  accountId: string,
+  ids: string[],
+): { threadId: string; dateMs: number }[] {
+  const clean = [...new Set(ids.filter(Boolean))].slice(0, 16);
+  if (!clean.length) return [];
+  ensureRfcSchema();
+  const placeholders = clean.map(() => "?").join(", ");
+  const likeClauses = clean.map(() => "r.references_json LIKE ? ESCAPE '\\'");
+  const likeParams = clean.map((id) => `%${escapeLike(id)}%`);
+  return all<{ threadId: string; dateMs: number }>(
+    `SELECT m.thread_id AS threadId, MIN(m.date_ms) AS dateMs
+     FROM message_rfc r
+     JOIN messages m ON m.id = r.message_id
+     WHERE r.account_id = ?
+       AND (
+         r.rfc_message_id IN (${placeholders})
+         OR r.in_reply_to IN (${placeholders})
+         OR ${likeClauses.join(" OR ")}
+       )
+     GROUP BY m.thread_id`,
+    [accountId, ...clean, ...clean, ...likeParams],
+  );
+}
+
+export function findMessageByRfcId(
+  accountId: string,
+  rfcMessageId: string,
+): MessageRow | undefined {
+  ensureRfcSchema();
+  return get<MessageRow>(
+    `SELECT m.* FROM messages m
+     JOIN message_rfc r ON r.message_id = m.id
+     WHERE r.account_id = ? AND r.rfc_message_id = ?
+     LIMIT 1`,
+    [accountId, rfcMessageId],
+  );
+}
+
+export function listRecentMessages(
+  accountId: string,
+  sinceMs: number,
+  limit = 150,
+): MessageRow[] {
+  return all<MessageRow>(
+    `SELECT * FROM messages
+     WHERE account_id = ? AND date_ms >= ?
+     ORDER BY date_ms DESC
+     LIMIT ?`,
+    [accountId, sinceMs, limit],
+  );
+}
+
+export function hasThread(accountId: string, threadId: string): boolean {
+  if (!threadId) return false;
+  const row = get<{ ok: number }>(
+    `SELECT 1 AS ok FROM messages WHERE account_id = ? AND thread_id = ? LIMIT 1`,
+    [accountId, threadId],
+  );
+  return row != null;
+}
+
+export function reassignThread(
+  accountId: string,
+  fromThreadId: string,
+  toThreadId: string,
+): void {
+  if (!fromThreadId || !toThreadId || fromThreadId === toThreadId) return;
+  run(
+    `UPDATE messages SET thread_id = ? WHERE account_id = ? AND thread_id = ?`,
+    [toThreadId, accountId, fromThreadId],
+  );
 }
 
 export function listMessageRows(opts: {
@@ -586,15 +856,6 @@ export function listMessageRows(opts: {
 
 function sanitizeLikeTerm(raw: string): string {
   return raw.replace(/[%_]/g, "").trim();
-}
-
-function ftsTerms(raw: string): string[] {
-  return raw
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((t) => t.replace(/["*]/g, "").replace(/'/g, ""))
-    .filter(Boolean);
 }
 
 /** Resolve a person query to emails + name tokens via the contacts table. */
@@ -689,14 +950,41 @@ function personToPredicate(value: string, params: unknown[]): string {
   return `(${parts.join(" OR ")})`;
 }
 
+export type SearchMatch = {
+  row: MessageRow;
+  /** FTS snippet with \u0001 \u0002 around the matched words. */
+  snippet: string | null;
+};
+
+type RankedSearchRow = MessageRow & {
+  match_snippet?: string | null;
+  rank?: number | null;
+};
+
+/** Subject and sender outweigh the body. Higher weight = stronger match. */
+const FTS_BM25 =
+  "bm25(messages_fts, 0.0, 10.0, 2.0, 6.0, 6.0, 1.0, 5.0, 4.0)";
+
+function toSearchMatches(rows: RankedSearchRow[]): SearchMatch[] {
+  return rows.map((row) => {
+    const snippet = row.match_snippet ? String(row.match_snippet) : null;
+    const copy = { ...row };
+    delete copy.match_snippet;
+    delete copy.rank;
+    return { row: copy, snippet };
+  });
+}
+
 /**
  * Fielded search across the local store (not limited to the open folder).
  * Supports from:/to:/subject:/tag:/has:/is: plus free-text FTS.
+ * Free text is ordered by bm25 (subject and sender weighted above the body),
+ * then by date. An unknown has: or is: value is ignored.
  */
 export function searchMessageRows(
   q: string,
   opts: { accountId?: string; limit: number },
-): MessageRow[] {
+): SearchMatch[] {
   const clauses = parseSearchClauses(q);
   if (!clauses.length) return [];
 
@@ -745,8 +1033,6 @@ export function searchMessageRows(
           where.push(
             `(IFNULL(b.text_plain, '') LIKE '%meet.%' OR IFNULL(b.text_plain, '') LIKE '%teams.microsoft%' OR m.snippet LIKE '%meet.%')`,
           );
-        } else {
-          return [];
         }
         break;
       }
@@ -756,7 +1042,6 @@ export function searchMessageRows(
         else if (v === "read") where.push("m.unread = 0");
         else if (v.startsWith("star")) where.push("m.starred = 1");
         else if (v.startsWith("import")) where.push("m.important = 1");
-        else return [];
         break;
       }
       case "text":
@@ -767,10 +1052,7 @@ export function searchMessageRows(
   }
 
   const textQuery = textParts.join(" ").trim();
-  const terms = textQuery ? ftsTerms(textQuery) : [];
-  const ftsMatch = terms.length
-    ? terms.map((t) => `"${t}"*`).join(" AND ")
-    : null;
+  const ftsMatch = textQuery ? buildFtsMatch(textQuery) : null;
 
   if (!where.length && !ftsMatch) return [];
 
@@ -783,39 +1065,47 @@ export function searchMessageRows(
 
   if (ftsMatch) {
     try {
-      return all<MessageRow>(
-        `SELECT m.* FROM messages m
-         INNER JOIN messages_fts f ON f.message_id = m.id
-         ${labelJoin}
-         ${bodyJoin}
-         WHERE f MATCH ?
-         ${where.length ? `AND ${where.join(" AND ")}` : ""}
-         ORDER BY m.date_ms DESC
-         LIMIT ?`,
-        [ftsMatch, ...params, opts.limit],
+      return toSearchMatches(
+        all<RankedSearchRow>(
+          `SELECT m.*,
+                  snippet(messages_fts, -1, char(1), char(2), '…', 18) AS match_snippet,
+                  ${FTS_BM25} AS rank
+           FROM messages_fts
+           JOIN messages m ON m.id = messages_fts.message_id
+           ${labelJoin}
+           ${bodyJoin}
+           WHERE messages_fts MATCH ?
+           ${where.length ? `AND ${where.join(" AND ")}` : ""}
+           ORDER BY rank ASC, m.date_ms DESC
+           LIMIT ?`,
+          [ftsMatch, ...params, opts.limit],
+        ),
       );
     } catch {
       joinBodies = true;
-      for (const term of terms) {
-        const like = `%${sanitizeLikeTerm(term)}%`;
+      for (const term of tokenizeFtsQuery(textQuery)) {
+        if (term.negate || !term.value) continue;
+        const like = `%${sanitizeLikeTerm(term.value)}%`;
         where.push(
-          `(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_name LIKE ? OR m.from_email LIKE ? OR IFNULL(b.text_plain, '') LIKE ?)`,
+          `(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_name LIKE ? OR m.from_email LIKE ? OR m.to_json LIKE ? OR m.cc_json LIKE ? OR IFNULL(b.text_plain, '') LIKE ?)`,
         );
-        params.push(like, like, like, like, like);
+        params.push(like, like, like, like, like, like, like);
       }
     }
   }
 
   if (!where.length) return [];
 
-  return all<MessageRow>(
-    `SELECT m.* FROM messages m
-     ${joinLabels ? "LEFT JOIN labels l ON l.id = m.ui_label_id" : ""}
-     ${joinBodies ? "LEFT JOIN bodies b ON b.message_id = m.id" : ""}
-     WHERE ${where.join(" AND ")}
-     ORDER BY m.date_ms DESC
-     LIMIT ?`,
-    [...params, opts.limit],
+  return toSearchMatches(
+    all<RankedSearchRow>(
+      `SELECT m.* FROM messages m
+       ${joinLabels ? "LEFT JOIN labels l ON l.id = m.ui_label_id" : ""}
+       ${joinBodies ? "LEFT JOIN bodies b ON b.message_id = m.id" : ""}
+       WHERE ${where.join(" AND ")}
+       ORDER BY m.date_ms DESC
+       LIMIT ?`,
+      [...params, opts.limit],
+    ),
   );
 }
 
@@ -1192,6 +1482,125 @@ export function nextSnoozeDueMs(): number | null {
   return typeof row?.t === "number" ? row.t : null;
 }
 
+/** Provider mailbox + UID a stored IMAP message came from. */
+export type MessageMailboxRef = {
+  id: string;
+  mailbox: string;
+  uid: number;
+  uidValidity: number;
+};
+
+/**
+ * Stored IMAP messages that can be reconciled against the server by UID.
+ * Local-only rows (queued sends, demo imports) carry `"[]"` and are skipped.
+ */
+export function listMessageMailboxRefs(accountId: string): MessageMailboxRef[] {
+  const rows = all<{ id: string; label_ids_json: string }>(
+    "SELECT id, label_ids_json FROM messages WHERE account_id = ?",
+    [accountId],
+  );
+  const out: MessageMailboxRef[] = [];
+  for (const row of rows) {
+    try {
+      const parsed = JSON.parse(row.label_ids_json) as {
+        mailbox?: unknown;
+        uid?: unknown;
+        uidValidity?: unknown;
+      };
+      if (typeof parsed?.mailbox !== "string" || !parsed.mailbox) continue;
+      const uid = Number(parsed.uid);
+      if (!Number.isFinite(uid) || uid <= 0) continue;
+      out.push({
+        id: row.id,
+        mailbox: parsed.mailbox,
+        uid,
+        uidValidity: Number(parsed.uidValidity) || 0,
+      });
+    } catch {
+      /* not an IMAP row */
+    }
+  }
+  return out;
+}
+
+/**
+ * Drop duplicate index copies left behind when an account used to sync a
+ * different mailbox for the same message (Gmail INBOX/Sent before All Mail).
+ * Those copies never refresh, so they accumulate stale unread state and
+ * double-count folders.
+ *
+ * A row is only removed when an identical message (same subject and header
+ * date) is stored from a mailbox we still sync — local-only mail stays.
+ */
+export function deleteRedundantMailboxRows(
+  accountId: string,
+  mailboxPaths: string[],
+): number {
+  const keep = new Set(mailboxPaths);
+  if (!keep.size) return 0;
+  const rows = all<{
+    id: string;
+    subject: string;
+    date_ms: number;
+    folder: string;
+    ui_label_id: string | null;
+    snooze_until_ms: number | null;
+    label_ids_json: string;
+  }>(
+    `SELECT id, subject, date_ms, folder, ui_label_id, snooze_until_ms, label_ids_json
+     FROM messages WHERE account_id = ?`,
+    [accountId],
+  );
+  const keyFor = (row: { subject: string; date_ms: number }) =>
+    `${row.subject}\u0000${row.date_ms}`;
+  const parsed = rows.map((row) => {
+    let mailbox = "";
+    try {
+      const json = JSON.parse(row.label_ids_json) as { mailbox?: unknown };
+      if (typeof json?.mailbox === "string") mailbox = json.mailbox;
+    } catch {
+      /* local-only row */
+    }
+    return { ...row, mailbox };
+  });
+  const kept = new Map<string, (typeof parsed)[number]>();
+  for (const row of parsed) {
+    if (!row.mailbox || !keep.has(row.mailbox)) continue;
+    const key = keyFor(row);
+    if (!kept.has(key)) kept.set(key, row);
+  }
+  let removed = 0;
+  for (const row of parsed) {
+    if (!row.mailbox || keep.has(row.mailbox)) continue;
+    const twin = kept.get(keyFor(row));
+    if (!twin) continue;
+    // Carry local-only state over to the copy that stays.
+    const label = row.ui_label_id && !twin.ui_label_id ? row.ui_label_id : twin.ui_label_id;
+    const snoozed =
+      row.folder === "snoozed" &&
+      row.snooze_until_ms != null &&
+      twin.folder !== "snoozed";
+    const folder = snoozed ? "snoozed" : twin.folder;
+    const snooze = snoozed ? row.snooze_until_ms : twin.snooze_until_ms;
+    if (
+      label !== twin.ui_label_id ||
+      snooze !== twin.snooze_until_ms ||
+      folder !== twin.folder
+    ) {
+      run(
+        "UPDATE messages SET ui_label_id = ?, snooze_until_ms = ?, folder = ? WHERE id = ?",
+        [label, snooze, folder, twin.id],
+      );
+      twin.ui_label_id = label;
+      twin.snooze_until_ms = snooze;
+      twin.folder = folder;
+    }
+    deleteMessageById(row.id);
+    removed += 1;
+  }
+  return removed;
+}
+
 export function recountUnread(accountId: string): number {
   // Conversation count — matches the thread-collapsed list, not raw rows.
   const count =
@@ -1206,6 +1615,114 @@ export function recountUnread(accountId: string): number {
     accountId,
   ]);
   return count;
+}
+
+function unreadAfterLocalGuard(
+  id: string,
+  incoming: number,
+  current: { starred: number; important: number; folder: string },
+): { unread: number; folder: string } {
+  const guarded = applyLocalFlagGuard(id, {
+    unread: incoming,
+    starred: current.starred,
+    important: current.important,
+    folder: current.folder,
+  });
+  return { unread: guarded.unread, folder: guarded.folder };
+}
+
+/**
+ * Mail already `\Seen` on the server must not keep the badge up while a sync
+ * is still catching up. Stored flags are enough for this; no network call.
+ * Does not record a local edit, so the next server snapshot can still apply.
+ */
+export function repairSeenMessages(): number {
+  const rows = all<{
+    id: string;
+    account_id: string;
+    folder: string;
+    starred: number;
+    important: number;
+    label_ids_json: string;
+  }>(
+    `SELECT id, account_id, folder, starred, important, label_ids_json
+     FROM messages WHERE unread = 1`,
+  );
+  const accounts = new Set<string>();
+  let changed = 0;
+  for (const row of rows) {
+    if (row.folder === "snoozed" || !labelJsonHasSeen(row.label_ids_json)) {
+      continue;
+    }
+    const next = unreadAfterLocalGuard(row.id, 0, {
+      starred: row.starred,
+      important: row.important,
+      folder: row.folder,
+    });
+    if (next.unread !== 0) continue;
+    run("UPDATE messages SET unread = 0 WHERE id = ?", [row.id]);
+    accounts.add(row.account_id);
+    changed += 1;
+  }
+  for (const accountId of accounts) recountUnread(accountId);
+  return changed;
+}
+
+/**
+ * Apply one server UNSEEN result to rows indexed from `mailbox`.
+ * `unseenUids` is the UID set the server just returned. A failed search must
+ * not call this with an empty set — an empty set means the mailbox has no
+ * unread mail.
+ */
+export function applyServerUnread(
+  accountId: string,
+  mailbox: string,
+  unseenUids: ReadonlySet<number>,
+  mode: ServerUnreadMode,
+): number {
+  const rows = all<{
+    id: string;
+    folder: string;
+    unread: number;
+    starred: number;
+    important: number;
+    label_ids_json: string;
+  }>(
+    `SELECT id, folder, unread, starred, important, label_ids_json
+     FROM messages WHERE account_id = ?`,
+    [accountId],
+  );
+  let changed = 0;
+  for (const row of rows) {
+    let meta: { mailbox?: unknown; uid?: unknown };
+    try {
+      meta = JSON.parse(row.label_ids_json) as {
+        mailbox?: unknown;
+        uid?: unknown;
+      };
+    } catch {
+      continue;
+    }
+    if (meta.mailbox !== mailbox) continue;
+    const uid = Number(meta.uid);
+    if (!Number.isFinite(uid) || uid <= 0) continue;
+    const desired = desiredReadState(row.folder, uid, unseenUids, mode);
+    if (!desired) continue;
+    const next = unreadAfterLocalGuard(row.id, desired.unread, {
+      starred: row.starred,
+      important: row.important,
+      folder: desired.folder,
+    });
+    if (next.unread === row.unread && next.folder === row.folder) continue;
+    run("UPDATE messages SET unread = ?, folder = ? WHERE id = ?", [
+      next.unread,
+      next.folder,
+      row.id,
+    ]);
+    changed += 1;
+  }
+  if (changed > 0) recountUnread(accountId);
+  return changed;
 }
 
 /** Aggregate total + unread conversation counts per folder (and per UI label). */
@@ -1277,6 +1794,7 @@ export function deleteMessageById(id: string): void {
   } catch {
     /* fts row may not exist */
   }
+  deleteRfcHeaders(id);
   run("DELETE FROM messages WHERE id = ?", [id]);
 }
 
@@ -1291,6 +1809,61 @@ function setMeta(key: string, value: string): void {
      ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     [key, value],
   );
+}
+
+/**
+ * Fill recipients, attachment names, and stored bodies into messages_fts.
+ * Runs once after the FTS table gains those columns, and again if the table
+ * was recreated empty.
+ */
+export function backfillSearchIndex(): void {
+  const messages =
+    get<{ c: number }>("SELECT COUNT(*) AS c FROM messages")?.c ?? 0;
+  const indexed =
+    get<{ c: number }>("SELECT COUNT(*) AS c FROM messages_fts")?.c ?? 0;
+  if (getMeta("fts_v2") === "1" && (messages === 0 || indexed > 0)) return;
+
+  const rows = all<{
+    id: string;
+    subject: string;
+    snippet: string;
+    from_name: string;
+    from_email: string;
+    to_json: string;
+    cc_json: string;
+    text_plain: string | null;
+    attachments_json: string | null;
+  }>(
+    `SELECT m.id, m.subject, m.snippet, m.from_name, m.from_email,
+            m.to_json, m.cc_json, b.text_plain, b.attachments_json
+     FROM messages m
+     LEFT JOIN bodies b ON b.message_id = m.id`,
+  );
+
+  run("BEGIN");
+  try {
+    for (const row of rows) {
+      getDb().upsertFts(
+        row.id,
+        row.subject,
+        row.snippet,
+        row.from_name,
+        row.from_email,
+        row.text_plain ?? "",
+        recipientIndexText(row.to_json, row.cc_json),
+        attachmentIndexText(row.attachments_json),
+      );
+    }
+    run("COMMIT");
+  } catch (error) {
+    try {
+      run("ROLLBACK");
+    } catch {
+      /* the failed statement already rolled the transaction back */
+    }
+    throw error;
+  }
+  setMeta("fts_v2", "1");
 }
 
 /**

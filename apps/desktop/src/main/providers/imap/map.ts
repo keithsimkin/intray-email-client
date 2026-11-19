@@ -13,8 +13,8 @@ export function imapEnvelopeToRow(
     : `${env.uidValidity}:${env.uid}`;
   const threadId = env.gmThrId ? `gm:${env.gmThrId}` : env.threadId;
   const dateMs = env.date?.getTime() ?? Date.now();
-  // Prefer Gmail's \\Unread label when X-GM-LABELS is present; \\Seen alone
-  // can lag or disagree after a flag write.
+  // \Seen is the authority for read state; Gmail's \Unread label goes stale
+  // when mail is read in another client (see unreadFromImapSignals).
   const unread = unreadFromImapSignals(env.flags, env.gmLabels);
   const starred =
     env.starred != null

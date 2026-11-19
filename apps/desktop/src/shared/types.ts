@@ -1,5 +1,7 @@
 /** Shared mail domain types (main ↔ renderer). */
 
+import type { AttachmentKind } from "./attachmentPreview";
+
 export type ProviderId =
   | "gmail"
   | "outlook"
@@ -49,8 +51,35 @@ export type ThreadMessageDto = {
   cc?: RecipientDto[];
   noTrackers?: boolean;
   body?: string[];
+  /** text/plain part, kept even when the reader shows HTML. */
+  bodyText?: string;
   bodyHtml?: string;
   attachment?: { name: string; size: string };
+  attachments?: AttachmentDto[];
+};
+
+export type AttachmentDto = {
+  id: string;
+  name: string;
+  /** Human size, e.g. "2.4 MB". */
+  size: string;
+  bytes: number;
+  contentType: string;
+  kind: AttachmentKind;
+};
+
+export type AttachmentPreviewResult = {
+  name: string;
+  contentType: string;
+  kind: AttachmentKind;
+  size: number;
+  bytes?: Uint8Array;
+  error?: "missing" | "too-big" | "unavailable";
+};
+
+export type AttachmentActionResult = {
+  ok: boolean;
+  error?: string;
 };
 
 export type MessageDto = {
@@ -63,6 +92,8 @@ export type MessageDto = {
   email: string;
   subject: string;
   preview: string;
+  /** Matching passage with \u0001 \u0002 around the words that hit. */
+  matchPreview?: string;
   time: string;
   unread: boolean;
   important: boolean;

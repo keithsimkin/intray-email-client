@@ -6,6 +6,7 @@ import {
   siGmail,
   siGooglegemini,
   siIcloud,
+  siNotion,
   siOllama,
   siThunderbird,
   siX,
@@ -16,6 +17,7 @@ import outlookUrl from "./assets/brands/microsoft-outlook.svg?url";
 import yahooUrl from "./assets/brands/yahoo.svg?url";
 import fastmailUrl from "./assets/brands/fastmail.svg?url";
 import gmailUrl from "./assets/brands/gmail.svg?url";
+import googleCalendarUrl from "./assets/brands/google-calendar.svg?url";
 import type { ShortcutPackId } from "./shortcuts";
 
 /** Render an official Simple Icons mark (real brand path data). */
@@ -79,6 +81,16 @@ export const brandIcons = {
   gemini: siGooglegemini,
 } as const;
 
+/** Real marks for optional plugin cards and reader actions. */
+export const pluginBrandIcons = {
+  notion: siNotion,
+} as const;
+
+/** Official Google Calendar mark (the colored page with 31). */
+export function GoogleCalendarBrand({ size = 22 }: { size?: number }) {
+  return <ImgBrand src={googleCalendarUrl} alt="" size={size} />;
+}
+
 export const brandImages = {
   openai: openaiUrl,
   openaiDark: openaiDarkUrl,
@@ -86,6 +98,7 @@ export const brandImages = {
   yahoo: yahooUrl,
   fastmail: fastmailUrl,
   gmail: gmailUrl,
+  googleCalendar: googleCalendarUrl,
 } as const;
 
 /** OpenAI mark that stays visible on dark UI. */
