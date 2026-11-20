@@ -93,6 +93,13 @@ const api = {
       ipcRenderer.invoke("app:installUpdate") as Promise<boolean>,
     openReleases: () =>
       ipcRenderer.invoke("app:openReleases") as Promise<boolean>,
+    onAsk: (cb: (action: "download") => void) => {
+      const listener = (_: Electron.IpcRendererEvent, action: unknown) => {
+        if (action === "download") cb("download");
+      };
+      ipcRenderer.on("app:updateAsk", listener);
+      return () => ipcRenderer.removeListener("app:updateAsk", listener);
+    },
     onStatus: (cb: (status: AppUpdateStatus) => void) => {
       const listener = (
         _: Electron.IpcRendererEvent,

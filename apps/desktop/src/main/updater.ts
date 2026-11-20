@@ -1,7 +1,8 @@
-import { BrowserWindow, app, dialog } from "electron";
+import { BrowserWindow, app } from "electron";
 import { autoUpdater } from "electron-updater";
 import type { UpdateInfo } from "electron-updater";
 import type { AppUpdateStatus } from "../shared/types";
+import { downloadUpdateAsk } from "../shared/updateAsk";
 import { showDesktopNotification } from "./notifications";
 import { openExternalSafely } from "./security";
 
@@ -41,20 +42,28 @@ function versionOf(info?: UpdateInfo | null): string | undefined {
   return v || undefined;
 }
 
+function updateWindow(): BrowserWindow | null {
+  return (
+    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null
+  );
+}
+
 function notifyUpdateAvailable(version: string): void {
   if (notifiedAvailableVersion === version) return;
   notifiedAvailableVersion = version;
-  showDesktopNotification(() => BrowserWindow.getFocusedWindow(), {
-    title: "Update available",
-    body: `Intray ${version} is ready to download.`,
-    silent: true,
+  const ask = downloadUpdateAsk(version);
+  showDesktopNotification(updateWindow, {
+    title: ask.title,
+    body: ask.body,
+    silent: false,
+    updateAsk: "download",
   });
 }
 
 function notifyUpdateReady(version: string): void {
   if (notifiedReadyVersion === version) return;
   notifiedReadyVersion = version;
-  showDesktopNotification(() => BrowserWindow.getFocusedWindow(), {
+  showDesktopNotification(updateWindow, {
     title: "Update ready",
     body: `Intray ${version} will install when you restart.`,
     silent: false,
@@ -203,24 +212,12 @@ export async function downloadAppUpdate(): Promise<AppUpdateStatus> {
   }
 }
 
-export async function quitAndInstallUpdate(): Promise<boolean> {
+/**
+ * Install a downloaded update with no native Windows dialog and no NSIS wizard.
+ * The renderer asks in-app before calling this.
+ */
+export function quitAndInstallUpdate(): boolean {
   if (!app.isPackaged || status.state !== "ready") return false;
-
-  const version = status.availableVersion || app.getVersion();
-  const parent =
-    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
-  const { response } = await dialog.showMessageBox(parent, {
-    type: "question",
-    buttons: ["Restart and install", "Cancel"],
-    defaultId: 0,
-    cancelId: 1,
-    title: "Restart to install update",
-    message: `Restart Intray to install ${version}?`,
-    detail:
-      "The installer runs without any setup prompts and Intray reopens automatically. Any unsaved work will be closed.",
-    noLink: true,
-  });
-  if (response !== 0) return false;
 
   // isSilent=true passes /S to NSIS (no wizard). isForceRunAfter=true relaunches.
   autoUpdater.quitAndInstall(true, true);

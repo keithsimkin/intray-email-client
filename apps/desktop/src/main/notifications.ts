@@ -15,6 +15,8 @@ export type DesktopNotifyPayload = {
   messageId?: string;
   /** Folder to select when the toast is clicked */
   folderId?: string;
+  /** Clicking the toast asks, in the app, whether to download the update. */
+  updateAsk?: "download";
 };
 
 export type BadgePayload = {
@@ -98,16 +100,19 @@ export function showDesktopNotification(
 
   toast.on("click", () => {
     const win = getMainWindow();
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
-      if (payload.messageId) {
-        win.webContents.send("notify:open", {
-          messageId: payload.messageId,
-          folderId: payload.folderId,
-        });
-      }
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    if (payload.updateAsk === "download") {
+      win.webContents.send("app:updateAsk", "download");
+      return;
+    }
+    if (payload.messageId) {
+      win.webContents.send("notify:open", {
+        messageId: payload.messageId,
+        folderId: payload.folderId,
+      });
     }
   });
 

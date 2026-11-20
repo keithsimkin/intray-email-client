@@ -682,6 +682,11 @@ button {
   background: #3dd68c22;
 }
 
+.notif-kind.update {
+  color: var(--accent);
+  background: #5b8def22;
+}
+
 .notif-copy {
   min-width: 0;
   display: flex;
@@ -1231,9 +1236,10 @@ button {
   color: var(--fg);
 }
 
-/* Update control — only rendered once an update has been detected. */
+/* Update control — last item on the rail, only after an update is detected. */
 .rail-update {
   color: var(--accent);
+  margin-top: 6px;
 }
 
 .rail-update:disabled {

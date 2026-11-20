@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AppUpdateStatus } from "../src/shared/types";
+import { downloadUpdateAsk, restartUpdateAsk } from "../src/shared/updateAsk";
 import { updateControl } from "../src/renderer/updateControl";
 
 function status(
@@ -39,6 +40,20 @@ describe("rail update control", () => {
     expect(control.action).toBe("busy");
     expect(control.percent).toBe(42);
     expect(control.label).toBe("Downloading update 42%");
+  });
+
+  test("asks to download, and keeps the install prompt inside the app", () => {
+    const download = downloadUpdateAsk("1.1.0");
+    expect(download.title).toBe("Update available");
+    expect(download.body).toBe("Intray 1.1.0 is ready. Download it now?");
+    expect(download.confirmLabel).toBe("Download");
+    expect(download.cancelLabel).toBe("Not now");
+
+    const restart = restartUpdateAsk("1.1.0");
+    expect(restart.title).toBe("Restart to install");
+    expect(restart.body).toContain("no Windows setup window");
+    expect(restart.confirmLabel).toBe("Restart and install");
+    expect(restart.body).not.toMatch(/native/i);
   });
 
   test("switches to Restart once the download is ready", () => {

@@ -483,6 +483,12 @@ export function bridgeOnUpdateStatus(
   return window.intray.updates.onStatus(cb);
 }
 
+/** Desktop toast click: ask in the app before downloading. */
+export function bridgeOnUpdateAsk(cb: () => void): () => void {
+  if (!hasIntrayBridge()) return () => undefined;
+  return window.intray.updates.onAsk(() => cb());
+}
+
 export async function bridgeNotifyShow(
   payload: DesktopNotifyPayload,
 ): Promise<boolean> {
