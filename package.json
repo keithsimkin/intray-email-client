@@ -1,7 +1,7 @@
 {
   "name": "intray",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "workspaces": ["apps/*", "crates/intray-native"],
   "scripts": {
     "dev:web": "bun --filter @intray/web dev",
