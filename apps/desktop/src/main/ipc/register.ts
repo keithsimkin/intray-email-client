@@ -49,6 +49,7 @@ import {
   reconnectAccount,
   removeAccount,
   removeAccountIdentity,
+  saveLocalDraft,
   sendMail,
   triggerSync,
   chooseAccountAvatar,
@@ -406,6 +407,9 @@ export function registerIpc(): void {
     },
   );
   ipcMain.handle("mail:send", (_e, draft: ComposeDraft) => sendMail(draft));
+  ipcMain.handle("mail:saveDraft", (_e, draft: ComposeDraft) =>
+    saveLocalDraft(draft),
+  );
   ipcMain.handle(
     "mail:sendLater",
     (_e, draft: ComposeDraft, delaySeconds: number) => {

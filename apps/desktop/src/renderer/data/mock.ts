@@ -68,6 +68,8 @@ export type ThreadMessage = {
   to?: Recipient[];
   /** Carbon-copy recipients */
   cc?: Recipient[];
+  /** Blind-copy recipients. Kept on local drafts. */
+  bcc?: Recipient[];
   noTrackers?: boolean;
   /** Plain paragraphs when no HTML */
   body?: string[];
