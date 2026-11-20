@@ -49,6 +49,7 @@ export type ThreadMessageDto = {
   time: string;
   to?: RecipientDto[];
   cc?: RecipientDto[];
+  bcc?: RecipientDto[];
   noTrackers?: boolean;
   body?: string[];
   /** text/plain part, kept even when the reader shows HTML. */

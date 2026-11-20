@@ -111,6 +111,7 @@ import {
   isGmailImapTarget,
   normalizeGmailAppPassword,
 } from "../../shared/gmailImap";
+import { draftSnippet, packDraftBody, splitDraftBcc } from "../../shared/draftBody";
 import { decodeMailCursor, encodeMailCursor } from "../../shared/mailCursor";
 import { parseSearchClauses, stripMatchMarkers } from "../../shared/searchQuery";
 import { assertAddressList, buildMessageId, buildRawMessage } from "./mime";
@@ -246,6 +247,8 @@ async function downloadBodyForRow(
   account: AccountRow,
   opts?: { background?: boolean },
 ): Promise<void> {
+  // Local drafts are stored with their body. Never ask the provider for them.
+  if (row.provider_id.startsWith("local-draft:")) return;
   if (!usesImap(account)) {
     const full = await getMessageFull(row.account_id, row.provider_id);
     if (!getBody(row.id)) {
@@ -645,9 +648,14 @@ function rowToThreadMessage(
     attachments_json?: string | null;
   },
 ): ThreadMessageDto {
-  const text = body?.text_plain?.replace(/\r\n/g, "\n").trim();
+  const packed = splitDraftBcc(body?.text_plain);
+  const text = packed.text.replace(/\r\n/g, "\n").trim();
   const html = sanitizeEmailHtml(body?.text_html).trim();
   const attachments = attachmentDtos(body?.attachments_json);
+  const bcc = packed.bcc.map((email) => ({
+    name: email.split("@")[0] || email,
+    email,
+  }));
   return {
     id: row.id,
     from: row.from_name,
@@ -658,6 +666,7 @@ function rowToThreadMessage(
     time: formatRelativeTime(row.date_ms),
     to: parseRecipients(row.to_json),
     cc: parseRecipients(row.cc_json),
+    ...(bcc.length ? { bcc } : {}),
     noTrackers: true,
     // HTML mail used to drop text/plain. Quick reply then saw only the
     // stylesheet at the top of the HTML part and reported no body.
@@ -2014,6 +2023,96 @@ function persistSentDraft(
   }
   recordOutgoingRfc(row, rfcMessageId, context ?? null);
   return row;
+}
+
+function draftAddressList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Keep a compose in the local Drafts folder. Nothing is sent, and the provider
+ * is not asked to store it — closing the compose tab should still leave a copy
+ * the user can find after a refresh.
+ */
+export async function saveLocalDraft(draft: ComposeDraft): Promise<MessageDto> {
+  if (!draft || typeof draft.accountId !== "string" || !draft.accountId.trim()) {
+    throw new Error("Account not found");
+  }
+  const account = getAccountRow(draft.accountId);
+  if (!account) throw new Error("Account not found");
+
+  const attachments = Array.isArray(draft.attachments) ? draft.attachments : [];
+  if (attachments.length > 20) {
+    throw new Error("Too many attachments (max 20).");
+  }
+  let attachmentBytes = 0;
+  for (const file of attachments) {
+    attachmentBytes += Math.ceil((file.contentBase64?.length ?? 0) * 0.75);
+  }
+  if (attachmentBytes > 25 * 1024 * 1024) {
+    throw new Error("Attachments exceed the 25 MB limit.");
+  }
+
+  const from = resolveSendFrom(account, draft);
+  const to = draftAddressList(draft.to);
+  const cc = draftAddressList(draft.cc);
+  const bcc = draftAddressList(draft.bcc);
+  const bodyText = typeof draft.bodyText === "string" ? draft.bodyText : "";
+  const subject =
+    typeof draft.subject === "string" && draft.subject.trim()
+      ? draft.subject.trim()
+      : "(no subject)";
+  const providerId = `local-draft:${randomUUID()}`;
+  const now = Date.now();
+  const row: MessageRow = {
+    id: `${account.id}:${providerId}`,
+    account_id: account.id,
+    thread_id: providerId,
+    provider_id: providerId,
+    folder: "drafts",
+    subject,
+    snippet: draftSnippet({ to, cc, bcc, body: bodyText }),
+    from_name: from.fromName,
+    from_email: from.fromEmail,
+    to_json: JSON.stringify(
+      to.map((email) => ({ name: email.split("@")[0] || email, email })),
+    ),
+    cc_json: JSON.stringify(
+      cc.map((email) => ({ name: email.split("@")[0] || email, email })),
+    ),
+    date_ms: now,
+    unread: 0,
+    important: 0,
+    starred: 0,
+    has_attachment: attachments.length > 0 ? 1 : 0,
+    label_ids_json: "[]",
+    ui_label_id: null,
+    snooze_until_ms: null,
+    internal_date: new Date(now).toISOString(),
+  };
+  upsertMessage(row);
+  upsertBody({
+    message_id: row.id,
+    text_plain: packDraftBody(bodyText, bcc),
+    text_html: null,
+    fetched_at: new Date().toISOString(),
+  });
+  updateFtsBody(row.id, bodyText);
+  try {
+    if (attachments.length) {
+      rememberAttachments(row.id, filesFromCompose(attachments));
+    }
+  } catch (error) {
+    console.warn("draft attachment index failed", error);
+  }
+  const dto = buildMessageDto(row.id);
+  if (!dto) throw new Error("Could not save draft");
+  broadcastMailUpdated(dto);
+  return dto;
 }
 
 async function storeGmailSent(

@@ -894,6 +894,163 @@ button {
   display: none !important;
 }
 
+.mail-workspace.has-compose {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.pane-tabs {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px 0;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  overflow-x: auto;
+}
+
+.pane-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pane-tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-tab:hover,
+.pane-tab.compose-tab:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+
+.pane-tab.active {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+.pane-tab.compose-tab {
+  padding: 0 2px 0 0;
+}
+
+.pane-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 180px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  color: inherit;
+}
+
+.pane-tab-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-tab-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  border-radius: 6px;
+  color: inherit;
+}
+
+.pane-tab-close:hover {
+  background: var(--bg-hover);
+}
+
+.reader-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+.reader-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.reader-stage-pane {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.reader-stage-pane[hidden] {
+  display: none !important;
+}
+
+.reader-stage-pane > .reader,
+.reader-stage-pane > .compose-pane {
+  flex: 1;
+  min-height: 0;
+}
+
+.compose-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.compose-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.compose-pane-head h2 {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.compose-pane .compose-form {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.compose-save-hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 550;
+  margin-left: 6px;
+}
+
 .pane-resizer {
   position: relative;
   z-index: 8;
@@ -7267,8 +7424,13 @@ button.keycap,
   display: none;
 }
 
-.app.layout-stack.stack-list .reader {
+.app.layout-stack.stack-list .reader,
+.app.layout-stack.stack-list .reader-column {
   display: none;
+}
+
+.app.layout-stack .mail-workspace.has-compose {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .app.layout-stack.stack-reader .list {

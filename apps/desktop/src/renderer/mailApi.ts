@@ -230,6 +230,11 @@ export async function bridgeSendMail(draft: ComposeDraft): Promise<MessageDto> {
   return window.intray.mail.send(draft);
 }
 
+export async function bridgeSaveDraft(draft: ComposeDraft): Promise<MessageDto> {
+  if (!hasIntrayBridge()) throw new Error("Intray bridge unavailable");
+  return window.intray.mail.saveDraft(draft);
+}
+
 export async function bridgeSendLater(
   draft: ComposeDraft,
   delaySeconds: number,

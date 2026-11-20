@@ -198,6 +198,7 @@ import {
   bridgeOnSearchReady,
   bridgeOnUnsnoozed,
   bridgePluginStatuses,
+  bridgeSaveDraft,
   bridgeSendLater,
   bridgeSendMail,
   bridgeSetChromeTheme,
@@ -208,6 +209,12 @@ import {
   messageDtoToUi,
   warmCursorAgent,
 } from "./mailApi";
+import {
+  composeHasContent,
+  composeTabLabel,
+  localDraftMessage,
+  type ComposeSnapshot,
+} from "./composeDraft";
 import { parseMailto } from "../shared/mailto";
 import { mergeSentIntoList, unionThreads } from "./threadMerge";
 import {
@@ -3081,7 +3088,8 @@ function ThreadMessageView({
 
   const hasRecipients =
     (message.to && message.to.length > 0) ||
-    (message.cc && message.cc.length > 0);
+    (message.cc && message.cc.length > 0) ||
+    (message.bcc && message.bcc.length > 0);
 
   const showImageTool = hasRemoteImages && Boolean(message.bodyHtml);
   const showTools = Boolean(message.noTrackers) || showAi || showImageTool;
@@ -3228,6 +3236,14 @@ function ThreadMessageView({
                   <span className="recipient-label">Cc</span>
                   <span className="recipient-list">
                     {formatRecipients(message.cc, onComposeTo)}
+                  </span>
+                </div>
+              )}
+              {message.bcc && message.bcc.length > 0 && (
+                <div className="recipient-row">
+                  <span className="recipient-label">Bcc</span>
+                  <span className="recipient-list">
+                    {formatRecipients(message.bcc, onComposeTo)}
                   </span>
                 </div>
               )}
@@ -4745,7 +4761,7 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function ComposeModal({
+function ComposePane({
   account,
   accounts,
   prefs,
@@ -4757,7 +4773,10 @@ function ComposeModal({
   initialSubject = "",
   initialBody = "",
   title = "New message",
-  onClose,
+  onSaveClose,
+  onDismiss,
+  onSnapshot,
+  onLabel,
   onSent,
   onQueued,
 }: {
@@ -4772,7 +4791,12 @@ function ComposeModal({
   initialSubject?: string;
   initialBody?: string;
   title?: string;
-  onClose: () => void;
+  /** Close the tab and keep the message in Drafts when it has anything in it. */
+  onSaveClose: () => void;
+  /** Close without saving. Used for Discard and after a successful send. */
+  onDismiss: () => void;
+  onSnapshot: (snapshot: ComposeSnapshot) => void;
+  onLabel: (label: string) => void;
   onSent?: (message: Message) => void;
   onQueued?: (queueId: string, seconds: number) => void;
 }) {
@@ -4984,7 +5008,7 @@ function ComposeModal({
           const queued = await bridgeSendLater(draftPayload, delay);
           setSendPhase("sent");
           onQueued?.(queued.queueId, delay);
-          window.setTimeout(() => onClose(), 700);
+          window.setTimeout(() => onDismiss(), 700);
           return;
         }
         const dto = await bridgeSendMail(draftPayload);
@@ -5038,7 +5062,7 @@ function ComposeModal({
 
       setSendPhase("sent");
       onSent?.(message);
-      window.setTimeout(() => onClose(), 700);
+      window.setTimeout(() => onDismiss(), 700);
     } catch (e) {
       setSendPhase("failed");
       setSendError(e instanceof Error ? e.message : String(e));
@@ -5076,8 +5100,45 @@ function ComposeModal({
     addRecipient({ name: contact.name, email: contact.email });
   };
 
+  const onSnapshotRef = useRef(onSnapshot);
+  const onLabelRef = useRef(onLabel);
+  onSnapshotRef.current = onSnapshot;
+  onLabelRef.current = onLabel;
+
+  useEffect(() => {
+    onSnapshotRef.current({
+      accountId: from.accountId,
+      fromName: from.name,
+      fromEmail: from.email,
+      fromLabel: from.label,
+      fromColor: from.color,
+      to,
+      cc,
+      bcc,
+      subject,
+      body,
+      files: attachments,
+    });
+  });
+
+  useEffect(() => {
+    onLabelRef.current(composeTabLabel(subject, title));
+  }, [subject, title]);
+
   return (
-    <ModalShell title={title} onClose={onClose} compose>
+    <section className="compose-pane" aria-label={title}>
+      <div className="compose-pane-head">
+        <h2>{title}</h2>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={onSaveClose}
+          aria-label="Close and save draft"
+          title="Close and save draft"
+        >
+          <X size={16} strokeWidth={1.75} />
+        </button>
+      </div>
       <div
         className={`compose-form${draggingFiles ? " drag-over" : ""}`}
         onDragEnter={onDragEnter}
@@ -5372,6 +5433,7 @@ function ComposeModal({
                 {attachments.length} file{attachments.length === 1 ? "" : "s"}
               </span>
             )}
+            <span className="compose-save-hint">Close saves to Drafts</span>
           </div>
           <div className="compose-actions-right">
             {prefs.trackOpens && (
@@ -5385,7 +5447,7 @@ function ComposeModal({
                 {sendError}
               </span>
             )}
-            <button type="button" className="pill-btn" onClick={onClose}>
+            <button type="button" className="pill-btn" onClick={onDismiss}>
               Discard
             </button>
             <button
@@ -5425,7 +5487,7 @@ function ComposeModal({
           </div>
         </div>
       </div>
-    </ModalShell>
+    </section>
   );
 }
 
@@ -5541,16 +5603,23 @@ export default function App() {
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[]>([]);
   const [pluginDialogOpen, setPluginDialogOpen] = useState(false);
-  const [composeOpen, setComposeOpen] = useState(false);
-  const [composeNonce, setComposeNonce] = useState(0);
-  const [composeDraft, setComposeDraft] = useState<{
-    to?: Recipient[];
-    cc?: Recipient[];
-    bcc?: Recipient[];
-    subject?: string;
-    body?: string;
-    title?: string;
-  }>({});
+  const [composeTabs, setComposeTabs] = useState<
+    {
+      id: string;
+      label: string;
+      to?: Recipient[];
+      cc?: Recipient[];
+      bcc?: Recipient[];
+      subject?: string;
+      body?: string;
+      title?: string;
+    }[]
+  >([]);
+  const [activePane, setActivePane] = useState("mail");
+  const composeSnaps = useRef(new Map<string, ComposeSnapshot>());
+  const activePaneRef = useRef("mail");
+  activePaneRef.current = activePane;
+  const closingCompose = useRef(new Set<string>());
   const [replyIntent, setReplyIntent] = useState<{
     key: number;
     mode: ReplyMode;
@@ -5587,21 +5656,57 @@ export default function App() {
     body?: string;
     title?: string;
   }) => {
-    setComposeDraft({
-      to: opts?.to?.length ? opts.to : undefined,
-      cc: opts?.cc?.length ? opts.cc : undefined,
-      bcc: opts?.bcc?.length ? opts.bcc : undefined,
-      subject: opts?.subject,
-      body: opts?.body,
-      title: opts?.title,
-    });
-    setComposeNonce((n) => n + 1);
-    setComposeOpen(true);
+    const hasSeed =
+      Boolean(opts?.to?.length) ||
+      Boolean(opts?.cc?.length) ||
+      Boolean(opts?.bcc?.length) ||
+      Boolean(opts?.subject?.trim()) ||
+      Boolean(opts?.body?.trim()) ||
+      Boolean(opts?.title);
+    if (!hasSeed) {
+      const existing = composeTabs.find((tab) => {
+        const snap = composeSnaps.current.get(tab.id);
+        if (!snap) {
+          return !tab.to?.length && !tab.subject && !tab.body;
+        }
+        return !composeHasContent({
+          to: snap.to,
+          cc: snap.cc,
+          bcc: snap.bcc,
+          subject: snap.subject,
+          body: snap.body,
+          attachmentCount: snap.files.length,
+        });
+      });
+      if (existing) {
+        setWorkspace("mail");
+        setActivePane(existing.id);
+        setStackView("reader");
+        return;
+      }
+    }
+    const id = `compose-${crypto.randomUUID()}`;
+    const subject = opts?.subject ?? "";
+    setWorkspace("mail");
+    setComposeTabs((prev) => [
+      ...prev,
+      {
+        id,
+        label: composeTabLabel(subject, opts?.title),
+        to: opts?.to?.length ? opts.to : undefined,
+        cc: opts?.cc?.length ? opts.cc : undefined,
+        bcc: opts?.bcc?.length ? opts.bcc : undefined,
+        subject: opts?.subject,
+        body: opts?.body,
+        title: opts?.title,
+      },
+    ]);
+    setActivePane(id);
+    setStackView("reader");
   };
 
-  const closeCompose = () => {
-    setComposeOpen(false);
-    setComposeDraft({});
+  const showMailPane = () => {
+    setActivePane("mail");
   };
 
   const openComposeRef = useRef(openCompose);
@@ -6535,6 +6640,7 @@ export default function App() {
     const changed = workspace !== "mail" || folderId !== id;
     setWorkspace("mail");
     setFolderId(id);
+    showMailPane();
     if (!changed) return;
     setSelectedId("");
     setFocusMessageId(null);
@@ -6600,6 +6706,74 @@ export default function App() {
   const showToast = (text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(null), 2200);
+  };
+
+  const closeComposeTab = async (id: string, mode: "save" | "discard") => {
+    if (closingCompose.current.has(id)) return;
+    closingCompose.current.add(id);
+    try {
+      const snap = composeSnaps.current.get(id);
+      const hasContent = snap
+        ? composeHasContent({
+            to: snap.to,
+            cc: snap.cc,
+            bcc: snap.bcc,
+            subject: snap.subject,
+            body: snap.body,
+            attachmentCount: snap.files.length,
+          })
+        : false;
+      if (mode === "save" && snap && hasContent) {
+        try {
+          const message = live
+            ? messageDtoToUi(
+                await bridgeSaveDraft({
+                  accountId: snap.accountId,
+                  fromEmail: snap.fromEmail,
+                  to: snap.to.map((person) => person.email),
+                  cc: snap.cc.length
+                    ? snap.cc.map((person) => person.email)
+                    : undefined,
+                  bcc: snap.bcc.length
+                    ? snap.bcc.map((person) => person.email)
+                    : undefined,
+                  subject: snap.subject,
+                  bodyText: snap.body,
+                  attachments: snap.files.length
+                    ? await Promise.all(
+                        snap.files.map(async (item) => ({
+                          filename: item.file.name,
+                          contentType:
+                            item.file.type || "application/octet-stream",
+                          contentBase64: await fileToBase64(item.file),
+                          size: item.file.size,
+                        })),
+                      )
+                    : undefined,
+                }),
+              )
+            : localDraftMessage(snap);
+          setMail((prev) => [
+            message,
+            ...prev.filter((item) => item.id !== message.id),
+          ]);
+          showToast("Saved to Drafts");
+          if (live) void refreshFolderCounts();
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : "Could not save draft",
+          );
+          return;
+        }
+      } else if (mode === "discard" && hasContent) {
+        showToast("Draft discarded");
+      }
+      composeSnaps.current.delete(id);
+      setComposeTabs((prev) => prev.filter((tab) => tab.id !== id));
+      setActivePane((cur) => (cur === id ? "mail" : cur));
+    } finally {
+      closingCompose.current.delete(id);
+    }
   };
 
   const downloadAppUpdate = async () => {
@@ -7579,6 +7753,7 @@ export default function App() {
   };
 
   const openSearchHit = (id: string) => {
+    showMailPane();
     setFocusMessageId(id);
     setSelectedId(id);
     setStackView("reader");
@@ -7690,6 +7865,7 @@ export default function App() {
         setCheatOpen(true);
         break;
       case "next":
+        showMailPane();
         if (idx < 0 && filtered.length > 0) {
           setSelectedId(filtered[0].id);
           if (prefs.layout === "stack") setStackView("reader");
@@ -7699,6 +7875,7 @@ export default function App() {
         }
         break;
       case "prev":
+        showMailPane();
         if (idx < 0 && filtered.length > 0) {
           setSelectedId(filtered[filtered.length - 1].id);
           if (prefs.layout === "stack") setStackView("reader");
@@ -7708,6 +7885,7 @@ export default function App() {
         }
         break;
       case "open":
+        showMailPane();
         if (selected) {
           if (prefs.layout === "stack") setStackView("reader");
         }
@@ -7736,9 +7914,11 @@ export default function App() {
         else if (selected) applyAction(selected.id, "toggle-read");
         break;
       case "reply":
+        showMailPane();
         if (selected) applyAction(selected.id, "reply");
         break;
       case "replyAll":
+        showMailPane();
         if (selected) applyAction(selected.id, "reply-all");
         break;
       case "forward":
@@ -7748,6 +7928,7 @@ export default function App() {
         undoLast();
         break;
       case "goInbox":
+        showMailPane();
         setWorkspace("mail");
         if (workspace !== "mail" || folderId !== "inbox") {
           setSelectedId("");
@@ -7760,6 +7941,7 @@ export default function App() {
         openSnooze();
         break;
       case "goSent":
+        showMailPane();
         setWorkspace("mail");
         if (workspace !== "mail" || folderId !== "sent") {
           setSelectedId("");
@@ -7769,6 +7951,7 @@ export default function App() {
         setFolderId("sent");
         break;
       case "goDrafts":
+        showMailPane();
         setWorkspace("mail");
         if (workspace !== "mail" || folderId !== "drafts") {
           setSelectedId("");
@@ -7791,6 +7974,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (document.body.hasAttribute("data-attachment-preview")) return;
       if (e.key === "Escape") {
+        if (e.defaultPrevented) return;
         if (alert) {
           closeAlert(false);
           return;
@@ -7805,13 +7989,18 @@ export default function App() {
           return;
         }
         if (pluginDialogOpen) return;
+        // Leave the draft open so they can come back to it.
+        if (activePaneRef.current !== "mail") {
+          setActivePane("mail");
+          if (prefs.layout === "stack") setStackView("list");
+          return;
+        }
         if (prefs.layout === "stack" && stackView === "reader") {
           setStackView("list");
           return;
         }
         setSettingsOpen(false);
         setPluginsOpen(false);
-        closeCompose();
         setAddAccountOpen(false);
         setCheatOpen(false);
         setChord(null);
@@ -7824,7 +8013,6 @@ export default function App() {
         settingsOpen ||
         pluginsOpen ||
         pluginDialogOpen ||
-        composeOpen ||
         addAccountOpen ||
         cheatOpen
       )
@@ -7949,6 +8137,7 @@ export default function App() {
         onToggleCreator={toggleCreatorMode}
         onOpenNotification={(n) => {
           if (n.messageId) {
+            showMailPane();
             setWorkspace("mail");
             setSelectedId(n.messageId);
             setFolderId(
@@ -8009,6 +8198,7 @@ export default function App() {
             setFolderId("inbox");
             setFilter("all");
             setStackView("list");
+            showMailPane();
             clearChecks();
             if (!sameMailbox) {
               setSelectedId("");
@@ -8031,9 +8221,59 @@ export default function App() {
           onOpenPlugin={openPlugin}
         />
         <div
-          className="mail-workspace"
+          className={`mail-workspace${composeTabs.length > 0 ? " has-compose" : ""}`}
           hidden={(showAi && workspace === "agent") || workspace === "plugin"}
         >
+        {composeTabs.length > 0 && (
+          <div className="pane-tabs" role="tablist" aria-label="Mail and drafts">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activePane === "mail"}
+              className={`pane-tab${activePane === "mail" ? " active" : ""}`}
+              onClick={() => {
+                const leavingCompose = activePane !== "mail";
+                showMailPane();
+                if (leavingCompose && prefs.layout === "stack") {
+                  setStackView(selectedId ? "reader" : "list");
+                }
+              }}
+            >
+              <Mail size={13} strokeWidth={1.75} />
+              <span>{selected?.subject?.trim() || "Mail"}</span>
+            </button>
+            {composeTabs.map((tab) => (
+              <div
+                key={tab.id}
+                className={`pane-tab compose-tab${activePane === tab.id ? " active" : ""}`}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activePane === tab.id}
+                  className="pane-tab-main"
+                  onClick={() => {
+                    setWorkspace("mail");
+                    setActivePane(tab.id);
+                    setStackView("reader");
+                  }}
+                >
+                  <FileText size={13} strokeWidth={1.75} />
+                  <span>{tab.label}</span>
+                </button>
+                <button
+                  type="button"
+                  className="pane-tab-close"
+                  aria-label={`Close ${tab.label}`}
+                  title="Close and save draft"
+                  onClick={() => void closeComposeTab(tab.id, "save")}
+                >
+                  <X size={12} strokeWidth={2} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <Sidebar
           account={sidebarAccount}
           activeFolder={workspace === "snooze" ? "snoozed" : folderId}
@@ -8152,6 +8392,7 @@ export default function App() {
               .finally(() => setSyncing(false));
           }}
           onSelect={(id) => {
+            showMailPane();
             clearChecks();
             setFocusMessageId(null);
             setSelectedId(id);
@@ -8227,6 +8468,9 @@ export default function App() {
             }}
           />
         )}
+        <div className="reader-column">
+          <div className="reader-stage">
+            <div className="reader-stage-pane" hidden={activePane !== "mail"}>
         <ReadingPane
           message={selected}
           focusMessageId={focusMessageId}
@@ -8269,6 +8513,92 @@ export default function App() {
             setMail((prev) => mergeSentIntoList(prev, message));
           }}
         />
+            </div>
+            {composeTabs.map((tab) => (
+              <div
+                key={tab.id}
+                className="reader-stage-pane"
+                hidden={activePane !== tab.id}
+              >
+                <ComposePane
+                  account={account}
+                  accounts={accounts}
+                  prefs={prefs}
+                  showAi={showAi}
+                  live={live}
+                  initialTo={tab.to}
+                  initialCc={tab.cc}
+                  initialBcc={tab.bcc}
+                  initialSubject={tab.subject}
+                  initialBody={tab.body}
+                  title={tab.title}
+                  onSaveClose={() => void closeComposeTab(tab.id, "save")}
+                  onDismiss={() => void closeComposeTab(tab.id, "discard")}
+                  onSnapshot={(snap) => {
+                    composeSnaps.current.set(tab.id, snap);
+                  }}
+                  onLabel={(label) => {
+                    setComposeTabs((prev) => {
+                      const current = prev.find((item) => item.id === tab.id);
+                      if (!current || current.label === label) return prev;
+                      return prev.map((item) =>
+                        item.id === tab.id ? { ...item, label } : item,
+                      );
+                    });
+                  }}
+                  onQueued={(queueId, seconds) => {
+                    showToast(`Sending in ${seconds}s — press Z to undo`);
+                    const prevUndo = lastActionRef.current;
+                    lastActionRef.current = [];
+                    const handle = window.setTimeout(() => undefined, seconds * 1000);
+                    void handle;
+                    const cancel = () => {
+                      void bridgeCancelSend(queueId).then((ok) => {
+                        showToast(ok ? "Send cancelled" : "Already sent");
+                      });
+                    };
+                    lastActionRef.current = prevUndo;
+                    (
+                      window as unknown as { __intrayCancelSend?: () => void }
+                    ).__intrayCancelSend = cancel;
+                    window.setTimeout(() => {
+                      const w = window as unknown as {
+                        __intrayCancelSend?: () => void;
+                      };
+                      if (w.__intrayCancelSend === cancel) {
+                        delete w.__intrayCancelSend;
+                      }
+                    }, seconds * 1000 + 500);
+                  }}
+                  onSent={(message) => {
+                    setMail((prev) => {
+                      const idx = prev.findIndex((m) => m.id === message.id);
+                      if (idx === -1) return [message, ...prev];
+                      const next = [...prev];
+                      next[idx] = message;
+                      return next;
+                    });
+                    setSelectedId(message.id);
+                    showMailPane();
+                    showToast(
+                      message.openTracking
+                        ? "Sent · tracking recorded locally"
+                        : "Sent",
+                    );
+                    if (
+                      message.openTracking?.enabled &&
+                      (message.openTracking.opens?.length ?? 0) === 0
+                    ) {
+                      scheduleDemoOpen(message.id, 12_000, (tracking) => {
+                        applyOpenTracking(message.id, tracking);
+                      });
+                    }
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
         </div>
         {workspace === "plugin" && openPluginId ? (
           <PluginSurface
@@ -8289,6 +8619,7 @@ export default function App() {
             bridgeName={aiBridgeMeta[prefs.aiBridge]?.name ?? "Local"}
             prefs={prefs}
             onOpenMessage={(id) => {
+              showMailPane();
               const message = mail.find((item) => item.id === id);
               setFilter("all");
               setListFilter(EMPTY_LIST_FILTER);
@@ -8377,70 +8708,6 @@ export default function App() {
           onStatuses={setPluginStatuses}
           onClose={() => setPluginsOpen(false)}
           onToast={showToast}
-        />
-      )}
-      {composeOpen && (
-        <ComposeModal
-          key={composeNonce}
-          account={account}
-          accounts={accounts}
-          prefs={prefs}
-          showAi={showAi}
-          live={live}
-          initialTo={composeDraft.to}
-          initialCc={composeDraft.cc}
-          initialBcc={composeDraft.bcc}
-          initialSubject={composeDraft.subject}
-          initialBody={composeDraft.body}
-          title={composeDraft.title}
-          onClose={closeCompose}
-          onQueued={(queueId, seconds) => {
-            showToast(`Sending in ${seconds}s — press Z to undo`);
-            const prevUndo = lastActionRef.current;
-            lastActionRef.current = [];
-            const handle = window.setTimeout(() => undefined, seconds * 1000);
-            // Stash cancel on a one-shot undo via toast action pattern
-            void handle;
-            const cancel = () => {
-              void bridgeCancelSend(queueId).then((ok) => {
-                showToast(ok ? "Send cancelled" : "Already sent");
-              });
-            };
-            // Reuse undo shortcut: store a synthetic restore that cancels the queue
-            lastActionRef.current = prevUndo;
-            (
-              window as unknown as { __intrayCancelSend?: () => void }
-            ).__intrayCancelSend = cancel;
-            window.setTimeout(() => {
-              const w = window as unknown as {
-                __intrayCancelSend?: () => void;
-              };
-              if (w.__intrayCancelSend === cancel) {
-                delete w.__intrayCancelSend;
-              }
-            }, seconds * 1000 + 500);
-          }}
-          onSent={(message) => {
-            setMail((prev) => {
-              const idx = prev.findIndex((m) => m.id === message.id);
-              if (idx === -1) return [message, ...prev];
-              const next = [...prev];
-              next[idx] = message;
-              return next;
-            });
-            setSelectedId(message.id);
-            showToast(
-              message.openTracking ? "Sent · tracking recorded locally" : "Sent",
-            );
-            if (
-              message.openTracking?.enabled &&
-              (message.openTracking.opens?.length ?? 0) === 0
-            ) {
-              scheduleDemoOpen(message.id, 12_000, (tracking) => {
-                applyOpenTracking(message.id, tracking);
-              });
-            }
-          }}
         />
       )}
       {onboardingOpen && (

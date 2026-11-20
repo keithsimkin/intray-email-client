@@ -206,6 +206,8 @@ const api = {
       ) as Promise<MessageDto | null>,
     send: (draft: ComposeDraft) =>
       ipcRenderer.invoke("mail:send", draft) as Promise<MessageDto>,
+    saveDraft: (draft: ComposeDraft) =>
+      ipcRenderer.invoke("mail:saveDraft", draft) as Promise<MessageDto>,
     sendLater: (draft: ComposeDraft, delaySeconds: number) =>
       ipcRenderer.invoke(
         "mail:sendLater",
