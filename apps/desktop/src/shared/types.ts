@@ -170,6 +170,8 @@ export type DesktopNotifyPayload = {
   messageId?: string;
   /** Folder to open when the toast is clicked (e.g. sent for read receipts) */
   folderId?: string;
+  /** Clicking the toast asks, in the app, whether to download the update. */
+  updateAsk?: "download";
 };
 
 export type BadgePayload = {

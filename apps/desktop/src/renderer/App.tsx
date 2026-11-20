@@ -172,6 +172,7 @@ import {
 } from "./shortcuts";
 import { SettingsModal } from "./SettingsModal";
 import { updateControl } from "./updateControl";
+import { downloadUpdateAsk, restartUpdateAsk } from "../shared/updateAsk";
 import {
   accountDtoToUi,
   bridgeAccounts,
@@ -183,6 +184,7 @@ import {
   bridgeGetMail,
   bridgeHasRealAccounts,
   bridgeInstallUpdate,
+  bridgeOnUpdateAsk,
   bridgeListContacts,
   bridgeListLabels,
   bridgeListMail,
@@ -710,7 +712,7 @@ function saveCustomFolders(names: string[]) {
 
 type AppNotification = {
   id: string;
-  kind: "snooze" | "opened" | "meeting" | "ai" | "sync";
+  kind: "snooze" | "opened" | "meeting" | "ai" | "sync" | "update";
   title: string;
   body: string;
   time: string;
@@ -720,6 +722,10 @@ type AppNotification = {
 };
 
 const NOTIFICATIONS_KEY = "intray.notifications.v1";
+/** Versions whose download question was already answered this session. */
+const answeredUpdateDownloads = new Set<string>();
+/** Versions already added to the in-app notification list. */
+const notedUpdateDownloads = new Set<string>();
 
 function notifTimeLabel(d = new Date()): string {
   return d.toLocaleTimeString(undefined, {
@@ -749,7 +755,8 @@ function loadNotifications(): AppNotification[] {
             item.kind === "opened" ||
             item.kind === "meeting" ||
             item.kind === "ai" ||
-            item.kind === "sync"),
+            item.kind === "sync" ||
+            item.kind === "update"),
       )
       .slice(0, 40);
   } catch {
@@ -862,6 +869,8 @@ function NotificationsMenu({
                   <Calendar size={14} strokeWidth={1.75} />
                 ) : n.kind === "ai" ? (
                   <Sparkles size={14} strokeWidth={1.75} />
+                ) : n.kind === "update" ? (
+                  <Download size={14} strokeWidth={1.75} />
                 ) : (
                   <RefreshCw size={14} strokeWidth={1.75} />
                 )}
@@ -1140,29 +1149,6 @@ function AccountRail({
       <div className="rail-spacer" />
       <div className="rail-section">
         <span className="rail-label">Apps</span>
-        {update.visible && (
-          <button
-            type="button"
-            className={`rail-btn rail-update${update.action === "restart" ? " ready" : ""}`}
-            aria-label={update.label}
-            title={update.label}
-            disabled={update.action === "busy"}
-            onClick={
-              update.action === "restart" ? onRestartUpdate : onDownloadUpdate
-            }
-          >
-            {update.action === "restart" ? (
-              <RotateCw size={16} strokeWidth={1.75} />
-            ) : update.action === "busy" ? (
-              <Loader2 size={16} strokeWidth={1.75} className="spin" />
-            ) : (
-              <Download size={16} strokeWidth={1.75} />
-            )}
-            {typeof update.percent === "number" && (
-              <span className="badge">{update.percent}%</span>
-            )}
-          </button>
-        )}
         {plugins.map((plugin) => {
           const open = activePluginId === plugin.id;
           return (
@@ -1207,6 +1193,29 @@ function AccountRail({
         >
           <Settings size={16} strokeWidth={1.75} />
         </button>
+        {update.visible && (
+          <button
+            type="button"
+            className={`rail-btn rail-update${update.action === "restart" ? " ready" : ""}`}
+            aria-label={update.label}
+            title={update.label}
+            disabled={update.action === "busy"}
+            onClick={
+              update.action === "restart" ? onRestartUpdate : onDownloadUpdate
+            }
+          >
+            {update.action === "restart" ? (
+              <RotateCw size={16} strokeWidth={1.75} />
+            ) : update.action === "busy" ? (
+              <Loader2 size={16} strokeWidth={1.75} className="spin" />
+            ) : (
+              <Download size={16} strokeWidth={1.75} />
+            )}
+            {typeof update.percent === "number" && (
+              <span className="badge">{update.percent}%</span>
+            )}
+          </button>
+        )}
       </div>
     </aside>
   );
@@ -6784,8 +6793,65 @@ export default function App() {
     }
   };
 
+  const updateAskOpen = useRef(false);
+  const updateStatusRef = useRef(updateStatus);
+  updateStatusRef.current = updateStatus;
+  const askToDownloadUpdateRef = useRef<
+    (version: string, force?: boolean) => Promise<void>
+  >(async () => undefined);
+
+  const askToDownloadUpdate = async (version: string, force = false) => {
+    const trimmed = version.trim();
+    if (!trimmed || updateAskOpen.current) return;
+    if (!force && answeredUpdateDownloads.has(trimmed)) return;
+    updateAskOpen.current = true;
+    try {
+      const ok = await askConfirm({
+        tone: "info",
+        ...downloadUpdateAsk(trimmed),
+      });
+      answeredUpdateDownloads.add(trimmed);
+      if (ok) await downloadAppUpdate();
+    } finally {
+      updateAskOpen.current = false;
+    }
+  };
+  askToDownloadUpdateRef.current = askToDownloadUpdate;
+
+  useEffect(() => {
+    if (updateStatus.state !== "available") return;
+    const version = updateStatus.availableVersion?.trim();
+    if (!version || answeredUpdateDownloads.has(version) || updateAskOpen.current) {
+      return;
+    }
+    if (!notedUpdateDownloads.has(version)) {
+      notedUpdateDownloads.add(version);
+      const ask = downloadUpdateAsk(version);
+      pushAppNotification({
+        id: `update-${version}`,
+        kind: "update",
+        title: ask.title,
+        body: ask.body,
+      });
+    }
+    void askToDownloadUpdate(version);
+  }, [updateStatus.state, updateStatus.availableVersion]);
+
+  useEffect(() => {
+    return bridgeOnUpdateAsk(() => {
+      const status = updateStatusRef.current;
+      if (status.state !== "available") return;
+      void askToDownloadUpdateRef.current(status.availableVersion ?? "", true);
+    });
+  }, []);
+
   const restartForUpdate = async () => {
-    // The main process confirms the restart, then installs without setup prompts.
+    if (updateStatus.state !== "ready") return;
+    const ok = await askConfirm({
+      tone: "info",
+      ...restartUpdateAsk(updateStatus.availableVersion),
+    });
+    if (!ok) return;
     try {
       await bridgeInstallUpdate();
     } catch {
@@ -8151,6 +8217,11 @@ export default function App() {
             setStackView("reader");
           } else if (n.kind === "ai") {
             openAgent();
+          } else if (n.kind === "update") {
+            const version = updateStatusRef.current.availableVersion ?? "";
+            if (updateStatusRef.current.state === "available") {
+              void askToDownloadUpdateRef.current(version, true);
+            }
           }
           setNotifications((prev) =>
             prev.map((item) =>
@@ -8698,6 +8769,9 @@ export default function App() {
             } else {
               setAccounts(merge);
             }
+          }}
+          onInstallUpdate={() => {
+            void restartForUpdate();
           }}
           onClose={() => setSettingsOpen(false)}
         />

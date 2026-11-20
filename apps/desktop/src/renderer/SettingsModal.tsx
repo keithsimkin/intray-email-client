@@ -49,7 +49,6 @@ import {
   bridgeChooseAccountAvatar,
   bridgeClearAccountAvatar,
   bridgeDownloadUpdate,
-  bridgeInstallUpdate,
   bridgeGetMailtoHandler,
   bridgeLaunchAtLogin,
   bridgeMcpStart,
@@ -493,6 +492,7 @@ export function SettingsModal({
   onReconnectAccount,
   onRemoveAccount,
   onUpdateAccount,
+  onInstallUpdate,
   onClose,
 }: {
   prefs: Preferences;
@@ -508,6 +508,8 @@ export function SettingsModal({
   onReconnectAccount?: (account: Account) => void;
   onRemoveAccount?: (accountId: string) => void;
   onUpdateAccount?: (account: Account) => void;
+  /** In-app confirm, then a silent install. No native Windows dialog. */
+  onInstallUpdate?: () => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
@@ -2984,19 +2986,14 @@ export function SettingsModal({
 
                 <Block
                   title="Updates"
-                  hint="Installed builds check GitHub for a newer release. Download it when you’re ready, then restart to install without setup prompts."
+                  hint="Installed builds check GitHub for a newer release. Intray asks before downloading. Restarting installs in the background, with no Windows setup window."
                   action={
                     updateStatus.state === "ready" ? (
                       <button
                         type="button"
                         className="settings-section-btn"
-                        disabled={updateBusy}
-                        onClick={() => {
-                          setUpdateBusy(true);
-                          void bridgeInstallUpdate().finally(() =>
-                            setUpdateBusy(false),
-                          );
-                        }}
+                        disabled={updateBusy || !onInstallUpdate}
+                        onClick={() => onInstallUpdate?.()}
                       >
                         <RotateCw size={14} strokeWidth={1.75} />
                         Restart and install
