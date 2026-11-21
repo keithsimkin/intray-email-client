@@ -1,32 +1,7 @@
 import Image from "next/image";
 import { ArrowUpRight, ShieldCheck } from "lucide-react";
-import { siGithub } from "simple-icons";
+import { OsDownload } from "./platform";
 import { SupportCheckoutCards } from "./SupportCheckout";
-import { GITHUB_URL } from "./site";
-
-function SimpleIcon({
-  icon,
-  size = 16,
-  className = "",
-}: {
-  icon: { path: string; title: string };
-  size?: number;
-  className?: string;
-}) {
-  return (
-    <svg
-      role="img"
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      className={className}
-      aria-hidden
-    >
-      <title>{icon.title}</title>
-      <path d={icon.path} fill="currentColor" />
-    </svg>
-  );
-}
 
 export function Pricing() {
   return (
@@ -37,14 +12,16 @@ export function Pricing() {
             Pricing
           </p>
           <h2 className="mt-4 font-display text-[clamp(2rem,4.5vw,3.5rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
-            Free to download
+            Simple pricing.
+            <br />
+            Pick your plan.
           </h2>
           <p className="mt-4 max-w-md text-sm leading-relaxed text-[#9ca3af] md:text-[15px]">
-            There is no mail plan and no paid tier. Use Intray free. If it earns a place in
-            your tray, $10 a month or a one-time gift keeps the builds shipping.
+            Subscribe for $10 a month, or buy a lifetime license for $75. One desktop app for
+            every inbox — no seat tax, no mail relay.
           </p>
           <p className="mt-6 text-xs text-[#8a8f98]">
-            Windows 10/11 · macOS Apple Silicon (untested) · no subscription required
+            Windows 10/11 · macOS Apple Silicon
           </p>
         </div>
         <SupportCheckoutCards className="mt-0" />
@@ -53,20 +30,20 @@ export function Pricing() {
   );
 }
 
-export function OpenSource() {
+export function Security() {
   return (
-    <section id="open-source" className="landing-light scroll-mt-24 px-5 pb-8 pt-2 md:pb-12">
+    <section id="security" className="landing-light scroll-mt-24 px-5 pb-8 pt-2 md:pb-12">
       <div className="relative mx-auto max-w-6xl overflow-hidden rounded-[1.75rem] border border-white/10 bg-[#121214] pt-10 md:pt-14">
         <div className="grid items-stretch gap-8 lg:grid-cols-[0.95fr_1.05fr]">
           <div className="px-6 pb-12 md:px-12 md:pb-14">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#c8f04a]">
               <ShieldCheck size={14} strokeWidth={2.2} />
-              Open source · security first
+              Private by design
             </div>
 
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <h2 className="font-display text-[clamp(2rem,4.5vw,3.5rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
-                Email is too important to trust a black box
+                Your mail stays on your machine
               </h2>
               <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#c8f04a] text-[#111]">
                 <ArrowUpRight size={16} strokeWidth={2.2} />
@@ -74,21 +51,15 @@ export function OpenSource() {
             </div>
 
             <p className="mt-4 max-w-md text-sm leading-relaxed text-[#9ca3af] md:text-[15px]">
-              That&apos;s why Intray is open source — audit the code, verify there&apos;s no mail
-              relay, and run it on your machine.
+              Intray connects straight to your providers over TLS. There is no Intray mail
+              server in the middle — and AI talks only to the model you choose.
             </p>
 
             <div className="mt-6 flex flex-wrap gap-3">
-              <a
-                href={GITHUB_URL}
-                className="inline-flex items-center gap-2.5 rounded-full border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:border-white/35"
-              >
-                <SimpleIcon icon={siGithub} size={17} />
-                Star us on GitHub
-              </a>
+              <OsDownload labeled />
             </div>
             <p className="mt-4 text-xs text-[#8a8f98]">
-              Windows 10/11 · macOS Apple Silicon (untested) · Electron · open source · no mail relay
+              Windows 10/11 · macOS Apple Silicon · no mail relay
             </p>
           </div>
 

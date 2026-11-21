@@ -93,6 +93,7 @@ export type MessageRow = {
   from_email: string;
   to_json: string;
   cc_json: string;
+  bcc_json: string;
   date_ms: number;
   unread: number;
   important: number;
@@ -463,6 +464,7 @@ export function upsertMessage(
     existing.from_email === row.from_email &&
     existing.to_json === row.to_json &&
     existing.cc_json === row.cc_json &&
+    existing.bcc_json === row.bcc_json &&
     existing.date_ms === row.date_ms &&
     existing.unread === unread &&
     existing.important === important &&
@@ -479,9 +481,9 @@ export function upsertMessage(
   run(
     `INSERT INTO messages (
        id, account_id, thread_id, provider_id, folder, subject, snippet,
-       from_name, from_email, to_json, cc_json, date_ms, unread, important,
+       from_name, from_email, to_json, cc_json, bcc_json, date_ms, unread, important,
        starred, has_attachment, label_ids_json, ui_label_id, snooze_until_ms, internal_date
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(account_id, provider_id) DO UPDATE SET
        thread_id=excluded.thread_id,
        folder=excluded.folder,
@@ -491,6 +493,7 @@ export function upsertMessage(
        from_email=excluded.from_email,
        to_json=excluded.to_json,
        cc_json=excluded.cc_json,
+       bcc_json=excluded.bcc_json,
        date_ms=excluded.date_ms,
        unread=excluded.unread,
        important=excluded.important,
@@ -512,6 +515,7 @@ export function upsertMessage(
       row.from_email,
       row.to_json,
       row.cc_json,
+      row.bcc_json,
       row.date_ms,
       unread,
       important,

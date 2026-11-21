@@ -74,8 +74,8 @@ function wireUpdaterEvents(): void {
   if (eventsWired) return;
   eventsWired = true;
 
-  // Downloads are user-triggered from the rail icon or Settings → About, and
-  // installs only happen through the confirmed restart action below.
+  // Downloads are user-triggered from the rail icon or Settings → About.
+  // Installs only happen after the renderer confirms via the in-app dialog.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   // Public GitHub Releases — no token required for checking/downloading.
@@ -195,7 +195,12 @@ export async function checkForAppUpdates(
 }
 
 export async function downloadAppUpdate(): Promise<AppUpdateStatus> {
-  if (!app.isPackaged || status.state !== "available") return getUpdateStatus();
+  if (!app.isPackaged) return getUpdateStatus();
+  // Allow retry after a failed download when we still know which version to fetch.
+  const canStart =
+    status.state === "available" ||
+    (status.state === "error" && Boolean(status.availableVersion));
+  if (!canStart) return getUpdateStatus();
 
   try {
     setStatus({ state: "downloading", downloadPercent: 0, error: undefined });
@@ -218,6 +223,15 @@ export async function downloadAppUpdate(): Promise<AppUpdateStatus> {
  */
 export function quitAndInstallUpdate(): boolean {
   if (!app.isPackaged || status.state !== "ready") return false;
+
+  // Confirmation lives in the renderer (in-app AlertDialog). Broadcast
+  // "installing" so the progress card stays visible until quitAndInstall
+  // tears the window down and relaunches.
+  setStatus({
+    state: "installing",
+    downloadPercent: 100,
+    error: undefined,
+  });
 
   // isSilent=true passes /S to NSIS (no wizard). isForceRunAfter=true relaunches.
   autoUpdater.quitAndInstall(true, true);

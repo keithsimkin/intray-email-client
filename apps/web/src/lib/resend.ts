@@ -45,8 +45,8 @@ export async function sendSupportThankYou(opts: {
 
   const subject =
     opts.kind === "subscription"
-      ? "Thanks for supporting Intray monthly"
-      : "Thanks for supporting Intray";
+      ? "Your Intray monthly license"
+      : "Your Intray lifetime license";
 
   const { data, error } = await resend.emails.send(
     {
@@ -77,8 +77,8 @@ export async function sendSupportThankYou(opts: {
         to: [supportTo],
         subject:
           opts.kind === "subscription"
-            ? `Intray: new monthly support${amountLabel ? ` (${amountLabel})` : ""}`
-            : `Intray: new one-time support${amountLabel ? ` (${amountLabel})` : ""}`,
+            ? `Intray: new monthly license ($10/mo)${amountLabel ? ` · ${amountLabel}` : ""}`
+            : `Intray: new lifetime license ($75)${amountLabel ? ` · ${amountLabel}` : ""}`,
         react: SupportOwnerAlert({
           kind: opts.kind,
           customerName: opts.name,

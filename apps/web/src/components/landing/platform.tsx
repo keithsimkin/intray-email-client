@@ -28,7 +28,7 @@ const OFFERS: Record<DesktopPlatform, DownloadOffer> = {
     href: MAC_DOWNLOAD_URL,
     label: "Download for Mac",
     icon: "/logos/apple.png",
-    note: "The Mac build hasn’t been tested yet.",
+    note: "Follows the latest Mac release.",
   },
 };
 

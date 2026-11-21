@@ -284,6 +284,10 @@ function updateStatusCopy(status: AppUpdateStatus): string {
       return status.availableVersion
         ? `Intray ${status.availableVersion} is ready. Restart to install.`
         : "Update ready. Restart to install.";
+    case "installing":
+      return status.availableVersion
+        ? `Installing Intray ${status.availableVersion}… the app will reopen shortly.`
+        : "Installing update… the app will reopen shortly.";
     case "not-available":
       return "You’re on the latest release.";
     case "error":
@@ -492,6 +496,7 @@ export function SettingsModal({
   onReconnectAccount,
   onRemoveAccount,
   onUpdateAccount,
+  onDownloadUpdate,
   onInstallUpdate,
   onClose,
 }: {
@@ -508,8 +513,10 @@ export function SettingsModal({
   onReconnectAccount?: (account: Account) => void;
   onRemoveAccount?: (accountId: string) => void;
   onUpdateAccount?: (account: Account) => void;
+  /** Shared with the rail so download/retry and restart confirmation stay in-app. */
+  onDownloadUpdate?: () => void | Promise<void>;
   /** In-app confirm, then a silent install. No native Windows dialog. */
-  onInstallUpdate?: () => void;
+  onInstallUpdate?: () => void | Promise<void>;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
@@ -2993,25 +3000,36 @@ export function SettingsModal({
                         type="button"
                         className="settings-section-btn"
                         disabled={updateBusy || !onInstallUpdate}
-                        onClick={() => onInstallUpdate?.()}
+                        onClick={() => {
+                          setUpdateBusy(true);
+                          void Promise.resolve(onInstallUpdate?.()).finally(() =>
+                            setUpdateBusy(false),
+                          );
+                        }}
                       >
                         <RotateCw size={14} strokeWidth={1.75} />
                         Restart and install
                       </button>
-                    ) : updateStatus.state === "available" ? (
+                    ) : updateStatus.state === "available" ||
+                      (updateStatus.state === "error" &&
+                        Boolean(updateStatus.availableVersion)) ? (
                       <button
                         type="button"
                         className="settings-section-btn"
                         disabled={updateBusy}
                         onClick={() => {
                           setUpdateBusy(true);
-                          void bridgeDownloadUpdate()
-                            .then(setUpdateStatus)
-                            .finally(() => setUpdateBusy(false));
+                          void Promise.resolve(
+                            onDownloadUpdate
+                              ? onDownloadUpdate()
+                              : bridgeDownloadUpdate().then(setUpdateStatus),
+                          ).finally(() => setUpdateBusy(false));
                         }}
                       >
                         <Download size={14} strokeWidth={1.75} />
-                        Download update
+                        {updateStatus.state === "error"
+                          ? "Retry download"
+                          : "Download update"}
                       </button>
                     ) : (
                       <button
@@ -3021,6 +3039,7 @@ export function SettingsModal({
                           updateBusy ||
                           updateStatus.state === "checking" ||
                           updateStatus.state === "downloading" ||
+                          updateStatus.state === "installing" ||
                           updateStatus.state === "disabled"
                         }
                         onClick={() => {
@@ -3041,20 +3060,33 @@ export function SettingsModal({
                   </p>
                   {typeof updateStatus.downloadPercent === "number" &&
                     (updateStatus.state === "downloading" ||
+                      updateStatus.state === "installing" ||
                       updateStatus.state === "available") && (
                       <div
-                        className="settings-update-progress"
+                        className={`settings-update-progress${
+                          updateStatus.state === "installing"
+                            ? " indeterminate"
+                            : ""
+                        }`}
                         role="progressbar"
                         aria-valuemin={0}
                         aria-valuemax={100}
-                        aria-valuenow={updateStatus.downloadPercent}
+                        aria-valuenow={
+                          updateStatus.state === "installing"
+                            ? undefined
+                            : updateStatus.downloadPercent
+                        }
                         aria-label="Update download progress"
                       >
                         <div
                           className="settings-update-progress-bar"
-                          style={{
-                            width: `${Math.max(2, updateStatus.downloadPercent)}%`,
-                          }}
+                          style={
+                            updateStatus.state === "installing"
+                              ? undefined
+                              : {
+                                  width: `${Math.max(2, updateStatus.downloadPercent)}%`,
+                                }
+                          }
                         />
                       </div>
                     )}

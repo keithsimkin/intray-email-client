@@ -280,6 +280,8 @@ export type ComposeDraft = {
   bodyText: string;
   bodyHtml?: string;
   replyToMessageId?: string;
+  /** Local draft row this compose session is editing, if any. */
+  draftMessageId?: string;
   attachments?: ComposeAttachment[];
 };
 
@@ -364,6 +366,7 @@ export type AppUpdateState =
   | "not-available"
   | "downloading"
   | "ready"
+  | "installing"
   | "error"
   | "disabled";
 

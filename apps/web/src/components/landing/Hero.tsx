@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 import Image from "next/image";
-import { siClaude, siGithub, siGooglegemini, siOllama } from "simple-icons";
+import { siClaude, siGooglegemini, siOllama } from "simple-icons";
 import { IntrayMark } from "../Brand";
 import { OsDownload } from "./platform";
-import { GITHUB_URL } from "./site";
 
 const mailProviders = [
   { src: "/logos/gmail.png", name: "Gmail" },
@@ -40,15 +39,6 @@ const aiProviders = [
     path: siOllama.path,
   },
 ] as const;
-
-function GithubIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg role="img" viewBox="0 0 24 24" width={size} height={size} aria-hidden>
-      <title>{siGithub.title}</title>
-      <path d={siGithub.path} fill="currentColor" />
-    </svg>
-  );
-}
 
 function ProviderTile({ children, label }: { children: ReactNode; label: string }) {
   return (
@@ -165,18 +155,19 @@ export function Hero() {
       />
       <div className="relative mx-auto flex max-w-6xl flex-col items-center px-5 pt-4 text-center md:pt-6">
         <p className="brand-rise text-[11px] font-semibold uppercase tracking-[0.22em] text-[#c8f04a]/80 md:text-xs">
-          Intray · Easy for Email
+          Your AI · Your inboxes
         </p>
 
         <h1 className="brand-rise brand-rise-delay-1 mt-3 max-w-[16ch] font-display text-[clamp(2.4rem,6.5vw,4.2rem)] uppercase leading-[0.92] tracking-[0.01em] text-white">
-          Email built for the AI age
+          Get ahead of every inbox
         </h1>
 
         <ProviderRail />
 
-        <p className="brand-rise brand-rise-delay-2 relative z-10 mt-6 max-w-lg text-sm leading-relaxed text-[#9ca3af] md:text-base">
-          Your AI subscriptions meet every inbox in one open-source desktop app for Windows and
-          macOS. Superhuman speed, no mail relay.
+        <p className="brand-rise brand-rise-delay-2 relative z-10 mt-6 max-w-xl text-sm leading-relaxed text-[#9ca3af] md:text-base">
+          Unify Gmail, Outlook, iCloud, and more — then draft, summarize, and triage with AI you
+          already pay for: Claude, OpenAI, Grok, Gemini, or local Ollama. Bring your own keys or
+          subscription. No Intray AI tax. No mail relay. MCP for Cursor and other agents.
         </p>
 
         <div
@@ -184,14 +175,6 @@ export function Hero() {
           className="brand-rise brand-rise-delay-3 relative z-10 mt-7 flex flex-col items-center gap-3"
         >
           <OsDownload labeled showNote />
-          <a
-            href={GITHUB_URL}
-            className="inline-flex items-center gap-2 text-sm font-semibold text-[#9ca3af] transition hover:text-white"
-          >
-            <GithubIcon />
-            Steal our code (legally)
-            <span aria-hidden>↗</span>
-          </a>
         </div>
 
         <div className="brand-rise brand-rise-delay-4 relative z-10 mt-9 w-full max-w-5xl md:mt-11">

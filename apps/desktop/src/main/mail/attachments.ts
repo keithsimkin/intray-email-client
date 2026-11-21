@@ -253,6 +253,65 @@ export function rememberAttachments(
   writeMetas(messageId, metas);
 }
 
+/**
+ * Persist compose attachments on a saved draft. Unlike `rememberAttachments`,
+ * this replaces the previous set so editing a draft cannot leave stale files.
+ */
+export function replaceDraftAttachments(
+  messageId: string,
+  files: ComposeAttachment[] | undefined,
+): void {
+  const list = files ?? [];
+  const metas: StoredAttachment[] = [];
+  list.forEach((file, index) => {
+    const described = describeAttachment({
+      filename: file.filename,
+      contentType: file.contentType,
+      index,
+    });
+    const bytes = Buffer.from(file.contentBase64 || "", "base64");
+    const size = bytes.length || file.size || 0;
+    const tooBig = size > ATTACHMENT_BYTE_LIMIT;
+    let cached = false;
+    if (bytes.length > 0 && !tooBig) {
+      writeCache(messageId, String(index), bytes, described.name);
+      cached = true;
+    }
+    metas.push({
+      id: String(index),
+      name: described.name,
+      contentType: described.contentType,
+      size,
+      cached,
+      ...(tooBig ? { tooBig: true } : {}),
+    });
+  });
+  writeMetas(messageId, metas);
+}
+
+/** Rebuild compose attachments for a saved draft from the local cache. */
+export function draftComposeAttachments(
+  messageId: string,
+): ComposeAttachment[] {
+  const metas = readMetas(messageId);
+  if (!metas?.length) return [];
+  const files: ComposeAttachment[] = [];
+  for (const meta of metas) {
+    if (!meta.cached || meta.tooBig) continue;
+    const path = cacheFile(messageId, meta.id, meta.name);
+    if (!existsSync(path)) continue;
+    const bytes = readFileSync(path);
+    if (!bytes.length) continue;
+    files.push({
+      filename: meta.name,
+      contentType: meta.contentType,
+      contentBase64: bytes.toString("base64"),
+      size: bytes.length,
+    });
+  }
+  return files;
+}
+
 export function attachmentDtos(
   json: string | null | undefined,
 ): AttachmentDto[] | undefined {

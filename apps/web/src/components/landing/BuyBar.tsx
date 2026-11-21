@@ -6,20 +6,24 @@ import { SupportCheckoutButton } from "./SupportCheckout";
 
 const perks = [
   {
-    title: "Open source on purpose",
-    body: "Email is sensitive — audit the code, prove there's no relay.",
+    title: "One tray, every inbox",
+    body: "Gmail, Outlook, iCloud, IMAP — triage once, reply from the right account.",
   },
   {
     title: "Bring your AI",
-    body: "Claude, OpenAI, Grok, Gemini, or Ollama — your keys, your sub.",
+    body: "Local Ollama or the Claude / OpenAI / Grok / Gemini sub you already pay for.",
+  },
+  {
+    title: "MCP ready",
+    body: "Hook Cursor and other agents into your inbox on localhost.",
   },
   {
     title: "Private by design",
-    body: "Straight to Gmail, Outlook, iCloud, IMAP. No Intray servers.",
+    body: "Straight to your providers over TLS. No Intray mail servers.",
   },
   {
-    title: "Support if it helps",
-    body: "$10/mo or a one-time gift — keep the project shipping.",
+    title: "Simple plans",
+    body: "$10/mo or a $75 lifetime license — pick what fits.",
   },
 ] as const;
 
@@ -85,7 +89,7 @@ export function BuyBar() {
           <div className="min-h-0 overflow-hidden">
             <div className="px-5 pb-2 pt-5">
               <p className="text-[13px] font-medium text-white/55">
-                Free and open source — support optional
+                $10/mo or $75 lifetime
               </p>
               <ul className="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2">
                 {perks.map((p) => (
@@ -110,7 +114,7 @@ export function BuyBar() {
                 ))}
               </ul>
               <p className="mt-4 border-t border-white/[0.08] pt-3 text-[13px] text-white/55">
-                Fork, audit, and build with us — or chip in $10/mo or a one-time gift.
+                Subscribe for $10/mo, or unlock Intray forever with a $75 lifetime license.
               </p>
             </div>
           </div>
@@ -134,7 +138,7 @@ export function BuyBar() {
             <div className="min-w-0 flex-1 leading-tight">
               <div className="truncate text-sm font-semibold text-white">Intray for Windows</div>
               <div className="truncate text-xs text-white/55">
-                Open source · Mac untested · $10/mo or give once
+                $10/mo · $75 lifetime
               </div>
             </div>
           </button>
@@ -142,7 +146,7 @@ export function BuyBar() {
             plan="monthly"
             className="inline-flex h-10 shrink-0 items-center rounded-full bg-[#760E0A] px-4 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-70 sm:px-5"
           >
-            Support · $10/mo
+            Get Intray · $10/mo
           </SupportCheckoutButton>
         </div>
       </div>

@@ -2752,6 +2752,119 @@ button {
   box-shadow: var(--shadow-menu);
 }
 
+/* —— In-app update progress card —— */
+.update-progress-card {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 70;
+  width: min(340px, calc(100vw - 32px));
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: var(--menu-bg);
+  color: var(--fg);
+  box-shadow: var(--shadow-menu);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.update-progress-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.update-progress-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.update-progress-card.tone-error .update-progress-icon {
+  background: #ff5c5c22;
+  color: #ff7a7a;
+}
+
+.update-progress-card.tone-ready .update-progress-icon {
+  background: #3dd68c22;
+  color: #3dd68c;
+}
+
+.update-progress-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-progress-copy strong {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  margin-bottom: 2px;
+}
+
+.update-progress-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.update-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #ffffff12;
+  overflow: hidden;
+}
+
+.update-progress-track.indeterminate .update-progress-bar {
+  width: 40%;
+  animation: update-progress-slide 1.1s ease-in-out infinite;
+}
+
+.update-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent, var(--blue));
+  transition: width 160ms ease;
+}
+
+@keyframes update-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.update-progress-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+[data-theme="light"] .update-progress-card {
+  background: #fff;
+}
+
+[data-theme="light"] .update-progress-track {
+  background: #00000010;
+}
+
+.reduce-motion .update-progress-track.indeterminate .update-progress-bar {
+  animation: none;
+  width: 100%;
+  opacity: 0.55;
+}
+
 /* —— Confirm / alert dialogs —— */
 .alert-root {
   z-index: 80;
@@ -3458,6 +3571,14 @@ button {
 .thread-msg:first-child {
   border-top: 0;
   padding-top: 0;
+}
+
+.thread-msg.collapsed {
+  cursor: pointer;
+}
+
+.thread-msg.collapsed:hover {
+  background: color-mix(in srgb, var(--bg-hover) 65%, transparent);
 }
 
 .thread-msg-top {
@@ -8398,6 +8519,11 @@ button.keycap,
   overflow: hidden;
 }
 
+.settings-update-progress.indeterminate .settings-update-progress-bar {
+  width: 40%;
+  animation: update-progress-slide 1.1s ease-in-out infinite;
+}
+
 [data-theme="light"] .settings-update-progress {
   background: #00000010;
 }
@@ -8407,6 +8533,12 @@ button.keycap,
   border-radius: inherit;
   background: var(--accent, #5b8def);
   transition: width 160ms ease;
+}
+
+.reduce-motion .settings-update-progress.indeterminate .settings-update-progress-bar {
+  animation: none;
+  width: 100%;
+  opacity: 0.55;
 }
 
 .account-credential-card {

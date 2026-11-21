@@ -56,38 +56,38 @@ type Feature = {
 
 const features: Feature[] = [
   {
-    title: "Unified inbox",
-    body: "Gmail, Outlook, iCloud, and IMAP in one tray — Superhuman-style triage without the subscription tax.",
+    title: "One inbox for everything",
+    body: "Gmail, Outlook, iCloud, and IMAP in a single tray — triage once, reply from the right account.",
     span: "lg:col-span-2",
     visual: <AllInboxesVisual />,
   },
   {
-    title: "Power tools",
-    body: "Keyboard shortcuts, snooze, labels, undo send, and Important — built for speed on Windows.",
+    title: "Keyboard-first speed",
+    body: "Shortcuts, snooze, labels, undo send, and Important — fly through mail without reaching for the mouse.",
     span: "",
-    visual: <ImportantVisual />,
+    visual: <ShortcutsVisual />,
   },
   {
-    title: "OTP in one click",
-    body: "Copy codes from the toast before the window even focuses.",
-    span: "",
-    visual: <OtpVisual />,
-  },
-  {
-    title: "Your AI, your keys",
-    body: "Bring Claude, OpenAI, Grok, Gemini, or Ollama — draft, summarize, and label threads with the subscription you already have. Mail stays on your machine.",
+    title: "Bring your own AI",
+    body: "Use the subscription you already pay for — Claude, OpenAI, Grok, Gemini — or run local Ollama. Your keys, your models. No Intray AI tax.",
     span: "lg:col-span-2",
     visual: <AiProvidersVisual />,
   },
   {
-    title: "Any mailbox",
+    title: "MCP for your agents",
+    body: "Connect Cursor and other MCP clients to search mail, read threads, and list accounts — on your machine, loopback only.",
+    span: "",
+    visual: <McpVisual />,
+  },
+  {
+    title: "Every account you use",
     body: "Gmail, Outlook, iCloud, Yahoo, Fastmail, and any IMAP — OAuth or app password.",
     span: "lg:col-span-2",
     visual: <ProvidersVisual />,
   },
   {
-    title: "No mail relay",
-    body: "TLS straight to providers. AI talks only to the model you pick — never through an Intray cloud.",
+    title: "No mail in the middle",
+    body: "TLS straight to your providers. AI talks only to the model you pick — never through an Intray cloud.",
     span: "",
     visual: <PrivacyVisual />,
   },
@@ -99,13 +99,14 @@ export function UnifiedFeatures() {
       <div className="mx-auto max-w-6xl">
         <div className="grid items-start gap-5 md:grid-cols-2 md:gap-10">
           <h2 className="font-display text-[clamp(2rem,4.5vw,3.25rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
-            Features.
+            Manage priorities,
             <br />
-            Everything your tray needs.
+            not inboxes.
           </h2>
           <p className="max-w-md text-sm leading-relaxed text-[#9ca3af] md:pt-2 md:text-[15px]">
-            Unified mail, Superhuman-grade power tools, and AI you already subscribe to — Claude,
-            OpenAI, Grok, Gemini, or local Ollama — wired into one Windows inbox you can audit.
+            Split the noise from what matters, move with the keyboard, and put AI to work with
+            the local model or paid subscription you already have — plus MCP for Cursor and other
+            agents.
           </p>
         </div>
 
@@ -176,64 +177,68 @@ function AllInboxesVisual() {
   );
 }
 
-function ImportantVisual() {
+function KeyCap({ children }: { children: ReactNode }) {
   return (
-    <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
-      <div
-        className="absolute left-5 right-0 top-2 bottom-0 overflow-hidden rounded-tl-xl border sm:left-6 sm:top-3"
-        style={{ borderColor: L.line, background: L.elevated }}
-      >
-        <DemoListPane filter="important" />
-      </div>
-    </div>
+    <span
+      className="inline-flex min-w-[1.55rem] items-center justify-center rounded-[7px] border px-1.5 py-1 font-mono text-[11px] font-semibold leading-none"
+      style={{
+        borderColor: "rgba(255,255,255,0.14)",
+        background: "linear-gradient(180deg, #2a2a30 0%, #1c1c21 100%)",
+        color: L.fg,
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 0 rgba(0,0,0,0.35)",
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
-function OtpVisual() {
+function ShortcutsVisual() {
+  const rows = [
+    { keys: ["J", "K"], label: "Next / previous" },
+    { keys: ["E"], label: "Archive" },
+    { keys: ["H"], label: "Snooze" },
+    { keys: ["R"], label: "Reply" },
+    { keys: ["C"], label: "Compose" },
+    { keys: ["Z"], label: "Undo" },
+  ] as const;
+
   return (
     <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
       <div
-        className="absolute left-5 right-5 top-5 rounded-2xl border p-4 sm:left-6 sm:right-6"
+        className="absolute left-5 top-2 right-0 -bottom-4 overflow-hidden rounded-tl-xl border p-4 sm:left-6 sm:top-3 sm:p-5"
         style={{
           borderColor: L.line,
           background: L.elevated,
-          boxShadow: "0 16px 40px -24px rgba(0,0,0,0.55)",
+          boxShadow: "0 18px 40px -28px rgba(0,0,0,0.55)",
         }}
       >
-        <div className="flex items-center gap-2.5">
-          <span
-            className="inline-flex h-8 w-8 items-center justify-center text-[11px] font-bold text-white"
-            style={{ background: L.brand, borderRadius: 10 }}
-          >
-            in
-          </span>
-          <div>
-            <p className="text-[13px] font-semibold tracking-[-0.01em]">GitHub</p>
-            <p className="text-[12px]" style={{ color: L.muted }}>
-              Verification code · now
-            </p>
-          </div>
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em]" style={{ color: L.muted }}>
+            Shortcuts
+          </p>
+          <p className="text-[11px]" style={{ color: L.muted }}>
+            Superhuman pack
+          </p>
         </div>
-        <p className="mt-3 font-mono text-[22px] font-semibold tracking-[0.18em]">482 917</p>
-        <button
-          type="button"
-          tabIndex={-1}
-          className="mt-3 inline-flex h-8 items-center rounded-full px-3 text-[12px] font-semibold text-white"
-          style={{ background: L.blue }}
-        >
-          Copy code
-        </button>
-      </div>
-      <div
-        className="float-b absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-full px-4 py-2.5 text-[12.5px] font-semibold"
-        style={{
-          background: L.elevated,
-          color: L.fg,
-          border: `1px solid ${L.line}`,
-          boxShadow: "0 10px 28px -10px rgba(20,24,40,0.35)",
-        }}
-      >
-        Copied to clipboard
+        <ul className="mt-3 space-y-2">
+          {rows.map((row) => (
+            <li
+              key={row.label}
+              className="flex items-center justify-between gap-3 rounded-xl border px-2.5 py-2"
+              style={{ borderColor: L.line, background: L.mutedSurface }}
+            >
+              <span className="flex items-center gap-1">
+                {row.keys.map((key) => (
+                  <KeyCap key={key}>{key}</KeyCap>
+                ))}
+              </span>
+              <span className="text-[12px] font-medium" style={{ color: L.fgDim }}>
+                {row.label}
+              </span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
@@ -346,6 +351,55 @@ function ProvidersVisual() {
   );
 }
 
+function McpVisual() {
+  const tools = [
+    ["search_emails", "Find threads fast"],
+    ["read_thread", "Open a conversation"],
+    ["list_accounts", "See connected mail"],
+  ] as const;
+
+  return (
+    <div aria-hidden className="absolute inset-0" style={{ background: L.bg }}>
+      <div
+        className="absolute left-5 top-2 right-0 -bottom-4 overflow-hidden rounded-tl-xl border p-4 sm:left-6 sm:top-3 sm:p-5"
+        style={{
+          borderColor: L.line,
+          background: L.elevated,
+          boxShadow: "0 18px 40px -28px rgba(0,0,0,0.55)",
+        }}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em]" style={{ color: L.muted }}>
+            Local MCP
+          </p>
+          <p className="text-[11px] font-semibold" style={{ color: L.blue }}>
+            Loopback · running
+          </p>
+        </div>
+        <p className="mt-2 font-mono text-[11px]" style={{ color: L.muted }}>
+          http://127.0.0.1:3847/mcp
+        </p>
+        <div className="mt-3 space-y-2">
+          {tools.map(([name, hint]) => (
+            <div
+              key={name}
+              className="flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2"
+              style={{ borderColor: L.line, background: L.mutedSurface }}
+            >
+              <span className="truncate font-mono text-[12px] font-semibold" style={{ color: L.fg }}>
+                {name}
+              </span>
+              <span className="shrink-0 text-[10px]" style={{ color: L.muted }}>
+                {hint}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PrivacyVisual() {
   return (
     <div
@@ -393,16 +447,16 @@ function PrivacyVisual() {
 
 const privacyPoints = [
   {
-    title: "No mail relay",
-    body: "The app on your PC opens TLS straight to Gmail, Outlook, iCloud, and IMAP. Intray does not run a mail server, and your messages are not stored on one.",
+    title: "Direct to your providers",
+    body: "Intray opens TLS straight to Gmail, Outlook, iCloud, and IMAP. There is no Intray mail server, and your messages are not stored on one.",
   },
   {
-    title: "AI stays yours",
-    body: "Drafts and summaries go to Claude, OpenAI, Grok, Gemini, or local Ollama — the model you pick, with your key or CLI login. Nothing is sent through an Intray cloud.",
+    title: "AI on your terms",
+    body: "Drafts and summaries go to Claude, OpenAI, Grok, Gemini, or local Ollama — the model you pick, with your key or CLI login. Nothing routes through an Intray cloud.",
   },
   {
-    title: "On this machine",
-    body: "The inbox, labels, and search live in the desktop app. Intray has no account to upload them to.",
+    title: "Lives on your desktop",
+    body: "Your inbox, labels, and search stay in the app on this machine. Intray has no account for you to upload them to.",
   },
 ] as const;
 
@@ -412,13 +466,13 @@ export function Privacy() {
       <div className="mx-auto max-w-6xl">
         <div className="grid items-start gap-5 md:grid-cols-2 md:gap-10">
           <h2 className="font-display text-[clamp(2rem,4.5vw,3.25rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
-            Privacy.
+            Own your attention.
             <br />
-            Your mail never touches us.
+            Own your mail.
           </h2>
           <p className="max-w-md text-sm leading-relaxed text-[#9ca3af] md:pt-2 md:text-[15px]">
-            Intray is a desktop app. Your provider is on one side, the model you already
-            use is on the other, and no Intray service sits in between.
+            Intray is a desktop app — your provider on one side, the AI you already use on the
+            other, and nothing of ours sitting in between.
           </p>
         </div>
         <div className="mt-10 grid gap-4 md:grid-cols-3">

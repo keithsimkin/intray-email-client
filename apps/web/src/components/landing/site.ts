@@ -6,10 +6,9 @@ export const WINDOWS_DOWNLOAD_URL = "/download";
 /** Stable path that redirects to the latest macOS Apple Silicon .dmg */
 export const MAC_DOWNLOAD_URL = "/download?platform=mac";
 
-export const nav: { href: string; label: string; active?: boolean }[] = [
-  { href: "#", label: "Home", active: true },
+export const nav: { href: string; label: string }[] = [
+  { href: "#", label: "Home" },
   { href: "#features", label: "Features" },
   { href: "#privacy", label: "Privacy" },
   { href: "#pricing", label: "Pricing" },
-  { href: "#open-source", label: "Open source" },
 ];
