@@ -7,7 +7,7 @@
     },
     "apps/desktop": {
       "name": "@intray/desktop",
-      "version": "0.1.9",
+      "version": "0.2.0",
       "dependencies": {
         "@fontsource-variable/geist": "^5.2.8",
         "@intray/native": "workspace:*",
