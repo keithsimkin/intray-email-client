@@ -7,8 +7,8 @@ export const WINDOWS_DOWNLOAD_URL = "/download";
 export const MAC_DOWNLOAD_URL = "/download?platform=mac";
 
 export const nav: { href: string; label: string }[] = [
-  { href: "#", label: "Home" },
-  { href: "#features", label: "Features" },
-  { href: "#privacy", label: "Privacy" },
-  { href: "#pricing", label: "Pricing" },
+  { href: "/", label: "Home" },
+  { href: "/#features", label: "Features" },
+  { href: "/#privacy", label: "Privacy" },
+  { href: "/#pricing", label: "Pricing" },
 ];
