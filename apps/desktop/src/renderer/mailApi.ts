@@ -1,4 +1,5 @@
 import type { MailtoHandlerState } from "../shared/mailto";
+import type { LicenseActivateResult, LicenseStatus } from "../shared/license";
 import type {
   AccountDto,
   AccountReconnectInfo,
@@ -341,6 +342,28 @@ export async function bridgeAiComplete(
     if (limit) throw new Error(limit);
     throw error;
   }
+}
+
+export async function bridgeLicenseGet(): Promise<LicenseStatus | null> {
+  if (!hasIntrayBridge()) return null;
+  return window.intray.license.get();
+}
+
+export async function bridgeLicenseActivate(
+  token: string,
+): Promise<LicenseActivateResult> {
+  if (!hasIntrayBridge()) {
+    return {
+      ok: false,
+      error: "Open the Intray desktop app to save a license on this device.",
+    };
+  }
+  return window.intray.license.activate(token);
+}
+
+export async function bridgeLicenseClear(): Promise<void> {
+  if (!hasIntrayBridge()) return;
+  await window.intray.license.clear();
 }
 
 export async function bridgeAiSecretsStatus(): Promise<

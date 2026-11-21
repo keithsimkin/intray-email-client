@@ -1,4 +1,5 @@
 import { Resend } from "resend";
+import { AppSumoLicense } from "@/emails/AppSumoLicense";
 import { SupportOwnerAlert } from "@/emails/SupportOwnerAlert";
 import { SupportThankYou } from "@/emails/SupportThankYou";
 
@@ -94,6 +95,45 @@ export async function sendSupportThankYou(opts: {
     if (alert.error) {
       console.error("[resend] failed to notify owner", alert.error);
     }
+  }
+
+  return { data };
+}
+
+export async function sendAppSumoLicense(opts: {
+  to: string;
+  license: string;
+  licenseId: string;
+}) {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("[resend] RESEND_API_KEY is not configured; skipping license email");
+    return { skipped: true as const };
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from: resendFrom(),
+      to: [opts.to],
+      subject: "Your Intray lifetime license",
+      text: [
+        "Your Intray lifetime license key:",
+        "",
+        opts.license,
+        "",
+        "Open Intray > Settings > License, paste the key.",
+        "Download: https://intray.site/download",
+      ].join("\n"),
+      react: AppSumoLicense({ license: opts.license }),
+    },
+    {
+      idempotencyKey: `appsumo-license/${opts.licenseId}`,
+    },
+  );
+
+  if (error) {
+    console.error("[resend] failed to send AppSumo license", error);
+    return { error };
   }
 
   return { data };

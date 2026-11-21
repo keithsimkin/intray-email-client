@@ -33,6 +33,7 @@ import type {
   UpdateAccountInput,
 } from "../shared/types";
 import type { MailtoHandlerState } from "../shared/mailto";
+import type { LicenseActivateResult, LicenseStatus } from "../shared/license";
 import type {
   CalendarEventDto,
   CalendarEventInput,
@@ -328,6 +329,14 @@ const api = {
         "plugins:notionSave",
         input,
       ) as Promise<NotionSaveResult>,
+  },
+
+  license: {
+    get: () => ipcRenderer.invoke("license:get") as Promise<LicenseStatus | null>,
+    activate: (token: string) =>
+      ipcRenderer.invoke("license:activate", token) as Promise<LicenseActivateResult>,
+    clear: () =>
+      ipcRenderer.invoke("license:clear") as Promise<{ ok: true }>,
   },
 
   ai: {

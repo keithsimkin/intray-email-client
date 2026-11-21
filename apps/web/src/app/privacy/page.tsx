@@ -283,7 +283,8 @@ export default function PrivacyPage() {
           <strong>Delete everything local.</strong> Quit Intray and delete the user-data
           folder: <strong>%APPDATA%\Intray</strong> on Windows, or{" "}
           <strong>~/Library/Application Support/Intray</strong> on macOS. That removes{" "}
-          <strong>intray.sqlite</strong> (messages, tokens, API keys, and the MCP token) and{" "}
+          <strong>intray.sqlite</strong> (messages, tokens, API keys, a saved license key,
+          and the MCP token) and{" "}
           <strong>attachment-cache</strong>. Uninstalling the app leaves this folder in
           place.
         </p>
@@ -313,6 +314,16 @@ export default function PrivacyPage() {
           Payments, and the confirmation email is handled by Resend, under those companies’
           policies. Email <a href="mailto:hello@intray.site">hello@intray.site</a> to ask
           about a purchase.
+        </p>
+        <p>
+          <strong>AppSumo redemption.</strong> The redeem page takes an AppSumo code and an
+          email address. The site hashes the code and checks that hash against a list of
+          code hashes. It does not store the code itself. A successful redemption stores the
+          email, a license id, the signed license key, and the time in Netlify Blobs, and
+          emails the key through Resend from Intray &lt;hello@intray.site&gt;. Submitting the
+          same code and email again returns the same key. The desktop app verifies that key
+          on the computer and stores it with OS secure storage. Checking the key does not
+          send it, or any mail, to Intray.
         </p>
         <p>
           <strong>Downloads.</strong> The download links ask GitHub’s API which Windows or

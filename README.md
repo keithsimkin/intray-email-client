@@ -360,7 +360,22 @@ cd apps/web
 bun run dev
 bun run build
 bun run lint
+bun test
 ```
+
+### AppSumo lifetime licenses
+
+`/redeem` accepts an AppSumo code and an email address. The site hashes the code (`trim` + uppercase, SHA-256) and checks it against [`apps/web/data/appsumo-code-hashes.json`](apps/web/data/appsumo-code-hashes.json). A new claim is stored in Netlify Blobs (store `appsumo-redemptions`, key = that hash) and the signed key is emailed with the existing Resend sender.
+
+Set this in the Netlify UI, not in git:
+
+| Variable | Format |
+| --- | --- |
+| `LICENSE_PRIVATE_KEY` | Ed25519 **PKCS#8 PEM** private key. Either the PEM text, including the `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----` lines, or the base64 encoding of that PEM. Newlines can be real line breaks or `\n` escapes. |
+
+If `LICENSE_PRIVATE_KEY` is missing or is not an Ed25519 PKCS#8 key, `POST /api/redeem` returns **503** with a short message and does not claim the code. The matching public key is embedded in the desktop app. The desktop check is offline. Redemption uses Netlify Blobs, which is already part of the Netlify site — no separate database.
+
+In the desktop app, paste the key under **Settings → License**.
 
 ---
 
@@ -444,7 +459,7 @@ See [SECURITY.md](SECURITY.md) for the threat model and how to report issues.
 - MCP listens on **127.0.0.1** only, requires a per-install bearer token, and rejects browser requests.
 - The app window blocks in-page navigation and denies permission requests it does not need.
 - Crash/analytics are off by default (product plan); do not add phone-home without an explicit, documented opt-in.
-- License checks (when added) are key-only — never mail content.
+- A lifetime license key is verified on the device with an embedded Ed25519 public key. The check never sends mail content.
 
 See [`SECURITY.md`](SECURITY.md) for the threat model and how to report issues.
 

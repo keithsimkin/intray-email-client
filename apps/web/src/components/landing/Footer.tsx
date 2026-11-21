@@ -66,7 +66,10 @@ export function Footer() {
 
         <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-white/10 pt-5 text-xs text-[#8a8f98] sm:flex-row">
           <p>© 2026 Intray. The desktop email client for Windows and macOS.</p>
-          <div className="flex gap-4">
+          <div className="flex flex-wrap justify-center gap-x-4 gap-y-2">
+            <Link href="/redeem" className="hover:text-white">
+              Redeem AppSumo code
+            </Link>
             <Link href="/terms" className="hover:text-white">
               Terms
             </Link>
