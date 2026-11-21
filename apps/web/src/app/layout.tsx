@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Bebas_Neue, Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
+import { DiscountCodeCapture } from "../components/landing/DiscountCodeCapture";
 import { SITE_URL } from "../components/landing/site";
 import "./globals.css";
 
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col bg-[#070708] text-[#ededed]">
         {children}
+        <DiscountCodeCapture />
         <Script
           src="https://www.ship-or-die.com/hackathon/verify.js"
           strategy="afterInteractive"
