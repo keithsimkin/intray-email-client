@@ -13,11 +13,11 @@ export function SupportThankYou({
 }: SupportThankYouProps) {
   const greeting = name?.trim() ? name.trim().split(/\s+/)[0] : "there";
   const headline =
-    kind === "subscription" ? "Thanks for the monthly support" : "Thanks for the gift";
+    kind === "subscription" ? "Welcome to Intray" : "Your lifetime license is ready";
   const body =
     kind === "subscription"
-      ? "Your monthly support keeps Intray open source and shipping — builds, fixes, and local AI work."
-      : "Your one-time gift helps keep Intray open source and shipping. We appreciate you.";
+      ? "Your $10/mo plan is active. Check your email for your license key, then download the app and paste it in Settings → License."
+      : "Thanks for buying the $75 lifetime license. Check your email for your key, then download the app and paste it in Settings → License.";
 
   return (
     <div
@@ -81,8 +81,7 @@ export function SupportThankYou({
                 {body}
               </p>
               <p style={{ margin: "10px 0 0", fontSize: 15, lineHeight: 1.55, color: "#9ca3af" }}>
-                Grab the latest Windows build anytime. The Mac build is on the same release and hasn’t
-                been tested yet.
+                Grab the latest Windows or Mac build anytime.
               </p>
               <a
                 href={downloadUrl}
@@ -111,7 +110,7 @@ export function SupportThankYou({
                   textDecoration: "underline",
                 }}
               >
-                Download for Mac (untested)
+                Download for Mac
               </a>
               <p style={{ margin: "28px 0 0", fontSize: 13, lineHeight: 1.5, color: "#8a8f98" }}>
                 — The Intray team

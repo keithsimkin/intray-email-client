@@ -6,19 +6,19 @@ import { useState } from "react";
 
 const quotes = [
   {
-    body: "I wanted Superhuman-level triage on Windows without handing my mail to another cloud. Local AI plus a real tray panel is the combo.",
+    body: "I finally have a fast Windows inbox that doesn’t hand my mail to another cloud. Local AI plus a real tray panel is the combo.",
     name: "Maya R.",
     role: "Founder, security tooling",
     avatar: "/avatars/avatar-maya.jpg",
   },
   {
-    body: "MCP that can search my inbox from Cursor — without a relay — is the reason I leave Thunderbird open less every week.",
+    body: "Searching my inbox from Cursor — without a relay — is the reason I leave other clients closed more every week.",
     name: "Jon K.",
     role: "Staff engineer",
     avatar: "/avatars/avatar-noah.jpg",
   },
   {
-    body: "OTP copy from the toast alone sold me. Open source means I can audit the privacy claims myself — email is too important not to.",
+    body: "OTP copy from the toast alone sold me. Knowing my mail never touches their servers sealed it.",
     name: "Priya S.",
     role: "Windows power user",
     avatar: "/avatars/avatar-priya.jpg",
@@ -41,7 +41,7 @@ export function Testimonials() {
         <div className="grid gap-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-start">
           <div>
             <h2 className="max-w-xs font-display text-[clamp(1.85rem,3.5vw,2.75rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
-              Customer reviews and feedback from real users
+              Loved by people who live in email
             </h2>
             <div className="mt-7 flex gap-3">
               <button

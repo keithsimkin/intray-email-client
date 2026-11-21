@@ -5,17 +5,17 @@ const steps = [
   {
     n: "01",
     title: "Unify every inbox",
-    body: "Add Gmail, Outlook, iCloud, Yahoo, Fastmail, or any IMAP account into one Superhuman-fast tray.",
+    body: "Add Gmail, Outlook, iCloud, Yahoo, Fastmail, or any IMAP account into one fast tray.",
   },
   {
     n: "02",
-    title: "Triage with power tools",
-    body: "Keyboard shortcuts, snooze, labels, undo, and OTP toasts — mail that moves at the speed of thought.",
+    title: "Triage what matters",
+    body: "Keyboard shortcuts, snooze, labels, undo, and OTP toasts — clear the noise and keep moving.",
   },
   {
     n: "03",
-    title: "Plug in your AI",
-    body: "Use Claude, OpenAI, Grok, Gemini, or Ollama with your own keys or CLI login. Draft, summarize, and label without an Intray AI tax.",
+    title: "Bring your AI",
+    body: "Use Claude, OpenAI, Grok, Gemini, or Ollama with your own keys. Draft, summarize, and label without an Intray AI tax.",
   },
   {
     n: "04",
@@ -30,11 +30,11 @@ export function ProductPanels() {
       <div className="mx-auto max-w-6xl">
         <div className="grid gap-5 md:grid-cols-[1.2fr_0.8fr] md:items-end">
           <h2 className="font-display text-[clamp(2rem,4.5vw,3.5rem)] uppercase leading-[0.95] tracking-[0.02em] text-white">
-            Simple steps to a quieter, sharper inbox
+            From cluttered inboxes to one clear tray
           </h2>
           <p className="text-sm leading-relaxed text-[#9ca3af] md:text-right md:text-[15px]">
-            Unified email plus your AI stack on one Windows machine — no Intray mail relay, no forced
-            model. Open source so you can verify every hop.
+            Unify your accounts, put AI to work with keys you already own, and keep mail on your
+            machine — with no Intray relay in the middle.
           </p>
         </div>
 

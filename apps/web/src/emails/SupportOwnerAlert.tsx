@@ -14,7 +14,7 @@ export function SupportOwnerAlert({
   referenceId,
 }: SupportOwnerAlertProps) {
   const title =
-    kind === "subscription" ? "New monthly supporter" : "New one-time support payment";
+    kind === "subscription" ? "New monthly license ($10/mo)" : "New lifetime license ($75)";
 
   return (
     <div

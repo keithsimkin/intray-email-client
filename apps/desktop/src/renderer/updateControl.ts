@@ -41,6 +41,23 @@ export function updateControl(status: AppUpdateStatus): UpdateControl {
         action: "restart",
         label: withVersion("Restart to install update"),
       };
+    case "installing":
+      return {
+        visible: true,
+        action: "busy",
+        label: withVersion("Installing update"),
+        percent: 100,
+      };
+    case "error":
+      // Keep the rail affordance when a download/install failed so the user
+      // can retry from the same place the update was first noticed.
+      return version
+        ? {
+            visible: true,
+            action: "download",
+            label: withVersion("Retry update"),
+          }
+        : { visible: false, action: "busy", label: "" };
     default:
       return { visible: false, action: "busy", label: "" };
   }

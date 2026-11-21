@@ -4,7 +4,7 @@ import { Privacy, UnifiedFeatures } from "../components/landing/FeatureBlocks";
 import { Footer } from "../components/landing/Footer";
 import { Hero } from "../components/landing/Hero";
 import { Nav } from "../components/landing/Nav";
-import { OpenSource, Pricing } from "../components/landing/PricingCta";
+import { Pricing, Security } from "../components/landing/PricingCta";
 import { Testimonials } from "../components/landing/Testimonials";
 
 export default function Home() {
@@ -19,7 +19,7 @@ export default function Home() {
             <Privacy />
             <Testimonials />
             <Pricing />
-            <OpenSource />
+            <Security />
           </div>
         </main>
       </div>

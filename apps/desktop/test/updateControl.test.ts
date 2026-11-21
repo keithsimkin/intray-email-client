@@ -65,4 +65,26 @@ describe("rail update control", () => {
     expect(control.label).toBe("Restart to install update 1.1.0");
     expect(control.percent).toBeUndefined();
   });
+
+  test("stays busy while the installer is running", () => {
+    const control = updateControl(
+      status("installing", { availableVersion: "1.1.0" }),
+    );
+    expect(control.visible).toBe(true);
+    expect(control.action).toBe("busy");
+    expect(control.label).toBe("Installing update 1.1.0");
+    expect(control.percent).toBe(100);
+  });
+
+  test("offers retry after a failed download when a version is known", () => {
+    const control = updateControl(
+      status("error", {
+        availableVersion: "1.1.0",
+        error: "network",
+      }),
+    );
+    expect(control.visible).toBe(true);
+    expect(control.action).toBe("download");
+    expect(control.label).toBe("Retry update 1.1.0");
+  });
 });

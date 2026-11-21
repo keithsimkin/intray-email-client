@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -171,6 +172,10 @@ import {
   type ShortcutPackId,
 } from "./shortcuts";
 import { SettingsModal } from "./SettingsModal";
+import {
+  shouldShowUpdateProgressCard,
+  UpdateProgressCard,
+} from "./UpdateProgressCard";
 import { updateControl } from "./updateControl";
 import { downloadUpdateAsk, restartUpdateAsk } from "../shared/updateAsk";
 import {
@@ -3104,11 +3109,18 @@ function ThreadMessageView({
   const showTools = Boolean(message.noTrackers) || showAi || showImageTool;
   const sender: Recipient = { name: message.from, email: message.email };
   const toggleExpanded = () => setExpanded((v) => !v);
+  const onToggleClick = (
+    e: { stopPropagation: () => void },
+  ) => {
+    e.stopPropagation();
+    toggleExpanded();
+  };
 
   return (
     <article
-      className={`thread-msg${expanded ? " expanded" : ""}`}
+      className={`thread-msg${expanded ? " expanded" : " collapsed"}`}
       data-thread-msg={message.id}
+      onClick={expanded ? undefined : toggleExpanded}
     >
       <div className="thread-msg-top">
         <div className="thread-msg-head">
@@ -3116,7 +3128,7 @@ function ThreadMessageView({
             <button
               type="button"
               className="msg-from-toggle"
-              onClick={toggleExpanded}
+              onClick={onToggleClick}
               aria-expanded={expanded}
               aria-label={expanded ? "Collapse message" : "Expand message"}
             >
@@ -3143,7 +3155,10 @@ function ThreadMessageView({
                   title={
                     addressBlur ? "Compose" : `Compose to ${message.email}`
                   }
-                  onClick={() => onComposeTo(sender)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onComposeTo(sender);
+                  }}
                 >
                   {message.email}
                 </button>
@@ -3153,7 +3168,7 @@ function ThreadMessageView({
                 <button
                   type="button"
                   className="msg-from-time"
-                  onClick={toggleExpanded}
+                  onClick={onToggleClick}
                 >
                   {message.time}
                 </button>
@@ -3164,7 +3179,7 @@ function ThreadMessageView({
             <button
               type="button"
               className={blurClass("thread-collapse-preview", previewBlur)}
-              onClick={toggleExpanded}
+              onClick={onToggleClick}
             >
               {previewBlur ? (
                 message.body[0]
@@ -3396,8 +3411,14 @@ function ReadingPane({
 }) {
   const blur = useCreatorBlur();
   const readerScrollRef = useRef<HTMLDivElement>(null);
-  /** True while the user is still at the top — pin through lazy HTML sizing. */
-  const pinReaderTopRef = useRef(true);
+  /**
+   * Keep the open scroll position stable while lazy HTML bodies size:
+   * "top" for single-message threads, "latest" to stay on the newest turn
+   * with a peek of prior messages above.
+   */
+  const pinReaderRef = useRef<"top" | "latest" | null>("top");
+  /** How much of the previous message to leave visible above the latest. */
+  const LATEST_PEEK_PX = 56;
   const openedKind = message
     ? blur.kindForMessage({
         email: message.email,
@@ -3409,8 +3430,31 @@ function ReadingPane({
     : "personal";
   const subjectBlur = Boolean(message) && blur.blurSubject(openedKind);
 
-  useEffect(() => {
-    pinReaderTopRef.current = true;
+  const latestScrollTop = (node: HTMLElement) => {
+    const last = node.querySelector("article.thread-msg:last-of-type");
+    if (!(last instanceof HTMLElement)) return 0;
+    const count = node.querySelectorAll("article.thread-msg").length;
+    if (count <= 1) return 0;
+    const offset =
+      last.getBoundingClientRect().top -
+      node.getBoundingClientRect().top +
+      node.scrollTop;
+    return Math.max(0, offset - LATEST_PEEK_PX);
+  };
+
+  const applyReaderPin = () => {
+    const mode = pinReaderRef.current;
+    const node = readerScrollRef.current;
+    if (!mode || !node) return;
+    if (mode === "top") {
+      if (node.scrollTop !== 0) node.scrollTop = 0;
+      return;
+    }
+    const target = latestScrollTop(node);
+    if (Math.abs(node.scrollTop - target) > 1) node.scrollTop = target;
+  };
+
+  useLayoutEffect(() => {
     const node = readerScrollRef.current;
     if (!node) return;
     if (focusMessageId) {
@@ -3418,13 +3462,23 @@ function ReadingPane({
         `[data-thread-msg="${CSS.escape(focusMessageId)}"]`,
       );
       if (target) {
-        pinReaderTopRef.current = false;
+        pinReaderRef.current = null;
         target.scrollIntoView({ block: "center" });
         return;
       }
     }
+    const visibleCount =
+      conversationView || focusMessageId
+        ? (message?.thread.length ?? 0)
+        : Math.min(message?.thread.length ?? 0, 1);
+    if (visibleCount > 1) {
+      pinReaderRef.current = "latest";
+      applyReaderPin();
+      return;
+    }
+    pinReaderRef.current = "top";
     node.scrollTop = 0;
-  }, [message?.id, focusMessageId]);
+  }, [message?.id, focusMessageId, conversationView]);
 
   const threadCount = message?.thread.length ?? 0;
   const threadWatch = useRef({ id: message?.id, count: threadCount });
@@ -3433,7 +3487,7 @@ function ReadingPane({
     const prev = threadWatch.current;
     threadWatch.current = { id: message.id, count: threadCount };
     if (prev.id !== message.id || threadCount <= prev.count) return;
-    pinReaderTopRef.current = false;
+    pinReaderRef.current = null;
     const node = readerScrollRef.current;
     const last = node?.querySelector("article.thread-msg:last-of-type");
     if (!node || !(last instanceof HTMLElement)) return;
@@ -3446,23 +3500,30 @@ function ReadingPane({
     const node = readerScrollRef.current;
     if (!node) return;
     const onScroll = () => {
-      pinReaderTopRef.current = node.scrollTop < 12;
+      const mode = pinReaderRef.current;
+      if (mode === "top") {
+        if (node.scrollTop >= 12) pinReaderRef.current = null;
+        return;
+      }
+      if (mode === "latest") {
+        if (Math.abs(node.scrollTop - latestScrollTop(node)) > 24) {
+          pinReaderRef.current = null;
+        }
+      }
     };
     node.addEventListener("scroll", onScroll, { passive: true });
     return () => node.removeEventListener("scroll", onScroll);
   }, [message?.id]);
 
-  const keepReaderTop = () => {
-    if (!pinReaderTopRef.current) return;
-    const node = readerScrollRef.current;
-    if (node && node.scrollTop !== 0) node.scrollTop = 0;
+  const keepReaderPinned = () => {
+    applyReaderPin();
   };
 
   // Lazy body hydrate replaces the short loading stub with tall HTML; re-pin.
   useEffect(() => {
     if (bodyLoading) return;
-    keepReaderTop();
-    const id = window.requestAnimationFrame(keepReaderTop);
+    keepReaderPinned();
+    const id = window.requestAnimationFrame(keepReaderPinned);
     return () => window.cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bodyLoading, message?.id]);
@@ -4288,7 +4349,7 @@ function ReadingPane({
               onComposeTo={onComposeTo}
               onSummarize={() => void runSummarize()}
               onTranslate={() => void runTranslate()}
-              onHtmlLayout={keepReaderTop}
+              onHtmlLayout={keepReaderPinned}
             />
           ))}
         </div>
@@ -5779,6 +5840,8 @@ export default function App() {
     currentVersion: "",
     packaged: false,
   });
+  /** User hid the progress card while an update is still ready / failed. */
+  const [updateCardDismissed, setUpdateCardDismissed] = useState(false);
   const [alert, setAlert] = useState<AlertRequest | null>(null);
 
   useEffect(() => {
@@ -5787,7 +5850,16 @@ export default function App() {
       if (!cancelled) setUpdateStatus(status);
     });
     const stop = bridgeOnUpdateStatus((status) => {
-      if (!cancelled) setUpdateStatus(status);
+      if (cancelled) return;
+      setUpdateStatus(status);
+      // Re-show the card when download/install progress resumes.
+      if (
+        status.state === "downloading" ||
+        status.state === "installing" ||
+        status.state === "ready"
+      ) {
+        setUpdateCardDismissed(false);
+      }
     });
     return () => {
       cancelled = true;
@@ -6786,6 +6858,7 @@ export default function App() {
   };
 
   const downloadAppUpdate = async () => {
+    setUpdateCardDismissed(false);
     try {
       setUpdateStatus(await bridgeDownloadUpdate());
     } catch {
@@ -6852,8 +6925,13 @@ export default function App() {
       ...restartUpdateAsk(updateStatus.availableVersion),
     });
     if (!ok) return;
+
+    setUpdateCardDismissed(false);
     try {
-      await bridgeInstallUpdate();
+      const started = await bridgeInstallUpdate();
+      if (!started) {
+        showToast("Could not restart to install the update");
+      }
     } catch {
       showToast("Could not restart to install the update");
     }
@@ -8724,6 +8802,8 @@ export default function App() {
           onUnloadDemo={() => {
             void unloadDemoWorkspace();
           }}
+          onDownloadUpdate={downloadAppUpdate}
+          onInstallUpdate={restartForUpdate}
           onChange={updatePrefs}
           onAddAccount={() => {
             setSettingsOpen(false);
@@ -8864,6 +8944,14 @@ export default function App() {
       )}
 
       {chord && <div className="chord-hint">Chord: {chord.toUpperCase()}…</div>}
+      {!updateCardDismissed && shouldShowUpdateProgressCard(updateStatus) && (
+        <UpdateProgressCard
+          status={updateStatus}
+          onRestart={() => void restartForUpdate()}
+          onRetry={() => void downloadAppUpdate()}
+          onDismiss={() => setUpdateCardDismissed(true)}
+        />
+      )}
       <AlertDialog
         alert={alert}
         onConfirm={() => closeAlert(true)}

@@ -4,8 +4,8 @@ export const SUPPORT_PLANS: Record<
   SupportPlan,
   { label: string; envKey: "DODO_PRODUCT_MONTHLY" | "DODO_PRODUCT_ONCE" }
 > = {
-  monthly: { label: "Monthly support", envKey: "DODO_PRODUCT_MONTHLY" },
-  once: { label: "One-time gift", envKey: "DODO_PRODUCT_ONCE" },
+  monthly: { label: "Monthly license · $10/mo", envKey: "DODO_PRODUCT_MONTHLY" },
+  once: { label: "Lifetime license · $75", envKey: "DODO_PRODUCT_ONCE" },
 };
 
 export function productIdForPlan(plan: SupportPlan): string | null {

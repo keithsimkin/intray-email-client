@@ -22,9 +22,9 @@ const display = Bebas_Neue({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: "Intray — All your inboxes. Native on Windows.",
+  title: "Intray — Get ahead of every inbox",
   description:
-    "Open-source unified email for Windows — Superhuman-style power tools plus your Claude, OpenAI, Grok, Gemini, or Ollama subscription. No mail relay. Support optionally at $10/mo or a one-time gift.",
+    "The AI desktop email client for Windows. Unify Gmail, Outlook, iCloud, and IMAP — then draft and triage with Claude, OpenAI, Grok, Gemini, or local Ollama. MCP for Cursor. No mail relay. $10/mo or $75 lifetime.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "48x48" },

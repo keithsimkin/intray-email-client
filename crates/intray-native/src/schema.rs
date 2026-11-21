@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS messages (
   from_email TEXT NOT NULL DEFAULT '',
   to_json TEXT NOT NULL DEFAULT '[]',
   cc_json TEXT NOT NULL DEFAULT '[]',
+  bcc_json TEXT NOT NULL DEFAULT '[]',
   date_ms INTEGER NOT NULL DEFAULT 0,
   unread INTEGER NOT NULL DEFAULT 0,
   important INTEGER NOT NULL DEFAULT 0,
@@ -182,6 +183,7 @@ pub const MIGRATIONS_SQL: &[&str] = &[
   "ALTER TABLE accounts ADD COLUMN avatar_url TEXT",
   "ALTER TABLE contacts ADD COLUMN avatar_url TEXT",
   "ALTER TABLE messages ADD COLUMN link_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE messages ADD COLUMN bcc_json TEXT NOT NULL DEFAULT '[]'",
   "ALTER TABLE bodies ADD COLUMN attachments_json TEXT",
 ];
 
