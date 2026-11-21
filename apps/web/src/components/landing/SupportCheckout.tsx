@@ -2,12 +2,17 @@
 
 import { useState } from "react";
 import type { SupportPlan } from "@/lib/dodo";
+import { readPersistedDiscountCode } from "./DiscountCodeCapture";
 
 async function startCheckout(plan: SupportPlan) {
+  const discountCode = plan === "monthly" ? readPersistedDiscountCode() : null;
   const response = await fetch("/api/checkout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ plan }),
+    body: JSON.stringify({
+      plan,
+      ...(discountCode ? { discount_code: discountCode } : {}),
+    }),
   });
 
   const data = (await response.json().catch(() => ({}))) as {

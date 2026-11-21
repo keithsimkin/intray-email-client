@@ -1,5 +1,6 @@
 import { Checkout } from "@dodopayments/nextjs";
 import { NextRequest, NextResponse } from "next/server";
+import { checkoutSessionPayload } from "@/lib/checkout-session";
 import { dodoEnvironment, productIdForPlan, type SupportPlan } from "@/lib/dodo";
 
 const sessionCheckout = Checkout({
@@ -51,13 +52,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const rawDiscount =
+    "discount_code" in body ? body.discount_code : req.nextUrl.searchParams.get("code");
   const checkoutReq = new NextRequest(req.url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      product_cart: [{ product_id: productId, quantity: 1 }],
-      return_url: process.env.DODO_PAYMENTS_RETURN_URL,
-    }),
+    body: JSON.stringify(
+      checkoutSessionPayload({
+        plan,
+        productId,
+        returnUrl: process.env.DODO_PAYMENTS_RETURN_URL,
+        discountCode: rawDiscount,
+      }),
+    ),
   });
 
   return sessionCheckout(checkoutReq);
