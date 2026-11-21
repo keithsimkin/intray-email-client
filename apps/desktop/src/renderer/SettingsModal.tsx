@@ -91,6 +91,7 @@ import {
   looksLikeHtml,
   sanitizeSignatureHtml,
 } from "./signatures";
+import { LicensePanel } from "./LicensePanel";
 import {
   bindingFromEvent,
   listShortcuts,
@@ -245,6 +246,7 @@ type TabId =
   | "ai"
   | "shortcuts"
   | "accounts"
+  | "license"
   | "privacy"
   | "testing"
   | "about";
@@ -263,6 +265,7 @@ const SETTINGS_TABS: {
   { id: "ai", label: "AI & agents", Icon: Bot, group: "Agents" },
   { id: "shortcuts", label: "Shortcuts", Icon: Keyboard, group: "System" },
   { id: "accounts", label: "Accounts", Icon: Layers, group: "System" },
+  { id: "license", label: "License", Icon: KeyRound, group: "System" },
   { id: "privacy", label: "Privacy", Icon: Shield, group: "System" },
   { id: "testing", label: "Testing support", Icon: FlaskConical, group: "System" },
   { id: "about", label: "About", Icon: Info, group: "System" },
@@ -2867,12 +2870,15 @@ export function SettingsModal({
               </>
             )}
 
+            {tab === "license" && <LicensePanel />}
+
             {tab === "privacy" && (
               <>
                 <div className="privacy-banner">
                   <Shield size={16} strokeWidth={1.75} />
                   Mail never routes through Intray servers. Device ↔ provider
-                  only. License checks send a key — never message content.
+                  only. A lifetime license is verified on this device and is never
+                  sent with mail.
                 </div>
                 <Block
                   title="Remote images"

@@ -110,6 +110,11 @@ import type {
 } from "../../shared/plugins";
 import { refreshTray } from "../tray";
 import {
+  activateLicense,
+  clearStoredLicense,
+  readLicenseStatus,
+} from "../license/store";
+import {
   checkForAppUpdates,
   downloadAppUpdate,
   getUpdateStatus,
@@ -503,6 +508,18 @@ export function registerIpc(): void {
       return true;
     },
   );
+  ipcMain.handle("license:get", () => readLicenseStatus());
+  ipcMain.handle("license:activate", (_e, token: unknown) => {
+    if (typeof token !== "string") {
+      return { ok: false as const, error: "Paste a license key." };
+    }
+    return activateLicense(token);
+  });
+  ipcMain.handle("license:clear", () => {
+    clearStoredLicense();
+    return { ok: true as const };
+  });
+
   ipcMain.handle("ai:secretsStatus", () => aiSecretStatus());
   ipcMain.handle(
     "ai:setSecret",

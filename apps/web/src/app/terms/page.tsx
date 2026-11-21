@@ -59,8 +59,14 @@ export default function TermsPage() {
           The prices are the amounts shown on the site. Choosing a plan sends you to Dodo
           Payments to pay. Intray does not collect or store your card number. After a
           successful payment, the site emails the address Dodo provides a confirmation, from
-          Intray &lt;hello@intray.site&gt;, through Resend. Paying for a plan does not
+          Intray &lt;hello@intray.site&gt;, through Resend.           Paying for a plan does not
           replace the GPL license of the software.
+        </p>
+        <p>
+          <strong>AppSumo.</strong> A valid AppSumo code can be redeemed on this site for one
+          lifetime license key, tied to the email address used at redemption. The desktop app
+          checks that key on your computer. Redeeming a code does not replace the GPL license
+          of the software.
         </p>
         <p>
           To cancel a monthly plan so it does not renew, email{" "}
