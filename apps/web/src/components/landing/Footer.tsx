@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { BrandLockup } from "../Brand";
+import { ConsentSpacer } from "./CookieConsent";
 import { siGithub, siX } from "simple-icons";
 import { OsDownloadText } from "./platform";
 import { GITHUB_URL, TWITTER_URL } from "./site";
@@ -19,9 +21,9 @@ function SimpleIcon({
 }
 
 const links = [
-  { href: "#", label: "Home" },
-  { href: "#features", label: "Features" },
-  { href: "#testimonials", label: "Testimonials" },
+  { href: "/", label: "Home" },
+  { href: "/#features", label: "Features" },
+  { href: "/#testimonials", label: "Testimonials" },
 ];
 
 export function Footer() {
@@ -29,9 +31,9 @@ export function Footer() {
     <footer className="landing-light border-t border-white/10 bg-[#070708] px-5 pb-28 pt-10">
       <div className="mx-auto max-w-6xl">
         <div className="flex flex-col items-center gap-8 md:flex-row md:items-center md:justify-between">
-          <a href="#" className="text-white" aria-label="Intray home">
+          <Link href="/" className="text-white" aria-label="Intray home">
             <BrandLockup markSize={20} wordHeight={16} />
-          </a>
+          </Link>
 
           <nav className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm text-[#9ca3af]">
             {links.map((l) => (
@@ -65,14 +67,15 @@ export function Footer() {
         <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-white/10 pt-5 text-xs text-[#8a8f98] sm:flex-row">
           <p>© 2026 Intray. The desktop email client for Windows and macOS.</p>
           <div className="flex gap-4">
-            <a href="#" className="hover:text-white">
+            <Link href="/terms" className="hover:text-white">
               Terms
-            </a>
-            <a href="#privacy" className="hover:text-white">
+            </Link>
+            <Link href="/privacy" className="hover:text-white">
               Privacy
-            </a>
+            </Link>
           </div>
         </div>
+        <ConsentSpacer />
       </div>
     </footer>
   );

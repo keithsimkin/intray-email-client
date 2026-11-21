@@ -16,6 +16,26 @@ function persist(choice: Choice) {
   window.dispatchEvent(new Event(CONSENT_EVENT));
 }
 
+export function ConsentSpacer() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const read = () => {
+      try {
+        setVisible(!window.localStorage.getItem(STORAGE_KEY));
+      } catch {
+        setVisible(true);
+      }
+    };
+    read();
+    window.addEventListener(CONSENT_EVENT, read);
+    return () => window.removeEventListener(CONSENT_EVENT, read);
+  }, []);
+
+  if (!visible) return null;
+  return <div aria-hidden className="h-48 sm:h-36" />;
+}
+
 export function CookieConsent() {
   const [visible, setVisible] = useState(false);
 
@@ -48,8 +68,8 @@ export function CookieConsent() {
             Cookies &amp; local storage
           </p>
           <p id="cookie-consent-desc" className="mt-1 text-[13px] leading-relaxed text-[#9ca3af]">
-            We use essential storage to remember this choice and keep the site working. Optional
-            analytics cookies help us improve the landing page — never your mail.
+            We save this choice in local storage on your browser. The site does not set
+            analytics or advertising cookies.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">

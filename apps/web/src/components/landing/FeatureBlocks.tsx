@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { siClaude, siGooglegemini, siOllama } from "simple-icons";
 import {
   DemoListPane,
@@ -488,6 +489,23 @@ export function Privacy() {
             </article>
           ))}
         </div>
+        <p className="mt-8 text-sm text-[#9ca3af]">
+          <Link
+            href="/privacy"
+            className="font-semibold text-white underline decoration-white/30 underline-offset-2 hover:decoration-white"
+          >
+            Privacy Policy
+          </Link>
+          <span aria-hidden className="mx-2 text-[#8a8f98]">
+            ·
+          </span>
+          <Link
+            href="/terms"
+            className="font-semibold text-white underline decoration-white/30 underline-offset-2 hover:decoration-white"
+          >
+            Terms of Service
+          </Link>
+        </p>
       </div>
     </section>
   );

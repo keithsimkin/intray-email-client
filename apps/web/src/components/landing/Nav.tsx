@@ -6,9 +6,10 @@ import { OsDownload } from "./platform";
 import { nav } from "./site";
 
 function sectionIdFromHref(href: string): string | null {
-  if (href === "#" || href === "" || href === "/") return null;
-  if (href.startsWith("#")) return href.slice(1) || null;
-  return null;
+  const hashIndex = href.indexOf("#");
+  if (hashIndex === -1) return null;
+  const id = href.slice(hashIndex + 1);
+  return id || null;
 }
 
 function activeLabelFromHash(hash: string): string {
@@ -22,7 +23,13 @@ export function Nav() {
   const [activeLabel, setActiveLabel] = useState("Home");
 
   useEffect(() => {
-    const sync = () => setActiveLabel(activeLabelFromHash(window.location.hash));
+    const sync = () => {
+      if (window.location.pathname !== "/") {
+        setActiveLabel("");
+        return;
+      }
+      setActiveLabel(activeLabelFromHash(window.location.hash));
+    };
     sync();
     window.addEventListener("hashchange", sync);
     return () => window.removeEventListener("hashchange", sync);
@@ -77,7 +84,7 @@ export function Nav() {
     <header className="sticky top-0 z-50 px-4 pt-4">
       <div className="mx-auto flex h-14 max-w-5xl items-center justify-between rounded-full border border-white/10 bg-[#121214]/80 px-3 shadow-[0_10px_30px_-18px_rgba(0,0,0,0.55)] backdrop-blur-xl md:px-4">
         <a
-          href="#"
+          href="/"
           className="shrink-0 pl-1 text-white"
           aria-label="Intray home"
           onClick={() => setActiveLabel("Home")}
