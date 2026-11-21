@@ -8850,9 +8850,6 @@ export default function App() {
               setAccounts(merge);
             }
           }}
-          onInstallUpdate={() => {
-            void restartForUpdate();
-          }}
           onClose={() => setSettingsOpen(false)}
         />
       )}
